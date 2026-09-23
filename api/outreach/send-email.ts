@@ -21,7 +21,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     const { lead, subject, body, channelSettings, webhookUrl, senderName, senderEmail, campaignRecipientId } = req.body || {};
     const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
-    const replyTo = buildEmailReplyToAddress(campaignRecipientId) || undefined;
+    const replyTo = buildEmailReplyToAddress(campaignRecipientId, lead?.id) || undefined;
 
     const mailtoUrl = `mailto:${lead?.email || ''}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
 

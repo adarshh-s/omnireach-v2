@@ -4,7 +4,11 @@ import { Lead, MessageTemplate, CampaignSettings, CalendarSlot } from '../types'
  * Replaces placeholders in a template with actual lead & campaign data.
  * Variables supported:
  * {{name}}, {{first_name}}, {{company}}, {{email}}, {{phone}},
- * {{company_name}}, {{sender_name}}, {{sender_email}}, {{sender_phone}}, {{booking_link}}
+ * {{company_name}}, {{sender_name}}, {{sender_email}}, {{sender_phone}}
+ *
+ * There is no {{booking_link}} — this product has no self-service scheduling page.
+ * Booking happens conversationally: the lead replies with a day/time and the AI
+ * booking bot (see lib/conversationEngine.ts) confirms it directly on the calendar.
  */
 export function interpolateTemplate(
   templateText: string,
@@ -15,10 +19,6 @@ export function interpolateTemplate(
   if (!templateText) return '';
 
   const firstName = (lead.name || 'there').split(' ')[0];
-  const nextSlot = availableSlots.find((s) => s.available) || availableSlots[0];
-  const bookingLink = nextSlot
-    ? `https://calendar.google.com/booking?date=${nextSlot.date}&slot=${encodeURIComponent(nextSlot.time)}`
-    : `https://meet.google.com/demo-slot`;
 
   let text = templateText;
   text = text.replace(/{{name}}/gi, lead.name || 'there');
@@ -30,7 +30,9 @@ export function interpolateTemplate(
   text = text.replace(/{{sender_name}}/gi, settings.senderName || 'our team');
   text = text.replace(/{{sender_email}}/gi, settings.senderEmail || '');
   text = text.replace(/{{sender_phone}}/gi, settings.senderPhone || '');
-  text = text.replace(/{{booking_link}}/gi, bookingLink);
+  // Legacy placeholder from an earlier prototype that pointed at a non-existent
+  // scheduling page — strip it out so any custom template still using it doesn't 404.
+  text = text.replace(/{{booking_link}}/gi, '');
 
   return text;
 }
@@ -76,12 +78,16 @@ export async function generateAIPersonalizedMessage(
   lead: Lead,
   settings: CampaignSettings,
   template?: MessageTemplate,
-  availableSlots: CalendarSlot[] = []
+  availableSlots: CalendarSlot[] = [],
+  accessToken?: string | null
 ): Promise<{ whatsApp: string; emailSubject: string; emailBody: string }> {
   try {
     const res = await fetch('/api/outreach/generate-message', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({
         lead,
         settings,
@@ -110,18 +116,13 @@ export async function generateAIPersonalizedMessage(
   }
 
   const firstName = (lead.name || 'there').split(' ')[0];
-  const nextSlot = availableSlots.find((s) => s.available) || availableSlots[0];
-  const bookingLink = nextSlot
-    ? `https://calendar.google.com/booking?date=${nextSlot.date}&slot=${encodeURIComponent(nextSlot.time)}`
-    : `https://meet.google.com/demo-slot`;
-
   const senderLabel = settings.senderName || 'our team';
   const companyLabel = settings.companyName || 'our company';
 
   return {
-    whatsApp: `Hi ${firstName} 👋! ${senderLabel} from ${companyLabel} here. We'd love to connect with ${lead.company}. Grab a 10-min demo slot here: ${bookingLink}`,
-    emailSubject: `Quick intro for ${lead.company} (10-min demo)`,
-    emailBody: `Hi ${firstName},\n\nI hope you're doing well.\n\nI'm reaching out from ${companyLabel}. Would you have 10 minutes this week for a quick walk-through?\n\nPick a time here: ${bookingLink}\n\nBest,\n${senderLabel}`,
+    whatsApp: `Hi ${firstName} 👋! ${senderLabel} from ${companyLabel} here. We'd love to connect with ${lead.company}. Open to a quick call? Just reply with a day/time that works and I'll lock it in!`,
+    emailSubject: `Quick intro for ${lead.company}`,
+    emailBody: `Hi ${firstName},\n\nI hope you're doing well.\n\nI'm reaching out from ${companyLabel}. Would you have 10 minutes this week for a quick walk-through?\n\nJust reply with a day/time that works for you and I'll get it on the calendar.\n\nBest,\n${senderLabel}`,
   };
 }
 
@@ -132,12 +133,16 @@ export async function generateAIAutoReply(
   incomingMessage: string,
   lead: Lead,
   settings: CampaignSettings,
-  availableSlots: CalendarSlot[] = []
+  availableSlots: CalendarSlot[] = [],
+  accessToken?: string | null
 ): Promise<string> {
   try {
     const res = await fetch('/api/ai/auto-reply', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({
         incomingMessage,
         lead,
@@ -157,22 +162,18 @@ export async function generateAIAutoReply(
   }
 
   const lower = (incomingMessage || '').toLowerCase();
-  const nextSlot = availableSlots.find((s) => s.available) || availableSlots[0];
-  const bookingLink = nextSlot
-    ? `https://calendar.google.com/booking?date=${nextSlot.date}&slot=${encodeURIComponent(nextSlot.time)}`
-    : `https://meet.google.com/demo-slot`;
 
   if (lower.includes('price') || lower.includes('cost') || lower.includes('how much')) {
-    return `Our plans start at flexible tiering based on your contact volume. We'd love to show you an exact breakdown for ${lead.company}. Would you be free for a 10-minute demo? You can pick a slot here: ${bookingLink}`;
+    return `Our plans start at flexible tiering based on your contact volume. We'd love to show you an exact breakdown for ${lead.company}. Would you be free for a quick call? Just reply with a day/time that works!`;
   }
 
   if (lower.includes('yes') || lower.includes('interested') || lower.includes('sure') || lower.includes('demo')) {
-    return `Awesome! You can pick any open slot that suits you on our Google Calendar: ${bookingLink}. Looking forward to speaking!`;
+    return `Awesome! Just reply with a day/time that works for you and I'll get it on the calendar. Looking forward to speaking!`;
   }
 
   if (lower.includes('not interested') || lower.includes('stop') || lower.includes('unsubscribe')) {
     return `Understood! I've removed your contact from our outreach list. Wishing you and ${lead.company} all the best!`;
   }
 
-  return `Thanks for getting back to us, ${lead.name.split(' ')[0]}! Would Thursday at 11:00 AM or Friday at 3:00 PM work for a quick 10-min walk-through? Or pick a slot here: ${bookingLink}`;
+  return `Thanks for getting back to us, ${lead.name.split(' ')[0]}! Would Thursday at 11:00 AM or Friday at 3:00 PM work for a quick call? Or just reply with a time that suits you better.`;
 }

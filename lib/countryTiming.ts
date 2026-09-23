@@ -182,10 +182,34 @@ function getTimeZoneOffsetMinutes(utcDate: Date, timeZone: string): number {
 }
 
 /** Converts a specific local wall-clock time in a given IANA timezone to a UTC Date. */
-function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
+export function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
   const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute));
   const offsetMinutes = getTimeZoneOffsetMinutes(utcGuess, timeZone);
   return new Date(utcGuess.getTime() - offsetMinutes * 60000);
+}
+
+/** Resolves a lead's country name to its IANA timezone, or null if unrecognized. */
+export function getTimezoneForCountry(country: string | undefined | null): string | null {
+  return resolveCountry(country)?.timezone || null;
+}
+
+/** "Today" as a Date-formattable label and YYYY-MM-DD string, in a given IANA timezone
+ * (falling back to the server's own clock/UTC when timeZone is null/unrecognized). */
+export function getLocalTodayInfo(now: Date, timeZone: string | null): { label: string; dateStr: string } {
+  const label = now.toLocaleDateString('en-US', {
+    timeZone: timeZone || undefined,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const dateStr = timeZone
+    ? (() => {
+        const p = getLocalDateParts(now, timeZone);
+        return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+      })()
+    : now.toISOString().slice(0, 10);
+  return { label, dateStr };
 }
 
 /**
@@ -231,4 +255,20 @@ export function describeScheduledTime(date: Date, country: string | undefined | 
 
 export function isCountryRecognized(country: string | undefined | null): boolean {
   return resolveCountry(country) !== null;
+}
+
+/**
+ * Converts an AI-confirmed meeting "date"/"time" (YYYY-MM-DD / HH:MM, understood to be in
+ * the given IANA timezone — see ConversationResult.meetingTimeZone) into the correct UTC
+ * ISO instant for a calendar event. Falls back to naive local parsing only when no
+ * timezone is known (unrecognized country), matching the old (imprecise) behavior rather
+ * than failing the booking outright.
+ */
+export function toMeetingStartIso(date: string, time: string, timeZone: string | null | undefined): string {
+  const [hour, minute] = time.split(':').map(Number);
+  const [year, month, day] = date.split('-').map(Number);
+  if (timeZone && year && month && day && !isNaN(hour) && !isNaN(minute)) {
+    return zonedTimeToUtc(year, month, day, hour, minute, timeZone).toISOString();
+  }
+  return new Date(`${date}T${time}:00`).toISOString();
 }

@@ -17,5 +17,10 @@
       "path": "/api/cron/dispatch-scheduled",
       "schedule": "0 6 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 60
+    }
+  }
 }

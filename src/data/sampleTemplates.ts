@@ -3,19 +3,17 @@ import { MessageTemplate, CampaignSettings } from '../types';
 export const DEFAULT_TEMPLATES: MessageTemplate[] = [
   {
     id: 'tpl-1',
-    name: 'B2B Discovery & AI Demo Invitation',
+    name: 'B2B Discovery & Meeting Invitation',
     category: 'discovery',
     channel: 'omnichannel',
     whatsAppContent: `Hi {{name}} 👋! {{sender_name}} from {{company_name}} here.
 
 I noticed your work at *{{company}}* and wanted to share how we help businesses automate repetitive client outreach and sync replies directly to Google Sheets & CRM.
 
-Would you be open to a quick 10-minute demo this week?
+Would you be open to a quick 10-minute call this week?
 
-👉 Grab a time that suits you: {{booking_link}}
-
-Let me know if you'd like a quick preview video first! 🚀`,
-    emailSubject: `Automating {{company}}'s client outreach workflow (Quick Demo)`,
+Just reply with a day/time that works for you and I'll lock it in! 🚀`,
+    emailSubject: `Automating {{company}}'s client outreach workflow (Quick Chat)`,
     emailBody: `Hi {{name}},
 
 I hope you're having a productive week.
@@ -26,8 +24,7 @@ Our clients typically see a 4x increase in client engagement rates while cutting
 
 Would you be open to a brief 10-minute introduction this week?
 
-You can pick a convenient time on our Google Calendar here:
-👉 {{booking_link}}
+Just reply with a day/time that works for you and I'll get it on the calendar.
 
 Best regards,
 
@@ -38,26 +35,22 @@ Phone: {{sender_phone}}`,
   },
   {
     id: 'tpl-2',
-    name: 'Direct Calendar Booking Pitch',
+    name: 'Direct Meeting Invitation',
     category: 'meeting_invite',
     channel: 'omnichannel',
     whatsAppContent: `Hey {{name}}! 📅
 
-{{sender_name}} here from {{company_name}}. We just opened a few demo slots for {{company}} to check out what we've been working on.
+{{sender_name}} here from {{company_name}}. We just opened a few time slots for {{company}} to connect on what we've been working on.
 
-Pick an open time on our calendar here:
-👉 {{booking_link}}
+Just reply with a day/time that works for you and I'll lock it in!
 
 Looking forward to connecting!`,
-    emailSubject: `Calendar invite: 10-min overview for {{name}} ({{company}})`,
+    emailSubject: `Quick 10-min overview for {{name}} ({{company}})`,
     emailBody: `Hi {{name}},
 
-Following up on our automation initiative for {{company}}. We've prepared a custom demo showing how your team can upload an Excel sheet and instantly dispatch personalized WhatsApp messages & emails.
+Following up on our automation initiative for {{company}}. We've prepared a quick walkthrough showing how your team can upload an Excel sheet and instantly dispatch personalized WhatsApp messages & emails.
 
-We have a few slots available over the next few days:
-👉 {{booking_link}}
-
-Feel free to pick any open slot that fits your schedule.
+Just reply with a day/time that works for you and I'll get it on the calendar.
 
 Best regards,
 {{sender_name}}
@@ -70,9 +63,9 @@ Best regards,
     channel: 'omnichannel',
     whatsAppContent: `Hi {{name}}! Just following up on my previous message regarding {{company}}'s client communication workflow.
 
-Did you have a chance to review the demo link? 
+Did you have a chance to think it over?
 
-Here is our direct calendar if you'd like a quick 5-min walk-through: {{booking_link}} 😊`,
+Happy to set up a quick 5-min walk-through — just reply with a day/time that works for you! 😊`,
     emailSubject: `Quick follow-up regarding {{company}}'s outreach automation`,
     emailBody: `Hi {{name}},
 
@@ -80,8 +73,7 @@ I know how busy your schedule gets, so I'm keeping this very brief.
 
 I wanted to quickly check if you had a chance to review my previous email about streamlining {{company}}'s outreach via WhatsApp and Email.
 
-If you have 10 minutes this week, you can choose a time here:
-👉 {{booking_link}}
+If you have 10 minutes this week, just reply with a day/time that works for you and I'll get it on the calendar.
 
 Or feel free to reply directly to this email with any questions!
 
@@ -98,14 +90,13 @@ Warm regards,
 
 {{sender_name}} here from {{company_name}}. Thought this might be relevant to what you're working on.
 
-Happy to walk you through it in a quick 10-min call: {{booking_link}}`,
+Happy to walk you through it in a quick 10-min call — just reply with a day/time that works for you!`,
     emailSubject: `A quick idea for {{company}}`,
     emailBody: `Hi {{name}},
 
 I wanted to reach out because I think what we're doing at {{company_name}} could be genuinely useful for {{company}}.
 
-Would you be open to a brief 10-minute call this week to see if it's a fit?
-👉 Schedule a time: {{booking_link}}
+Would you be open to a brief 10-minute call this week to see if it's a fit? Just reply with a day/time that works for you.
 
 Best,
 {{sender_name}}
@@ -125,6 +116,6 @@ export const DEFAULT_CAMPAIGN_SETTINGS: CampaignSettings = {
   serviceDescription: '',
   defaultCountryCode: '+971',
   includeBookingLink: true,
-  customInstructions: 'Keep messages conversational, clear, friendly, and focused on booking a 10-minute demo.',
+  customInstructions: 'Keep messages conversational, clear, friendly, and focused on booking a quick call.',
   useAiCopywriting: false,
 };

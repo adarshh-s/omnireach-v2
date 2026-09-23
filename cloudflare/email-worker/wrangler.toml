@@ -2,6 +2,10 @@ name = "omnireach-email-inbound"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+# Email Routing invokes this Worker directly — it never needs a public HTTP route — but
+# Wrangler's deploy step still wants *some* subdomain/route registered. This auto-registers
+# the workers.dev one instead of prompting interactively.
+workers_dev = true
 
 # Not secret — the public webhook path. Change this if you deploy the main app elsewhere.
 [vars]

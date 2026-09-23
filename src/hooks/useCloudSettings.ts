@@ -13,7 +13,7 @@ export function useCloudSettings<T>(
   localStorageKey: string,
   defaultValue: T,
   userId: string | null | undefined
-): [T, (value: T) => void, { loading: boolean }] {
+): [T, (value: T) => void, { loading: boolean; saveError: string | null }] {
   const [value, setValue] = useState<T>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(localStorageKey);
@@ -26,6 +26,7 @@ export function useCloudSettings<T>(
     return defaultValue;
   });
   const [loading, setLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const loadedForUser = useRef<string | null>(null);
 
   // Load from Supabase whenever a signed-in org becomes available.
@@ -62,10 +63,28 @@ export function useCloudSettings<T>(
     if (!isSupabaseBrowserConfigured || !supabase || !userId) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      supabase!.from(table).upsert(
-        { org_id: userId, settings: value, updated_at: new Date().toISOString() },
-        { onConflict: 'org_id' }
-      );
+      // supabase-js's query builder rejects (rather than resolving with `{error}`) on
+      // network-level failures — an expired/unrefreshed session, offline, CORS — so this
+      // is wrapped in a real try/catch rather than just `.then()`, which would silently
+      // swallow that case as an unhandled rejection and leave the UI showing "Saved" with
+      // no indication the write never happened.
+      (async () => {
+        try {
+          const { error } = await supabase!
+            .from(table)
+            .upsert({ org_id: userId, settings: value, updated_at: new Date().toISOString() }, { onConflict: 'org_id' });
+          if (error) {
+            console.error(`[useCloudSettings] Failed to save ${table}:`, error);
+            setSaveError(error.message || 'Failed to save settings to the cloud.');
+          } else {
+            setSaveError(null);
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Failed to save settings to the cloud.';
+          console.error(`[useCloudSettings] Failed to save ${table} (network/auth error):`, err);
+          setSaveError(message);
+        }
+      })();
     }, 600);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -73,5 +92,5 @@ export function useCloudSettings<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, userId, table]);
 
-  return [value, setValue, { loading }];
+  return [value, setValue, { loading, saveError }];
 }

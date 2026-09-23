@@ -17,6 +17,8 @@ import {
   Zap,
   Loader2,
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { Lead, CalendarSlot, CampaignSettings, MessageTemplate, ChatMessage, ChannelApiSettings } from '../types';
 import {
@@ -36,6 +38,7 @@ interface MessageSimulatorProps {
   campaignSettings: CampaignSettings;
   channelSettings?: ChannelApiSettings;
   templates: MessageTemplate[];
+  accessToken?: string | null;
   onUpdateLead: (lead: Lead) => void;
   onUpdateSettings?: (settings: CampaignSettings) => void;
   onBookCalendarSlot: (slotId: string, lead: Lead, notes: string) => void;
@@ -49,6 +52,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
   campaignSettings,
   channelSettings,
   templates,
+  accessToken,
   onUpdateLead,
   onUpdateSettings,
   onBookCalendarSlot,
@@ -75,6 +79,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
   // Selected template
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(templates[0]?.id || 'tpl-1');
+  const [showTestTools, setShowTestTools] = useState(false);
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
 
   // Generate copy whenever selected lead changes
@@ -85,7 +90,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
     const generateCopy = async () => {
       setIsGenerating(true);
       const res = campaignSettings.useAiCopywriting
-        ? await generateAIPersonalizedMessage(lead, campaignSettings, selectedTemplate, availableSlots)
+        ? await generateAIPersonalizedMessage(lead, campaignSettings, selectedTemplate, availableSlots, accessToken)
         : {
             whatsApp: interpolateTemplate(selectedTemplate?.whatsAppContent || '', lead, campaignSettings, availableSlots),
             emailSubject: interpolateTemplate(selectedTemplate?.emailSubject || '', lead, campaignSettings, availableSlots),
@@ -140,7 +145,8 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
       replyText,
       lead,
       campaignSettings,
-      availableSlots
+      availableSlots,
+      accessToken
     );
 
     setIsAiReplying(false);
@@ -185,10 +191,15 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
     setSendResultMessage('');
 
     try {
-      const resolvedSenderEmail = channelSettings?.resendFromEmail ||
-        (channelSettings?.emailProvider === 'resend' && (!campaignSettings.senderEmail || campaignSettings.senderEmail.includes('.example'))
-          ? 'onboarding@resend.dev'
-          : campaignSettings.senderEmail || 'onboarding@resend.dev');
+      // Leave this undefined when there's no real address to prefer — sendEmailViaOrgProvider
+      // (lib/emailSender.ts) already picks the correct platform address itself via
+      // RESEND_FROM_ADDRESS (the org's verified domain); hardcoding the sandbox address here
+      // used to short-circuit that and force it even when a verified domain was configured.
+      const resolvedSenderEmail =
+        channelSettings?.smtpFromEmail ||
+        (campaignSettings.senderEmail && !campaignSettings.senderEmail.includes('.example')
+          ? campaignSettings.senderEmail
+          : undefined);
 
       const res = await sendEmailDirectOrBackend({
         lead,
@@ -197,6 +208,10 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
         channelSettings: channelSettings || { emailProvider: 'resend' },
         senderName: campaignSettings.senderName,
         senderEmail: resolvedSenderEmail,
+        // Without this, the server can't resolve which org this send belongs to, so it
+        // skips seeding the reply-tracking conversation — a reply to a test email sent
+        // from here would never reach the AI booking bot, unlike a real campaign send.
+        accessToken,
       });
 
       if (res.delivered) {
@@ -229,12 +244,12 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
   if (!lead) {
     return (
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] p-10 text-center">
-        <div className="w-12 h-12 rounded-full bg-[#FAF8F5] border border-[#DDD6CB] flex items-center justify-center mx-auto text-[#8C847C] mb-3">
+      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-10 text-center">
+        <div className="w-12 h-12 rounded-full bg-[#FAFAFA] border border-[#D4D4D8] flex items-center justify-center mx-auto text-[#71717A] mb-3">
           <MessageSquare className="w-5 h-5" />
         </div>
-        <h3 className="text-sm font-bold text-[#2D2926]">No Leads Yet</h3>
-        <p className="text-xs text-[#8C847C] max-w-sm mx-auto mt-1">
+        <h3 className="text-sm font-bold text-[#18181B]">No Leads Yet</h3>
+        <p className="text-xs text-[#71717A] max-w-sm mx-auto mt-1">
           Import a spreadsheet of contacts first — then come back here to preview and test personalized WhatsApp & Email messages.
         </p>
       </div>
@@ -244,18 +259,18 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Header Card & Lead Selector */}
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] p-5 shadow-xs">
+      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold text-[#2D2926]">
+              <h1 className="text-lg font-bold text-[#18181B]">
                 Interactive Message & Conversation Simulator
               </h1>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#E8F5E9] text-[#128C7E] border border-[#C8E6C9]">
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#128C7E]/10 text-[#128C7E] border border-[#128C7E]/30">
                 Live Preview
               </span>
             </div>
-            <p className="text-xs text-[#7A7269] mt-0.5">
+            <p className="text-xs text-[#71717A] mt-0.5">
               Preview AI-generated WhatsApp messages and cold outreach emails with variable interpolation and test real-time simulated client replies.
             </p>
           </div>
@@ -263,14 +278,14 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
           {/* Lead Selector Dropdown */}
           <div className="flex items-center gap-3">
             <div className="w-full sm:w-64">
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1 uppercase tracking-wider">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1 uppercase tracking-wider">
                 Select Spreadsheet Contact
               </label>
               <select
                 id="simulator-lead-select"
                 value={selectedLeadId}
                 onChange={(e) => onSelectLead(e.target.value)}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2926] focus:ring-1 focus:ring-[#25D366]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-semibold text-[#18181B] focus:ring-1 focus:ring-[#25D366]"
               >
                 {leads.map((l) => (
                   <option key={l.id} value={l.id}>
@@ -284,29 +299,29 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
         {/* Selected Lead Metadata Strip */}
         {lead && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-[#F0ECE6] text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-[#F4F4F5] text-xs">
             <div className="flex items-center gap-2">
-              <User className="w-3.5 h-3.5 text-[#8C847C]" />
-              <span className="text-[#2D2926] font-medium">{lead.name}</span>
+              <User className="w-3.5 h-3.5 text-[#71717A]" />
+              <span className="text-[#18181B] font-medium">{lead.name}</span>
             </div>
             <div className="flex items-center gap-2">
-              <Building className="w-3.5 h-3.5 text-[#8C847C]" />
-              <span className="text-[#2D2926] font-medium">{lead.company}</span>
+              <Building className="w-3.5 h-3.5 text-[#71717A]" />
+              <span className="text-[#18181B] font-medium">{lead.company}</span>
             </div>
             <div className="flex items-center gap-2">
               <Phone className="w-3.5 h-3.5 text-[#25D366]" />
-              <span className="font-mono text-[#2D2926]">{lead.phone}</span>
+              <span className="font-mono text-[#18181B]">{lead.phone}</span>
             </div>
             <div className="flex items-center gap-2">
               <Mail className="w-3.5 h-3.5 text-[#4285F4]" />
-              <span className="text-[#2D2926] truncate">{lead.email}</span>
+              <span className="text-[#18181B] truncate">{lead.email}</span>
             </div>
           </div>
         )}
       </div>
 
       {/* Channel Switcher Tabs */}
-      <div className="flex items-center justify-between border-b border-[#E8E4DF] pb-2">
+      <div className="flex items-center justify-between border-b border-[#E4E4E7] pb-2">
         <div className="flex items-center gap-2">
           <button
             id="tab-sim-whatsapp"
@@ -314,7 +329,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
               activeChannel === 'whatsapp'
                 ? 'bg-[#25D366] text-white shadow-xs'
-                : 'bg-white text-[#6C635B] hover:text-[#2D2926] border border-[#DDD6CB]'
+                : 'bg-white text-[#71717A] hover:text-[#18181B] border border-[#D4D4D8]'
             }`}
           >
             <MessageSquare className="w-4 h-4" />
@@ -327,7 +342,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all ${
               activeChannel === 'email'
                 ? 'bg-[#4285F4] text-white shadow-xs'
-                : 'bg-white text-[#6C635B] hover:text-[#2D2926] border border-[#DDD6CB]'
+                : 'bg-white text-[#71717A] hover:text-[#18181B] border border-[#D4D4D8]'
             }`}
           >
             <Mail className="w-4 h-4" />
@@ -337,11 +352,11 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
         {/* Template Selector */}
         <div className="flex items-center gap-2">
-          <span className="text-xs text-[#8C847C] hidden sm:inline">Template:</span>
+          <span className="text-xs text-[#71717A] hidden sm:inline">Template:</span>
           <select
             value={selectedTemplateId}
             onChange={(e) => setSelectedTemplateId(e.target.value)}
-            className="bg-white border border-[#DDD6CB] rounded-lg px-2.5 py-1 text-xs text-[#2D2926]"
+            className="bg-white border border-[#D4D4D8] rounded-lg px-2.5 py-1 text-xs text-[#18181B]"
           >
             {templates.map((t) => (
               <option key={t.id} value={t.id}>
@@ -360,8 +375,8 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
             }
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
               campaignSettings.useAiCopywriting
-                ? 'bg-[#E8F5E9] border-[#A5D6A7] text-[#1B5E20]'
-                : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#4A443F]'
+                ? 'bg-[#128C7E]/10 border-[#128C7E]/30 text-[#0F6D42]'
+                : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
             }`}
             title="When off, your template text is sent exactly as written (with {{variables}} filled in) — no AI rewrite."
           >
@@ -376,7 +391,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left: WhatsApp Mobile Mockup */}
           <div className="lg:col-span-7 flex justify-center">
-            <div className="w-full max-w-md bg-[#ECE5DD] rounded-3xl border-4 border-[#2D2926] shadow-xl overflow-hidden flex flex-col h-[560px]">
+            <div className="w-full max-w-md bg-[#ECE5DD] rounded-3xl border-4 border-[#18181B] shadow-modal overflow-hidden flex flex-col h-[560px]">
               {/* WhatsApp Header Bar */}
               <div className="bg-[#075E54] text-white px-4 py-3 flex items-center justify-between shadow-md">
                 <div className="flex items-center gap-3">
@@ -408,7 +423,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
               {/* Chat Message Scroll Area */}
               <div className="flex-1 p-4 overflow-y-auto space-y-3 no-scrollbar">
                 <div className="text-center">
-                  <span className="text-[10px] bg-white/70 text-[#5D554D] px-2.5 py-0.5 rounded-full font-medium shadow-xs">
+                  <span className="text-[10px] bg-white/70 text-[#3F3F46] px-2.5 py-0.5 rounded-full font-medium shadow-xs">
                     Today
                   </span>
                 </div>
@@ -422,11 +437,11 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
                       className={`max-w-[85%] rounded-2xl p-3 text-xs shadow-xs space-y-1 ${
                         msg.sender === 'ai_agent'
                           ? 'bg-[#DCF8C6] text-[#075E54] rounded-tr-xs'
-                          : 'bg-white text-[#2D2926] rounded-tl-xs'
+                          : 'bg-white text-[#18181B] rounded-tl-xs'
                       }`}
                     >
                       <div className="whitespace-pre-line leading-relaxed font-sans">{msg.content}</div>
-                      <div className="flex items-center justify-end gap-1 text-[10px] text-[#7A7269]">
+                      <div className="flex items-center justify-end gap-1 text-[10px] text-[#71717A]">
                         <span>{msg.timestamp}</span>
                         {msg.sender === 'ai_agent' && (
                           <span className="text-[#34B7F1] font-bold">✓✓</span>
@@ -447,7 +462,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
               </div>
 
               {/* Chat Input & Direct Send */}
-              <div className="p-2.5 bg-[#F0F0F0] border-t border-[#DDD6CB] flex items-center gap-2">
+              <div className="p-2.5 bg-[#F0F0F0] border-t border-[#D4D4D8] flex items-center gap-2">
                 <input
                   type="text"
                   placeholder="Type simulated prospect reply..."
@@ -456,7 +471,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleClientReply(customReplyInput);
                   }}
-                  className="flex-1 bg-white border border-[#DDD6CB] rounded-full px-4 py-2 text-xs text-[#2D2926] focus:outline-none focus:ring-1 focus:ring-[#25D366]"
+                  className="flex-1 bg-white border border-[#D4D4D8] rounded-full px-4 py-2 text-xs text-[#18181B] focus:outline-none focus:ring-1 focus:ring-[#25D366]"
                 />
                 <button
                   onClick={() => handleClientReply(customReplyInput)}
@@ -471,54 +486,66 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
           {/* Right: Quick Simulated Reply Triggers & One-Click Actions */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="bg-white rounded-2xl border border-[#E8E4DF] p-5 shadow-xs space-y-4">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[#8C847C] flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-[#25D366]" />
-                Simulate Client Responses
-              </h3>
-              <p className="text-xs text-[#7A7269]">
-                Click any simulated response to test how the Gemini AI Auto-Reply handles objections, answers pricing queries, or books meetings:
-              </p>
+            <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card space-y-4">
+              <button
+                type="button"
+                onClick={() => setShowTestTools((v) => !v)}
+                className="w-full flex items-center justify-between text-xs font-bold uppercase tracking-wider text-[#71717A] hover:text-ink transition-colors"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-[#25D366]" />
+                  Test Tools
+                </span>
+                {showTestTools ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              </button>
 
-              <div className="space-y-2">
-                <button
-                  onClick={() =>
-                    handleClientReply(`Yes, I'm interested! Can we do Thursday at 10:00 AM?`)
-                  }
-                  className="w-full text-left p-3 rounded-xl bg-[#FAF8F5] hover:bg-[#E8F5E9] hover:border-[#C8E6C9] border border-[#E8E4DF] text-xs font-medium text-[#2D2926] transition-all"
-                >
-                  <span className="font-semibold text-[#128C7E]">🟢 "Yes! Let's book Thursday 10:00 AM"</span>
-                  <div className="text-[11px] text-[#8C847C] mt-0.5">Triggers calendar confirmation & Google Meet booking</div>
-                </button>
+              {showTestTools && (
+                <>
+                  <p className="text-xs text-[#71717A]">
+                    Click any simulated response to test how the AI Auto-Reply handles objections, answers pricing queries, or books meetings:
+                  </p>
 
-                <button
-                  onClick={() =>
-                    handleClientReply(`What are your pricing plans and does it connect with Google Sheets?`)
-                  }
-                  className="w-full text-left p-3 rounded-xl bg-[#FAF8F5] hover:bg-[#E8F5E9] hover:border-[#C8E6C9] border border-[#E8E4DF] text-xs font-medium text-[#2D2926] transition-all"
-                >
-                  <span className="font-semibold text-[#2D2926]">💬 "What are your pricing plans & features?"</span>
-                  <div className="text-[11px] text-[#8C847C] mt-0.5">Tests AI product pitch and demo invitation</div>
-                </button>
+                  <div className="space-y-2">
+                    <button
+                      onClick={() =>
+                        handleClientReply(`Yes, I'm interested! Can we do Thursday at 10:00 AM?`)
+                      }
+                      className="w-full text-left p-3 rounded-xl bg-[#FAFAFA] hover:bg-[#128C7E]/10 hover:border-[#128C7E]/30 border border-[#E4E4E7] text-xs font-medium text-[#18181B] transition-all"
+                    >
+                      <span className="font-semibold text-[#128C7E]">🟢 "Yes! Let's book Thursday 10:00 AM"</span>
+                      <div className="text-[11px] text-[#71717A] mt-0.5">Triggers calendar confirmation & Google Meet booking</div>
+                    </button>
 
-                <button
-                  onClick={() =>
-                    handleClientReply(`Please remove me from your list, not interested right now.`)
-                  }
-                  className="w-full text-left p-3 rounded-xl bg-[#FAF8F5] hover:bg-[#FDE8E8] hover:border-[#F8B4B4] border border-[#E8E4DF] text-xs font-medium text-[#2D2926] transition-all"
-                >
-                  <span className="font-semibold text-[#D93025]">🛑 "Not interested / Opt out"</span>
-                  <div className="text-[11px] text-[#8C847C] mt-0.5">Tests polite AI opt-out acknowledgment</div>
-                </button>
-              </div>
+                    <button
+                      onClick={() =>
+                        handleClientReply(`What are your pricing plans and does it connect with Google Sheets?`)
+                      }
+                      className="w-full text-left p-3 rounded-xl bg-[#FAFAFA] hover:bg-[#128C7E]/10 hover:border-[#128C7E]/30 border border-[#E4E4E7] text-xs font-medium text-[#18181B] transition-all"
+                    >
+                      <span className="font-semibold text-[#18181B]">💬 "What are your pricing plans & features?"</span>
+                      <div className="text-[11px] text-[#71717A] mt-0.5">Tests AI product pitch and meeting invitation</div>
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        handleClientReply(`Please remove me from your list, not interested right now.`)
+                      }
+                      className="w-full text-left p-3 rounded-xl bg-[#FAFAFA] hover:bg-[#FEF2F2] hover:border-[#FECACA] border border-[#E4E4E7] text-xs font-medium text-[#18181B] transition-all"
+                    >
+                      <span className="font-semibold text-[#DC2626]">🛑 "Not interested / Opt out"</span>
+                      <div className="text-[11px] text-[#71717A] mt-0.5">Tests polite AI opt-out acknowledgment</div>
+                    </button>
+                  </div>
+                </>
+              )}
 
               {/* Direct Actions */}
-              <div className="pt-4 border-t border-[#F0ECE6] space-y-2">
+              <div className="pt-4 border-t border-[#F4F4F5] space-y-2">
                 <a
                   href={generateWhatsAppLink(lead.phone, whatsAppText)}
                   target="_blank"
                   rel="noreferrer"
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#25D366] text-white font-semibold text-xs shadow-sm hover:bg-[#1EBE5D] transition-all"
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#25D366] text-white font-semibold text-xs shadow-sm hover:bg-[#25D366] transition-all"
                 >
                   <MessageSquare className="w-4 h-4" />
                   <span>Open & Send via WhatsApp Web</span>
@@ -526,7 +553,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
                 <button
                   onClick={() => handleCopyText(whatsAppText)}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-[#FAF8F5] text-[#4A443F] font-medium text-xs hover:bg-[#F2EFE9] border border-[#DDD6CB] transition-colors"
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-[#FAFAFA] text-[#3F3F46] font-medium text-xs hover:bg-[#F4F4F5] border border-[#D4D4D8] transition-colors"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-[#25D366]" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copied ? 'Copied to Clipboard!' : 'Copy WhatsApp Text'}</span>
@@ -537,12 +564,12 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
         </div>
       ) : (
         /* Email Client Simulator */
-        <div className="bg-white rounded-2xl border border-[#E8E4DF] shadow-xs overflow-hidden">
+        <div className="bg-white rounded-2xl border border-[#E4E4E7] shadow-card overflow-hidden">
           {/* Email Top Bar */}
-          <div className="bg-[#F8F9FA] border-b border-[#E8E4DF] px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs text-[#5D554D]">
+          <div className="bg-[#FAFAFA] border-b border-[#E4E4E7] px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs text-[#3F3F46]">
               <Mail className="w-4 h-4 text-[#4285F4]" />
-              <span className="font-semibold text-[#2D2926]">Email Inbox Preview</span>
+              <span className="font-semibold text-[#18181B]">Email Inbox Preview</span>
               <span>•</span>
               <span>To: {lead.email}</span>
             </div>
@@ -570,14 +597,14 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
               <a
                 href={generateMailtoLink(lead.email, emailSubject, emailBody)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FAF8F5] text-[#4A443F] border border-[#DDD6CB] text-xs font-semibold shadow-xs hover:bg-[#F2EFE9]"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FAFAFA] text-[#3F3F46] border border-[#D4D4D8] text-xs font-semibold shadow-xs hover:bg-[#F4F4F5]"
               >
-                <ExternalLink className="w-3.5 h-3.5 text-[#8C847C]" />
+                <ExternalLink className="w-3.5 h-3.5 text-[#71717A]" />
                 <span>Mail Client</span>
               </a>
               <button
                 onClick={() => handleCopyText(`Subject: ${emailSubject}\n\n${emailBody}`)}
-                className="p-1.5 text-[#8C847C] hover:text-[#2D2926] hover:bg-[#FAF8F5] rounded-lg border border-[#DDD6CB]"
+                className="p-1.5 text-[#71717A] hover:text-[#18181B] hover:bg-[#FAFAFA] rounded-lg border border-[#D4D4D8]"
                 title="Copy Full Email"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-[#25D366]" /> : <Copy className="w-3.5 h-3.5" />}
@@ -603,17 +630,17 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
           {/* Email Body & Details */}
           <div className="p-6 space-y-5">
             {/* Subject Line */}
-            <div className="pb-3 border-b border-[#F0ECE6]">
-              <span className="text-[11px] font-semibold text-[#8C847C] uppercase tracking-wider block mb-1">
+            <div className="pb-3 border-b border-[#F4F4F5]">
+              <span className="text-[11px] font-semibold text-[#71717A] uppercase tracking-wider block mb-1">
                 Subject Line
               </span>
-              <h2 className="text-base font-bold text-[#2D2926]">{emailSubject}</h2>
+              <h2 className="text-base font-bold text-[#18181B]">{emailSubject}</h2>
             </div>
 
             {/* Sender & Recipient Header */}
-            <div className="flex items-center justify-between text-xs text-[#7A7269]">
+            <div className="flex items-center justify-between text-xs text-[#71717A]">
               <div>
-                <span className="font-semibold text-[#2D2926]">
+                <span className="font-semibold text-[#18181B]">
                   {campaignSettings.senderName} ({campaignSettings.senderEmail})
                 </span>
                 <div className="text-[11px]">to {lead.name} &lt;{lead.email}&gt;</div>
@@ -622,22 +649,22 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
             </div>
 
             {/* Email Message Content */}
-            <div className="bg-[#FAF9F6] p-5 rounded-xl border border-[#E8E4DF] text-xs text-[#2D2926] whitespace-pre-line leading-relaxed font-sans">
+            <div className="bg-[#FAFAFA] p-5 rounded-xl border border-[#E4E4E7] text-xs text-[#18181B] whitespace-pre-line leading-relaxed font-sans">
               {emailBody}
             </div>
 
             {/* Embedded Google Calendar Card */}
             {nextSlot && (
-              <div className="p-4 bg-[#E8F0FE] border border-[#D2E3FC] rounded-xl flex items-center justify-between text-xs">
+              <div className="p-4 bg-[#4285F4]/10 border border-[#4285F4]/10 rounded-xl flex items-center justify-between text-xs">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-[#4285F4] text-white flex items-center justify-center font-bold">
                     <Calendar className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="font-semibold text-[#1967D2]">
-                      10-Minute Live Demo with {campaignSettings.senderName}
+                      Quick Call with {campaignSettings.senderName}
                     </div>
-                    <div className="text-[11px] text-[#5D554D]">
+                    <div className="text-[11px] text-[#3F3F46]">
                       Next Available Slot: {nextSlot.date} at {nextSlot.time} (Google Meet)
                     </div>
                   </div>

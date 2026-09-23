@@ -197,8 +197,16 @@ export async function sendCampaignWhatsAppMessage(
         : provider === 'cloud_api'
           ? 'WhatsApp Cloud API access token and Phone Number ID are required. Please configure them in Settings.'
           : 'A webhook URL is required. Set it under n8n / Webhook in Settings.';
-  } else {
-    delivered = true;
+  }
+  // 'web_direct' (the default): this function runs server-side (the automated batch
+  // runner, the scheduled dispatcher) where there's no browser to open a wa.me link in —
+  // so a web_direct org's automated sends can never actually reach anyone here. This used
+  // to just return delivered:true unconditionally, which is exactly why campaigns showed
+  // "Delivered" while nothing was ever really sent. web_direct only makes sense for a human
+  // manually clicking a wa.me link one at a time (see MessageSimulator), not for automation.
+  else {
+    errorDetail =
+      'WhatsApp is set to "Open in WhatsApp Web" mode, which only works for manual one-at-a-time sends — it can\'t be used for automated campaigns. Switch to WhatsApp Cloud API (or Twilio) in Channel Setup to let campaigns send automatically.';
   }
 
   // 5. Optional n8n / Custom Webhook notification (skip if the webhook was already the primary delivery above)

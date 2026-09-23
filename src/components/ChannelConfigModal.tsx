@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   X,
   Settings,
@@ -15,12 +16,17 @@ import {
   Bot,
   Calendar,
   ExternalLink,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { ChannelApiSettings, CampaignSettings, CalendarSlot } from '../types';
 import { sendEmailDirectOrBackend } from '../services/emailService';
 import { sendWhatsAppDirectOrBackend } from '../services/whatsappService';
 import { resolveTemplateVariables } from '../utils/outreachEngine';
 import { useGoogleCalendarConnection } from '../hooks/useGoogleCalendarConnection';
+import { ChannelHealthPanel } from './ChannelHealthPanel';
 
 interface ChannelConfigModalProps {
   isOpen: boolean;
@@ -46,6 +52,17 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   const [formData, setFormData] = useState<ChannelApiSettings>(settings);
   const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n'>('email');
   const [savedSuccess, setSavedSuccess] = useState(false);
+  // 'resend' with no org-supplied API key is the automatic platform default (see the
+  // "Email sending is automatic" banner) — only a provider that actually needs the org's
+  // own credentials counts as "Advanced". Without excluding 'resend' here, every org opened
+  // this panel already in Advanced mode by default (DEFAULT_CHANNEL_SETTINGS.emailProvider
+  // is 'resend'), even though nothing had actually been configured.
+  const [emailAdvancedOpen, setEmailAdvancedOpen] = useState(
+    !!(settings.emailProvider && settings.emailProvider !== 'mailto_direct' && settings.emailProvider !== 'resend')
+  );
+  const [whatsappMoreOpen, setWhatsappMoreOpen] = useState(
+    settings.whatsAppProvider === 'twilio' || settings.whatsAppProvider === 'webhook'
+  );
   const googleCalendar = useGoogleCalendarConnection(userId, accessToken);
   
   // Test email state
@@ -58,7 +75,35 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   const [testWaStatus, setTestWaStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [testWaResultMsg, setTestWaResultMsg] = useState('');
 
-  if (!isOpen) return null;
+  // Collapsed by default — real testing value, but shouldn't clutter the default settings view.
+  const [showEmailTest, setShowEmailTest] = useState(false);
+  const [showWaTest, setShowWaTest] = useState(false);
+
+  // WABA app-subscription state — a required Meta step with no dashboard UI of its own,
+  // without which inbound replies never reach the webhook.
+  const [subscribeStatus, setSubscribeStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [subscribeMsg, setSubscribeMsg] = useState('');
+
+  // The shared Verify Token value orgs paste into their own Meta App's webhook config —
+  // fetched once (it's not sensitive, but does live server-side as an env var).
+  const [verifyToken, setVerifyToken] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeSubTab !== 'bot' || !accessToken || verifyToken !== null) return;
+    fetch('/api/whatsapp/subscribe-app', { headers: { Authorization: `Bearer ${accessToken}` } })
+      .then((res) => res.json())
+      .then((data) => setVerifyToken(data.verifyToken || ''))
+      .catch(() => setVerifyToken(''));
+  }, [activeSubTab, accessToken, verifyToken]);
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField((f) => (f === field ? null : f)), 1500);
+    });
+  };
+
 
   const handleSendTestWhatsApp = async () => {
     if (!testWaTo.trim()) {
@@ -143,6 +188,42 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     }
   };
 
+  const handleSubscribeApp = async () => {
+    if (!formData.whatsappCloudApiKey || !formData.whatsappBusinessAccountId) {
+      setSubscribeStatus('error');
+      setSubscribeMsg('Enter your Access Token and WhatsApp Business Account ID above first.');
+      return;
+    }
+    if (!accessToken) {
+      setSubscribeStatus('error');
+      setSubscribeMsg('Sign in required.');
+      return;
+    }
+    setSubscribeStatus('loading');
+    setSubscribeMsg('');
+    try {
+      const res = await fetch('/api/whatsapp/subscribe-app', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          accessToken: formData.whatsappCloudApiKey,
+          wabaId: formData.whatsappBusinessAccountId,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setSubscribeStatus('success');
+        setSubscribeMsg('Subscribed! Replies to this number will now reach your AI booking bot.');
+      } else {
+        setSubscribeStatus('error');
+        setSubscribeMsg(data.error || 'Subscription failed.');
+      }
+    } catch (err: any) {
+      setSubscribeStatus('error');
+      setSubscribeMsg(err.message || 'Connection failed.');
+    }
+  };
+
   type TemplateVarKey = 'whatsappTemplateVariables' | 'twilioContentVariables';
 
   const addTemplateVariable = (key: TemplateVarKey) => {
@@ -162,7 +243,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   const renderTemplateVariableEditor = (key: TemplateVarKey) => (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="block text-[11px] font-semibold text-[#8C847C]">
+        <label className="block text-[11px] font-semibold text-[#71717A]">
           Body Variables (in order — fill {'{{1}}'}, {'{{2}}'}, ... in your approved template)
         </label>
         <button
@@ -178,24 +259,24 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           ⚠️ 0 variables configured. If your approved template has any {'{{n}}'} placeholders in its body, you must add one row per placeholder here — otherwise Meta will reject the send with "number of parameters does not match" (error 132000).
         </p>
       ) : (
-        <p className="text-[10px] text-[#8C847C]">
-          {(formData[key] || []).length} variable{(formData[key] || []).length === 1 ? '' : 's'} configured — must exactly match the number of {'{{n}}'} placeholders in your approved template's body. Type a <strong>plain value</strong> (e.g. <code className="bg-[#EFECE6] px-1 rounded">TEST-001</code>) or a single token (e.g. <code className="bg-[#EFECE6] px-1 rounded">{'{{name}}'}</code>) — no quotes, no extra braces around your answer.
+        <p className="text-[10px] text-[#71717A]">
+          {(formData[key] || []).length} variable{(formData[key] || []).length === 1 ? '' : 's'} configured — must exactly match the number of {'{{n}}'} placeholders in your approved template's body. Type a <strong>plain value</strong> (e.g. <code className="bg-[#F4F4F5] px-1 rounded">TEST-001</code>) or a single token (e.g. <code className="bg-[#F4F4F5] px-1 rounded">{'{{name}}'}</code>) — no quotes, no extra braces around your answer.
         </p>
       )}
       {(formData[key] || []).map((val, idx) => (
         <div key={idx} className="flex items-center gap-1.5">
-          <span className="text-[10px] font-semibold text-[#8C847C] w-14 shrink-0">Slot #{idx + 1}</span>
+          <span className="text-[10px] font-semibold text-[#71717A] w-14 shrink-0">Slot #{idx + 1}</span>
           <input
             type="text"
             placeholder="e.g. TEST-001 or {{name}} — no quotes/braces around the whole value"
             value={val}
             onChange={(e) => updateTemplateVariable(key, idx, e.target.value)}
-            className="flex-1 bg-white border border-[#DDD6CB] rounded-lg px-2.5 py-1 text-xs font-mono"
+            className="flex-1 bg-white border border-[#D4D4D8] rounded-lg px-2.5 py-1 text-xs font-mono"
           />
           <button
             type="button"
             onClick={() => removeTemplateVariable(key, idx)}
-            className="p-1 text-[#8C847C] hover:text-red-600"
+            className="p-1 text-[#71717A] hover:text-red-600"
             title="Remove"
           >
             <X className="w-3.5 h-3.5" />
@@ -267,117 +348,152 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   };
 
   const testEmailBox = (
-    <div className="pt-2 border-t border-[#EAE5DC]">
-      <label className="block text-[11px] font-semibold text-[#2D2926] mb-1">
-        Test Live Email Delivery (Instant)
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          type="email"
-          placeholder="your-email@gmail.com"
-          value={testEmailTo}
-          onChange={(e) => setTestEmailTo(e.target.value)}
-          className="flex-1 bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
-        />
-        <button
-          type="button"
-          onClick={handleSendTestEmail}
-          disabled={testStatus === 'sending'}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
-        >
-          {testStatus === 'sending' ? (
-            <>
-              <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Sending...</span>
-            </>
-          ) : (
-            <>
-              <Send className="w-3 h-3" />
-              <span>Send Live Test</span>
-            </>
+    <div className="pt-2 border-t border-[#E4E4E7]">
+      <button
+        type="button"
+        onClick={() => setShowEmailTest((v) => !v)}
+        className="w-full flex items-center justify-between text-[11px] font-semibold text-ink-muted hover:text-ink transition-colors"
+      >
+        <span>Test Live Email Delivery</span>
+        {showEmailTest ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+      </button>
+
+      {showEmailTest && (
+        <div className="mt-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="email"
+              placeholder="your-email@gmail.com"
+              value={testEmailTo}
+              onChange={(e) => setTestEmailTo(e.target.value)}
+              className="flex-1 bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+            />
+            <button
+              type="button"
+              onClick={handleSendTestEmail}
+              disabled={testStatus === 'sending'}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
+            >
+              {testStatus === 'sending' ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Sending...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-3 h-3" />
+                  <span>Send Live Test</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {testStatus === 'success' && (
+            <div className="mt-2 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>{testResultMsg}</span>
+            </div>
           )}
-        </button>
-      </div>
 
-      {testStatus === 'success' && (
-        <div className="mt-2 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-1.5">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-          <span>{testResultMsg}</span>
-        </div>
-      )}
-
-      {testStatus === 'error' && (
-        <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] flex items-start gap-1.5">
-          <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
-          <span>{testResultMsg}</span>
+          {testStatus === 'error' && (
+            <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] flex items-start gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+              <span>{testResultMsg}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 
   const testWhatsAppBox = (
-    <div className="pt-2 border-t border-[#EAE5DC]">
-      <label className="block text-[11px] font-semibold text-[#2D2926] mb-1">
-        Test Live WhatsApp Delivery (Instant)
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          type="tel"
-          placeholder="+971501234567"
-          value={testWaTo}
-          onChange={(e) => setTestWaTo(e.target.value)}
-          className="flex-1 bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
-        />
-        <button
-          type="button"
-          onClick={handleSendTestWhatsApp}
-          disabled={testWaStatus === 'sending'}
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
-        >
-          {testWaStatus === 'sending' ? (
-            <>
-              <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Sending...</span>
-            </>
-          ) : (
-            <>
-              <Send className="w-3 h-3" />
-              <span>Send Live Test</span>
-            </>
+    <div className="pt-2 border-t border-[#E4E4E7]">
+      <button
+        type="button"
+        onClick={() => setShowWaTest((v) => !v)}
+        className="w-full flex items-center justify-between text-[11px] font-semibold text-ink-muted hover:text-ink transition-colors"
+      >
+        <span>Test Live WhatsApp Delivery</span>
+        {showWaTest ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+      </button>
+
+      {showWaTest && (
+        <div className="mt-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="tel"
+              placeholder="+971501234567"
+              value={testWaTo}
+              onChange={(e) => setTestWaTo(e.target.value)}
+              className="flex-1 bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
+            />
+            <button
+              type="button"
+              onClick={handleSendTestWhatsApp}
+              disabled={testWaStatus === 'sending'}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
+            >
+              {testWaStatus === 'sending' ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Sending...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-3 h-3" />
+                  <span>Send Live Test</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {testWaStatus === 'success' && (
+            <div className="mt-2 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>{testWaResultMsg}</span>
+            </div>
           )}
-        </button>
-      </div>
 
-      {testWaStatus === 'success' && (
-        <div className="mt-2 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-1.5">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-          <span>{testWaResultMsg}</span>
-        </div>
-      )}
-
-      {testWaStatus === 'error' && (
-        <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] flex items-start gap-1.5">
-          <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
-          <span>{testWaResultMsg}</span>
+          {testWaStatus === 'error' && (
+            <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] flex items-start gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+              <span>{testWaResultMsg}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] shadow-2xl max-w-xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-8">
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E8E4DF] bg-[#FAF8F5]">
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 8 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="bg-white/90 backdrop-blur-2xl border border-white/60 ring-1 ring-black/5 rounded-3xl shadow-[0_20px_25px_-5px_rgb(0_0_0/0.1),0_8px_10px_-6px_rgb(0_0_0/0.1),inset_0_1px_0_0_rgba(255,255,255,0.8)] max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+          >
+        {/* Modal Header — pinned so the close button is always reachable, even when a
+            provider panel below (e.g. WhatsApp Cloud API's template editor) grows tall. */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E4E4E7] bg-[#FAFAFA] shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-[#25D366]/20 text-[#128C7E] flex items-center justify-center">
               <Zap className="w-4 h-4 fill-[#25D366]" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-[#2D2926]">
+              <h2 className="text-sm font-bold text-[#18181B]">
                 Automated Dispatch & API Configuration
               </h2>
-              <p className="text-[11px] text-[#7A7269]">
+              <p className="text-[11px] text-[#71717A]">
                 Configure real automated sending via Twilio WhatsApp, Resend Email, or Webhooks
               </p>
             </div>
@@ -385,21 +501,21 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
 
           <button
             onClick={onClose}
-            className="p-1.5 text-[#8C847C] hover:text-[#2D2926] rounded-lg transition-colors"
+            className="p-1.5 text-[#71717A] hover:text-[#18181B] rounded-lg transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Sub Navigation */}
-        <div className="flex border-b border-[#F0ECE6] px-6 bg-white">
+        <div className="flex border-b border-[#F4F4F5] px-6 bg-white shrink-0">
           <button
             type="button"
             onClick={() => setActiveSubTab('whatsapp')}
             className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
               activeSubTab === 'whatsapp'
-                ? 'border-[#25D366] text-[#0F5132]'
-                : 'border-transparent text-[#6C635B] hover:text-[#2D2926]'
+                ? 'border-[#25D366] text-[#0F6D42]'
+                : 'border-transparent text-[#71717A] hover:text-[#18181B]'
             }`}
           >
             <MessageSquare className="w-3.5 h-3.5" />
@@ -412,7 +528,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
             className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
               activeSubTab === 'email'
                 ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-[#6C635B] hover:text-[#2D2926]'
+                : 'border-transparent text-[#71717A] hover:text-[#18181B]'
             }`}
           >
             <Mail className="w-3.5 h-3.5" />
@@ -425,7 +541,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
             className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
               activeSubTab === 'bot'
                 ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-[#6C635B] hover:text-[#2D2926]'
+                : 'border-transparent text-[#71717A] hover:text-[#18181B]'
             }`}
           >
             <Bot className="w-3.5 h-3.5" />
@@ -437,8 +553,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
             onClick={() => setActiveSubTab('n8n')}
             className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
               activeSubTab === 'n8n'
-                ? 'border-[#2D2926] text-[#2D2926]'
-                : 'border-transparent text-[#6C635B] hover:text-[#2D2926]'
+                ? 'border-[#18181B] text-[#18181B]'
+                : 'border-transparent text-[#71717A] hover:text-[#18181B]'
             }`}
           >
             <Network className="w-3.5 h-3.5" />
@@ -446,53 +562,21 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           </button>
         </div>
 
-        {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        {accessToken && (
+          <div className="px-6 pt-4 shrink-0">
+            <ChannelHealthPanel accessToken={accessToken} />
+          </div>
+        )}
+
+        {/* Form Body — the only part that scrolls */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
           {activeSubTab === 'whatsapp' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#2D2926] mb-1.5">
+                <label className="block text-xs font-semibold text-[#18181B] mb-1.5">
                   WhatsApp Dispatch Method
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, whatsAppProvider: 'web_direct' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.whatsAppProvider === 'web_direct'
-                        ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
-                    }`}
-                  >
-                    <div className="font-bold flex items-center gap-1">
-                      <span>WhatsApp Web / App</span>
-                    </div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
-                      Zero setup. Direct 1-click links opening your WhatsApp.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, whatsAppProvider: 'twilio' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.whatsAppProvider === 'twilio'
-                        ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
-                    }`}
-                  >
-                    <div className="font-bold flex items-center gap-1">
-                      <span>⚡ Twilio WhatsApp API</span>
-                    </div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
-                      Automated background delivery via Twilio Sandbox or API.
-                    </div>
-                  </button>
-
                   <button
                     type="button"
                     onClick={() =>
@@ -500,14 +584,15 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
                       formData.whatsAppProvider === 'cloud_api'
-                        ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                        ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold flex items-center gap-1">
                       <span>⚡ WhatsApp Cloud API (Meta)</span>
+                      <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded-full">Recommended</span>
                     </div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
                       Official Meta WhatsApp Business Platform. No middleman markup — direct from Meta.
                     </div>
                   </button>
@@ -515,35 +600,85 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   <button
                     type="button"
                     onClick={() =>
-                      setFormData({ ...formData, whatsAppProvider: 'webhook' })
+                      setFormData({ ...formData, whatsAppProvider: 'web_direct' })
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.whatsAppProvider === 'webhook'
-                        ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                      formData.whatsAppProvider === 'web_direct'
+                        ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold flex items-center gap-1">
-                      <span>⚡ Custom Webhook / BSP</span>
+                      <span>WhatsApp Web / App</span>
                     </div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
-                      Route sends through your own n8n workflow or WhatsApp BSP (360dialog, Gupshup, etc.).
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
+                      Zero setup. Direct 1-click links opening your WhatsApp.
                     </div>
                   </button>
                 </div>
+
+                {!whatsappMoreOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setWhatsappMoreOpen(true)}
+                    className="mt-2 text-[11px] font-semibold text-[#1967D2] hover:underline"
+                  >
+                    More options (Twilio, Custom Webhook / BSP)
+                  </button>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, whatsAppProvider: 'twilio' })
+                      }
+                      className={`p-3 rounded-xl border text-left text-xs transition-all ${
+                        formData.whatsAppProvider === 'twilio'
+                          ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold shadow-xs'
+                          : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
+                      }`}
+                    >
+                      <div className="font-bold flex items-center gap-1">
+                        <span>⚡ Twilio WhatsApp API</span>
+                      </div>
+                      <div className="text-[11px] text-[#71717A] mt-0.5">
+                        Automated background delivery via Twilio Sandbox or API.
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, whatsAppProvider: 'webhook' })
+                      }
+                      className={`p-3 rounded-xl border text-left text-xs transition-all ${
+                        formData.whatsAppProvider === 'webhook'
+                          ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold shadow-xs'
+                          : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
+                      }`}
+                    >
+                      <div className="font-bold flex items-center gap-1">
+                        <span>⚡ Custom Webhook / BSP</span>
+                      </div>
+                      <div className="text-[11px] text-[#71717A] mt-0.5">
+                        Route sends through your own n8n workflow or WhatsApp BSP (360dialog, Gupshup, etc.).
+                      </div>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {formData.whatsAppProvider === 'twilio' && (
-                <div className="space-y-3 p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF]">
+                <div className="space-y-3 p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7]">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#2D2926]">Twilio WhatsApp Credentials</span>
+                    <span className="text-xs font-bold text-[#18181B]">Twilio WhatsApp Credentials</span>
                     <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       Live Server Sending
                     </span>
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       Twilio Account SID
                     </label>
                     <input
@@ -553,12 +688,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, twilioAccountSid: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       Twilio Auth Token
                     </label>
                     <input
@@ -568,12 +703,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, twilioAuthToken: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       Twilio WhatsApp Sender Number (Optional)
                     </label>
                     <input
@@ -583,16 +718,16 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, twilioFromNumber: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
-                    <p className="text-[10px] text-[#8C847C] mt-1">
-                      💡 Tip: For free Twilio Sandbox testing, join the sandbox by sending the code to <code className="bg-[#EFECE6] px-1 rounded">+1 415 523 8886</code> on WhatsApp.
+                    <p className="text-[10px] text-[#71717A] mt-1">
+                      💡 Tip: For free Twilio Sandbox testing, join the sandbox by sending the code to <code className="bg-[#F4F4F5] px-1 rounded">+1 415 523 8886</code> on WhatsApp.
                     </p>
                   </div>
 
-                  <div className="pt-3 border-t border-[#EAE5DC] space-y-3">
+                  <div className="pt-3 border-t border-[#E4E4E7] space-y-3">
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#2D2926] mb-1.5">
+                      <label className="block text-[11px] font-semibold text-[#18181B] mb-1.5">
                         Message Mode
                       </label>
                       <div className="grid grid-cols-2 gap-2">
@@ -601,8 +736,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           onClick={() => setFormData({ ...formData, whatsappMessageMode: 'text' })}
                           className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
                             (formData.whatsappMessageMode || 'text') === 'text'
-                              ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold'
-                              : 'bg-white border-[#DDD6CB] text-[#5D554D]'
+                              ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold'
+                              : 'bg-white border-[#D4D4D8] text-[#3F3F46]'
                           }`}
                         >
                           Free-form Text
@@ -612,22 +747,22 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           onClick={() => setFormData({ ...formData, whatsappMessageMode: 'template' })}
                           className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
                             formData.whatsappMessageMode === 'template'
-                              ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold'
-                              : 'bg-white border-[#DDD6CB] text-[#5D554D]'
+                              ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold'
+                              : 'bg-white border-[#D4D4D8] text-[#3F3F46]'
                           }`}
                         >
                           Approved Template
                         </button>
                       </div>
-                      <p className="text-[10px] text-[#8C847C] mt-1">
+                      <p className="text-[10px] text-[#71717A] mt-1">
                         Free-form text only works within 24h of the recipient last messaging you. For <strong>cold outreach</strong> (first contact), you must use an approved template — otherwise sends will fail with a "re-engagement" error.
                       </p>
                     </div>
 
                     {formData.whatsappMessageMode === 'template' && (
-                      <div className="space-y-3 p-3 bg-white rounded-lg border border-[#E8E4DF]">
+                      <div className="space-y-3 p-3 bg-white rounded-lg border border-[#E4E4E7]">
                         <div>
-                          <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                          <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                             Twilio Content SID
                           </label>
                           <input
@@ -635,9 +770,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                             placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                             value={formData.twilioContentSid || ''}
                             onChange={(e) => setFormData({ ...formData, twilioContentSid: e.target.value })}
-                            className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                            className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                           />
-                          <p className="text-[10px] text-[#8C847C] mt-1">
+                          <p className="text-[10px] text-[#71717A] mt-1">
                             Create a WhatsApp Content Template in the{' '}
                             <a
                               href="https://console.twilio.com/us1/develop/sms/content-template-builder"
@@ -660,16 +795,16 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
               )}
 
               {formData.whatsAppProvider === 'cloud_api' && (
-                <div className="space-y-3 p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF]">
+                <div className="space-y-3 p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7]">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#2D2926]">WhatsApp Cloud API Credentials</span>
+                    <span className="text-xs font-bold text-[#18181B]">WhatsApp Cloud API Credentials</span>
                     <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       Live Server Sending
                     </span>
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       Temporary or Permanent Access Token
                     </label>
                     <input
@@ -679,12 +814,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, whatsappCloudApiKey: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       Phone Number ID
                     </label>
                     <input
@@ -694,11 +829,11 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, whatsappCloudPhoneId: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
                   </div>
 
-                  <p className="text-[10px] text-[#8C847C] leading-relaxed">
+                  <p className="text-[10px] text-[#71717A] leading-relaxed">
                     💡 Create a Meta app and WhatsApp Business Platform product at{' '}
                     <a
                       href="https://developers.facebook.com/apps"
@@ -711,6 +846,67 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     . The Access Token and Phone Number ID are shown on the WhatsApp → API Setup page.
                   </p>
 
+                  <div className="p-2.5 bg-white rounded-lg border border-[#E4E4E7] space-y-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+                        WhatsApp Business Account ID
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="shown right next to Phone Number ID on the same page"
+                        value={formData.whatsappBusinessAccountId || ''}
+                        onChange={(e) => setFormData({ ...formData, whatsappBusinessAccountId: e.target.value })}
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      />
+                    </div>
+                    <p className="text-[10px] text-[#3F3F46] leading-relaxed">
+                      One more required step Meta doesn't surface in its dashboard: subscribe this app to your WhatsApp Business Account, or replies will never reach the AI booking bot.
+                    </p>
+
+                    <div className="pt-1.5 border-t border-[#E4E4E7]">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+                        App Secret <span className="font-normal text-[#71717A]">(recommended)</span>
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="from Meta App Dashboard → Settings → Basic → App Secret"
+                        value={formData.whatsappAppSecret || ''}
+                        onChange={(e) => setFormData({ ...formData, whatsappAppSecret: e.target.value })}
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      />
+                      <p className="text-[10px] text-[#3F3F46] mt-1 leading-relaxed">
+                        Verifies inbound webhook calls really come from your Meta App — without it, anyone who finds this app's webhook URL could send forged messages pretending to be your customers.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSubscribeApp}
+                      disabled={subscribeStatus === 'loading'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg text-white bg-[#1967D2] hover:bg-[#1554AE] disabled:opacity-50 transition-colors"
+                    >
+                      {subscribeStatus === 'loading' ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span>Subscribing...</span>
+                        </>
+                      ) : (
+                        <span>Subscribe App to WABA</span>
+                      )}
+                    </button>
+                    {subscribeStatus === 'success' && (
+                      <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>{subscribeMsg}</span>
+                      </div>
+                    )}
+                    {subscribeStatus === 'error' && (
+                      <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] flex items-start gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+                        <span>{subscribeMsg}</span>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-900 leading-relaxed space-y-1">
                     <p className="font-semibold text-amber-950">⚠️ "Sent" but nothing arrives on the phone? Meta's API accepting the request isn't the same as delivering it. Check:</p>
                     <ul className="list-disc list-inside space-y-0.5">
@@ -721,9 +917,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     </ul>
                   </div>
 
-                  <div className="pt-3 border-t border-[#EAE5DC] space-y-3">
+                  <div className="pt-3 border-t border-[#E4E4E7] space-y-3">
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#2D2926] mb-1.5">
+                      <label className="block text-[11px] font-semibold text-[#18181B] mb-1.5">
                         Message Mode
                       </label>
                       <div className="grid grid-cols-2 gap-2">
@@ -732,8 +928,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           onClick={() => setFormData({ ...formData, whatsappMessageMode: 'text' })}
                           className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
                             (formData.whatsappMessageMode || 'text') === 'text'
-                              ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold'
-                              : 'bg-white border-[#DDD6CB] text-[#5D554D]'
+                              ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold'
+                              : 'bg-white border-[#D4D4D8] text-[#3F3F46]'
                           }`}
                         >
                           Free-form Text
@@ -743,23 +939,23 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           onClick={() => setFormData({ ...formData, whatsappMessageMode: 'template' })}
                           className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
                             formData.whatsappMessageMode === 'template'
-                              ? 'bg-[#E8F5E9] border-[#25D366] text-[#0F5132] font-semibold'
-                              : 'bg-white border-[#DDD6CB] text-[#5D554D]'
+                              ? 'bg-[#128C7E]/10 border-[#25D366] text-[#0F6D42] font-semibold'
+                              : 'bg-white border-[#D4D4D8] text-[#3F3F46]'
                           }`}
                         >
                           Approved Template
                         </button>
                       </div>
-                      <p className="text-[10px] text-[#8C847C] mt-1">
+                      <p className="text-[10px] text-[#71717A] mt-1">
                         Free-form text only works within 24h of the recipient last messaging you. For <strong>cold outreach</strong> (first contact), you must use an approved template — otherwise sends will fail with error 131047 ("re-engagement message").
                       </p>
                     </div>
 
                     {formData.whatsappMessageMode === 'template' && (
-                      <div className="space-y-3 p-3 bg-white rounded-lg border border-[#E8E4DF]">
+                      <div className="space-y-3 p-3 bg-white rounded-lg border border-[#E4E4E7]">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                               Approved Template Name
                             </label>
                             <input
@@ -767,11 +963,11 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                               placeholder="e.g. outreach_intro"
                               value={formData.whatsappTemplateName || ''}
                               onChange={(e) => setFormData({ ...formData, whatsappTemplateName: e.target.value })}
-                              className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                              className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                             />
                           </div>
                           <div>
-                            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                               Language Code
                             </label>
                             <input
@@ -779,11 +975,11 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                               placeholder="en_US"
                               value={formData.whatsappTemplateLanguage || ''}
                               onChange={(e) => setFormData({ ...formData, whatsappTemplateLanguage: e.target.value })}
-                              className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                              className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                             />
                           </div>
                         </div>
-                        <p className="text-[10px] text-[#8C847C]">
+                        <p className="text-[10px] text-[#71717A]">
                           Create and submit a template for approval under WhatsApp Manager → Message Templates in{' '}
                           <a
                             href="https://business.facebook.com/wa/manage/message-templates/"
@@ -800,19 +996,40 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     )}
                   </div>
 
+                  <div className="pt-3 border-t border-[#E4E4E7]">
+                    <label className="block text-[11px] font-semibold text-[#18181B] mb-1.5">
+                      Safe Daily Send Limit
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={formData.safeDailyWhatsAppLimit ?? 250}
+                      onChange={(e) =>
+                        setFormData({ ...formData, safeDailyWhatsAppLimit: Math.max(1, parseInt(e.target.value, 10) || 1) })
+                      }
+                      className="w-full sm:w-40 bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
+                    />
+                    <p className="text-[10px] text-[#71717A] mt-1 leading-relaxed">
+                      Meta caps unique conversations per 24h based on your number's messaging tier — new numbers
+                      usually start at 250, scaling to 1,000 / 10,000+ as quality rating improves (check Meta
+                      Business Manager → WhatsApp Manager → Phone Numbers). A batch larger than this is
+                      automatically split across days instead of sent all at once, to protect your number.
+                    </p>
+                  </div>
+
                   {testWhatsAppBox}
                 </div>
               )}
 
               {formData.whatsAppProvider === 'webhook' && (
-                <div className="space-y-3 p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF]">
+                <div className="space-y-3 p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7]">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#2D2926]">Custom Webhook / BSP</span>
+                    <span className="text-xs font-bold text-[#18181B]">Custom Webhook / BSP</span>
                     <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       Live Server Sending
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#5D554D] leading-relaxed">
+                  <p className="text-[11px] text-[#3F3F46] leading-relaxed">
                     Each WhatsApp send will POST the lead and message text to the webhook URL configured under the <strong>n8n / Webhook</strong> tab. Point that at an n8n workflow (or any endpoint) that actually delivers the message through your BSP of choice — e.g. 360dialog, Gupshup, Infobip, or WATI — and returns a success status.
                   </p>
                   {!formData.n8nWebhookUrl && (
@@ -830,28 +1047,45 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
 
           {activeSubTab === 'email' && (
             <div className="space-y-4">
+              <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-[11px] text-emerald-900 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Email sending is automatic</span> — every campaign email
+                  goes out through OmniReach's own delivery infrastructure. No setup needed here.
+                </div>
+              </div>
+
+              {!emailAdvancedOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setEmailAdvancedOpen(true)}
+                  className="text-[11px] font-semibold text-[#1967D2] hover:underline"
+                >
+                  Advanced: send from your own email account instead
+                </button>
+              ) : (
+              <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#2D2926] mb-1.5">
-                  Email Dispatch Method
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-[#18181B]">
+                    Email Dispatch Method
+                  </label>
                   <button
                     type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, emailProvider: 'mailto_direct' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.emailProvider === 'mailto_direct'
-                        ? 'bg-[#E8F0FE] border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
-                    }`}
+                    onClick={() => {
+                      setEmailAdvancedOpen(false);
+                      // 'resend' (not 'mailto_direct') is what actually triggers the
+                      // automatic platform-sent path in sendEmailViaOrgProvider — this
+                      // button was previously setting 'mailto_direct' instead, which is
+                      // fully manual mailto: links, the opposite of "automatic".
+                      setFormData({ ...formData, emailProvider: 'resend' });
+                    }}
+                    className="text-[11px] text-[#71717A] hover:underline"
                   >
-                    <div className="font-bold">Default Mail Client</div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
-                      Direct 1-click mailto links.
-                    </div>
+                    Use automatic sending instead
                   </button>
-
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() =>
@@ -859,12 +1093,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
                       formData.emailProvider === 'smtp'
-                        ? 'bg-[#E8F0FE] border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold">⚡ SMTP (Gmail, Zoho, Outlook...)</div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
                       Use any mailbox you already own — Gmail App Password, Zoho Mail, Office 365, or custom business email.
                     </div>
                   </button>
@@ -876,12 +1110,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
                       formData.emailProvider === 'resend'
-                        ? 'bg-[#E8F0FE] border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold">⚡ Resend API</div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
                       Automated background inbox delivery. Free 100/day.
                     </div>
                   </button>
@@ -893,12 +1127,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
                       formData.emailProvider === 'sendgrid'
-                        ? 'bg-[#E8F0FE] border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold">⚡ SendGrid API</div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
                       Transactional high-volume delivery.
                     </div>
                   </button>
@@ -910,12 +1144,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     }
                     className={`p-3 rounded-xl border text-left text-xs transition-all ${
                       formData.emailProvider === 'mailgun'
-                        ? 'bg-[#E8F0FE] border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-[#FAF8F5] border-[#DDD6CB] text-[#5D554D]'
+                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
+                        : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
                     }`}
                   >
                     <div className="font-bold">⚡ Mailgun API</div>
-                    <div className="text-[11px] text-[#7A7269] mt-0.5">
+                    <div className="text-[11px] text-[#71717A] mt-0.5">
                       Pay-as-you-go transactional delivery, EU or US region.
                     </div>
                   </button>
@@ -923,9 +1157,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
               </div>
 
               {formData.emailProvider === 'smtp' && (
-                <div className="p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF] space-y-3">
+                <div className="p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#2D2926]">SMTP Credentials</span>
+                    <span className="text-xs font-bold text-[#18181B]">SMTP Credentials</span>
                     <span className="text-[10px] text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
                       Live Server Sending
                     </span>
@@ -933,7 +1167,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                         SMTP Host
                       </label>
                       <input
@@ -941,12 +1175,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         placeholder="smtp.gmail.com / smtp.zoho.com / smtp.office365.com"
                         value={formData.smtpHost || ''}
                         onChange={(e) => setFormData({ ...formData, smtpHost: e.target.value })}
-                        className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                         Port
                       </label>
                       <input
@@ -956,12 +1190,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         onChange={(e) =>
                           setFormData({ ...formData, smtpPort: e.target.value ? Number(e.target.value) : undefined })
                         }
-                        className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                       />
                     </div>
 
                     <div className="flex items-end pb-1.5">
-                      <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#5D554D]">
+                      <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#3F3F46]">
                         <input
                           type="checkbox"
                           checked={!!formData.smtpSecure}
@@ -973,7 +1207,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     </div>
 
                     <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                         Username
                       </label>
                       <input
@@ -981,12 +1215,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         placeholder="you@gmail.com"
                         value={formData.smtpUser || ''}
                         onChange={(e) => setFormData({ ...formData, smtpUser: e.target.value })}
-                        className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                       />
                     </div>
 
                     <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                         Password / App Password
                       </label>
                       <input
@@ -994,12 +1228,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         placeholder="••••••••••••••••"
                         value={formData.smtpPass || ''}
                         onChange={(e) => setFormData({ ...formData, smtpPass: e.target.value })}
-                        className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                       />
                     </div>
 
                     <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                      <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                         From Email (optional, defaults to Username)
                       </label>
                       <input
@@ -1007,12 +1241,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         placeholder="alex@yourbusiness.com"
                         value={formData.smtpFromEmail || ''}
                         onChange={(e) => setFormData({ ...formData, smtpFromEmail: e.target.value })}
-                        className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                        className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                       />
                     </div>
                   </div>
 
-                  <p className="text-[10px] text-[#8C847C] leading-relaxed">
+                  <p className="text-[10px] text-[#71717A] leading-relaxed">
                     💡 Gmail: you need an <strong>App Password</strong>, not your normal Gmail password (Gmail requires 2-Step Verification to be turned on first). Generate one at{' '}
                     <a
                       href="https://myaccount.google.com/apppasswords"
@@ -1022,7 +1256,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     >
                       myaccount.google.com/apppasswords
                     </a>{' '}
-                    → name it (e.g. "OmniReach"), copy the 16-character password into the field above. Host <code className="bg-[#EFECE6] px-1 rounded">smtp.gmail.com</code>, port <code className="bg-[#EFECE6] px-1 rounded">587</code>.
+                    → name it (e.g. "OmniReach"), copy the 16-character password into the field above. Host <code className="bg-[#F4F4F5] px-1 rounded">smtp.gmail.com</code>, port <code className="bg-[#F4F4F5] px-1 rounded">587</code>.
                     <br />
                     💡 Zoho Mail: enable an app-specific password at{' '}
                     <a
@@ -1033,9 +1267,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     >
                       accounts.zoho.com → Security → App Passwords
                     </a>
-                    . Host <code className="bg-[#EFECE6] px-1 rounded">smtp.zoho.com</code> (or <code className="bg-[#EFECE6] px-1 rounded">smtp.zoho.eu</code> for EU accounts), port <code className="bg-[#EFECE6] px-1 rounded">587</code>.
+                    . Host <code className="bg-[#F4F4F5] px-1 rounded">smtp.zoho.com</code> (or <code className="bg-[#F4F4F5] px-1 rounded">smtp.zoho.eu</code> for EU accounts), port <code className="bg-[#F4F4F5] px-1 rounded">587</code>.
                     <br />
-                    💡 Outlook/Office 365: host <code className="bg-[#EFECE6] px-1 rounded">smtp.office365.com</code>, port <code className="bg-[#EFECE6] px-1 rounded">587</code>. If your organization enforces MFA, generate an app password under Microsoft Account → Security instead of using your normal password.
+                    💡 Outlook/Office 365: host <code className="bg-[#F4F4F5] px-1 rounded">smtp.office365.com</code>, port <code className="bg-[#F4F4F5] px-1 rounded">587</code>. If your organization enforces MFA, generate an app password under Microsoft Account → Security instead of using your normal password.
                   </p>
 
                   {testEmailBox}
@@ -1043,9 +1277,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
               )}
 
               {(formData.emailProvider === 'resend' || formData.emailProvider === 'sendgrid' || formData.emailProvider === 'mailgun') && (
-                <div className="p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF] space-y-3">
+                <div className="p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#2D2926]">
+                    <span className="text-xs font-bold text-[#18181B]">
                       {formData.emailProvider === 'resend'
                         ? 'Resend API Key'
                         : formData.emailProvider === 'sendgrid'
@@ -1058,7 +1292,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                       API Key
                     </label>
                     <input
@@ -1074,9 +1308,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                       onChange={(e) =>
                         setFormData({ ...formData, emailApiKey: e.target.value })
                       }
-                      className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                      className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                     />
-                    <p className="text-[10px] text-[#8C847C] mt-1">
+                    <p className="text-[10px] text-[#71717A] mt-1">
                       {formData.emailProvider === 'resend'
                         ? '💡 Free tier: Grab an API key from resend.com to send automated emails directly to inboxes.'
                         : formData.emailProvider === 'sendgrid'
@@ -1088,7 +1322,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   {formData.emailProvider === 'mailgun' && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                       <div>
-                        <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                        <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                           Sending Domain
                         </label>
                         <input
@@ -1096,11 +1330,11 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           placeholder="mg.yourdomain.com"
                           value={formData.mailgunDomain || ''}
                           onChange={(e) => setFormData({ ...formData, mailgunDomain: e.target.value })}
-                          className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-mono"
+                          className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-mono"
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                        <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                           Region
                         </label>
                         <select
@@ -1108,7 +1342,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           onChange={(e) =>
                             setFormData({ ...formData, mailgunRegion: e.target.value as 'us' | 'eu' })
                           }
-                          className="w-full bg-white border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                          className="w-full bg-white border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
                         >
                           <option value="us">US</option>
                           <option value="eu">EU</option>
@@ -1120,14 +1354,16 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   {testEmailBox}
                 </div>
               )}
+              </div>
+              )}
             </div>
           )}
 
           {activeSubTab === 'bot' && (
             <div className="space-y-4">
-              <div className="p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF] space-y-3">
+              <div className="p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-[#2D2926]">Google Calendar Connection</span>
+                  <span className="text-xs font-bold text-[#18181B]">Google Calendar Connection</span>
                   {googleCalendar.status.connected && (
                     <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" />
@@ -1136,7 +1372,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   )}
                 </div>
 
-                <p className="text-[11px] text-[#7A7269] leading-relaxed">
+                <p className="text-[11px] text-[#71717A] leading-relaxed">
                   When a WhatsApp prospect confirms a meeting time with the AI booking bot, it creates a real event with a
                   Google Meet link on this calendar. Requires WhatsApp Cloud API to be configured above (the bot replies via
                   the same phone number).
@@ -1147,12 +1383,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                     Sign in to a workspace to connect Google Calendar for the AI booking bot.
                   </p>
                 ) : googleCalendar.status.connected ? (
-                  <div className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-[#E8E4DF]">
-                    <span className="text-xs text-[#4A443F]">{googleCalendar.status.connectedEmail || 'Connected'}</span>
+                  <div className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-[#E4E4E7]">
+                    <span className="text-xs text-[#3F3F46]">{googleCalendar.status.connectedEmail || 'Connected'}</span>
                     <button
                       type="button"
                       onClick={googleCalendar.connect}
-                      className="text-[11px] text-[#8C847C] hover:text-[#2D2926] underline"
+                      className="text-[11px] text-[#71717A] hover:text-[#18181B] underline"
                     >
                       Reconnect
                     </button>
@@ -1177,15 +1413,59 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                 )}
               </div>
 
-              <div className="p-4 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF] space-y-2">
-                <span className="text-xs font-bold text-[#2D2926]">WhatsApp Webhook (one-time Meta setup)</span>
-                <p className="text-[11px] text-[#7A7269] leading-relaxed">
-                  In your Meta App Dashboard → WhatsApp → Configuration, set the webhook callback URL to{' '}
-                  <code className="bg-white px-1 py-0.5 rounded border border-[#E8E4DF] text-[10px]">
-                    {typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook
-                  </code>{' '}
-                  and subscribe to the <strong>messages</strong> field. The verify token is set once by whoever deploys this
-                  app (server's <code className="bg-white px-1 py-0.5 rounded border border-[#E8E4DF] text-[10px]">WHATSAPP_VERIFY_TOKEN</code>).
+              <div className="p-4 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] space-y-3">
+                <span className="text-xs font-bold text-[#18181B]">WhatsApp Webhook (one-time Meta setup)</span>
+                <p className="text-[11px] text-[#71717A] leading-relaxed">
+                  Four steps, done once when you connect a new WhatsApp number:
+                </p>
+
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-[#71717A] mb-1">
+                      1. Callback URL — paste into Meta App → WhatsApp → Configuration → Webhook
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <code className="flex-1 bg-white px-2 py-1.5 rounded-lg border border-[#E4E4E7] text-[10px] truncate">
+                        {typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          copyToClipboard(`${typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook`, 'url')
+                        }
+                        className="p-1.5 rounded-lg border border-[#E4E4E7] bg-white text-[#3F3F46] hover:text-[#18181B] shrink-0"
+                        title="Copy"
+                      >
+                        {copiedField === 'url' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-semibold text-[#71717A] mb-1">
+                      2. Verify Token — same field, right below the Callback URL
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <code className="flex-1 bg-white px-2 py-1.5 rounded-lg border border-[#E4E4E7] text-[10px] truncate">
+                        {verifyToken === null ? 'Loading…' : verifyToken || 'Not configured yet'}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => verifyToken && copyToClipboard(verifyToken, 'token')}
+                        disabled={!verifyToken}
+                        className="p-1.5 rounded-lg border border-[#E4E4E7] bg-white text-[#3F3F46] hover:text-[#18181B] shrink-0 disabled:opacity-40"
+                        title="Copy"
+                      >
+                        {copiedField === 'token' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-[#71717A] leading-relaxed">
+                  3. Subscribe to the <strong>messages</strong> field, right below where you pasted those two values.
+                  <br />
+                  4. Back on the <strong>WhatsApp Dispatch</strong> tab, click <strong>Subscribe App to WABA</strong> — the one Meta step with no dashboard UI of its own.
                 </p>
               </div>
             </div>
@@ -1194,7 +1474,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           {activeSubTab === 'n8n' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-[#2D2926] mb-1">
+                <label className="block text-xs font-semibold text-[#18181B] mb-1">
                   Live n8n / Webhook URL (Optional)
                 </label>
                 <input
@@ -1204,9 +1484,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   onChange={(e) =>
                     setFormData({ ...formData, n8nWebhookUrl: e.target.value })
                   }
-                  className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-2 text-xs text-[#2D2926] font-mono"
+                  className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-xs text-[#18181B] font-mono"
                 />
-                <p className="text-[11px] text-[#8C847C] mt-1.5 leading-relaxed">
+                <p className="text-[11px] text-[#71717A] mt-1.5 leading-relaxed">
                   When configured, every automated batch message, calendar booking, and lead interaction will automatically post an HTTP payload to your n8n workflow or Zapier webhook.
                 </p>
               </div>
@@ -1214,17 +1494,17 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           )}
 
           {/* Footer Buttons */}
-          <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#F0ECE6]">
+          <div className="flex items-center justify-end gap-2 pt-4 border-t border-[#F4F4F5]">
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-2 text-xs font-medium text-[#6C635B] hover:bg-[#FAF8F5] rounded-xl border border-[#DDD6CB] transition-colors"
+              className="px-3.5 py-2 text-xs font-medium text-[#71717A] hover:bg-[#FAFAFA] rounded-xl border border-[#D4D4D8] transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-xl text-white bg-[#2D2926] hover:bg-[#1A1817] shadow-sm transition-all"
+              className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-xl text-white bg-[#18181B] hover:bg-[#09090B] shadow-sm transition-all"
             >
               {savedSuccess ? (
                 <>
@@ -1237,7 +1517,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+      </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };

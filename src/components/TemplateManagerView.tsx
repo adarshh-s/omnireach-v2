@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import {
   Settings2,
   Sparkles,
@@ -24,6 +25,7 @@ interface TemplateManagerViewProps {
   onUpdateSettings: (settings: CampaignSettings) => void;
   leads: Lead[];
   availableSlots: CalendarSlot[];
+  accessToken?: string | null;
 }
 
 export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
@@ -33,11 +35,13 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
   onUpdateSettings,
   leads,
   availableSlots,
+  accessToken,
 }) => {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
     templates[0]?.id || 'tpl-1'
   );
   const [isGeneratingWithAi, setIsGeneratingWithAi] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [copiedVar, setCopiedVar] = useState<string | null>(null);
 
   const activeTemplate =
@@ -61,7 +65,6 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
     { tag: '{{company}}', label: 'Client Company' },
     { tag: '{{email}}', label: 'Client Email' },
     { tag: '{{phone}}', label: 'Client Phone' },
-    { tag: '{{booking_link}}', label: 'Calendar Link' },
     { tag: '{{company_name}}', label: 'Your Company' },
     { tag: '{{sender_name}}', label: 'Your Name' },
   ];
@@ -80,9 +83,9 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
       name: 'New Custom Sequence',
       category: 'custom',
       channel: 'omnichannel',
-      whatsAppContent: `Hi {{first_name}} 👋! Reaching out from {{company_name}} regarding {{company}}. Would you have 5 mins for a quick chat? Grab a slot here: {{booking_link}}`,
+      whatsAppContent: `Hi {{first_name}} 👋! Reaching out from {{company_name}} regarding {{company}}. Would you have 5 mins for a quick chat? Just reply with a day/time that works for you!`,
       emailSubject: `Quick idea for {{company}}'s team`,
-      emailBody: `Hi {{first_name}},\n\nI hope you're having a great week.\n\nI'm reaching out from {{company_name}}. We'd love to show you how we help teams at {{company}} streamline their operations.\n\nPick a time on our calendar: {{booking_link}}\n\nBest,\n{{sender_name}}`,
+      emailBody: `Hi {{first_name}},\n\nI hope you're having a great week.\n\nI'm reaching out from {{company_name}}. We'd love to show you how we help teams at {{company}} streamline their operations.\n\nJust reply with a day/time that works for you and I'll get it on the calendar.\n\nBest,\n{{sender_name}}`,
     };
 
     onUpdateTemplates([...templates, newTpl]);
@@ -98,19 +101,25 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
 
   const handleGenerateWithAi = async () => {
     setIsGeneratingWithAi(true);
+    setAiError(null);
     try {
       const res = await fetch('/api/outreach/generate-message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           lead: sampleLead,
           settings: campaignSettings,
           availableSlots,
+          template: activeTemplate,
         }),
       });
 
+      const data = await res.json().catch(() => ({}));
+
       if (res.ok) {
-        const data = await res.json();
         if (data.whatsApp && data.emailSubject && data.emailBody && activeTemplate) {
           const updated = templates.map((t) =>
             t.id === activeTemplate.id
@@ -123,10 +132,18 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               : t
           );
           onUpdateTemplates(updated);
+        } else {
+          setAiError('The AI response was missing a message or email — nothing was changed.');
         }
+      } else {
+        setAiError(
+          res.status === 401
+            ? 'You need to be signed in to use AI rewrite.'
+            : data?.error || 'AI rewrite failed — please try again.'
+        );
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      setAiError(e?.message || 'Could not reach the server to generate a rewrite.');
     } finally {
       setIsGeneratingWithAi(false);
     }
@@ -141,18 +158,18 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Settings Header */}
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] p-5 shadow-xs">
+      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold text-[#2D2926]">
+              <h1 className="text-lg font-bold text-[#18181B]">
                 AI Copywriter & Outreach Sequence Studio
               </h1>
               <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#25D366]/15 text-[#128C7E]">
                 Gemini 3.7 Powered
               </span>
             </div>
-            <p className="text-xs text-[#7A7269] mt-0.5">
+            <p className="text-xs text-[#71717A] mt-0.5">
               Customize WhatsApp message copies and Cold Outreach emails with dynamic spreadsheet placeholder variables.
             </p>
           </div>
@@ -168,10 +185,14 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
           </button>
         </div>
 
+        {aiError && (
+          <p className="mt-2 text-xs font-medium text-rose-600">{aiError}</p>
+        )}
+
         {/* Sender & Company Settings Strip */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4 pt-4 border-t border-[#F0ECE6]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4 pt-4 border-t border-[#F4F4F5]">
           <div>
-            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
               Your Company Name
             </label>
             <input
@@ -180,12 +201,12 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               onChange={(e) =>
                 onUpdateSettings({ ...campaignSettings, companyName: e.target.value })
               }
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
             />
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
               Sender Full Name
             </label>
             <input
@@ -194,12 +215,12 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               onChange={(e) =>
                 onUpdateSettings({ ...campaignSettings, senderName: e.target.value })
               }
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
             />
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
               Sender Email Address
             </label>
             <input
@@ -208,12 +229,12 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               onChange={(e) =>
                 onUpdateSettings({ ...campaignSettings, senderEmail: e.target.value })
               }
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
             />
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
               Value Proposition / Pitch Notes
             </label>
             <input
@@ -222,9 +243,26 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               onChange={(e) =>
                 onUpdateSettings({ ...campaignSettings, serviceDescription: e.target.value })
               }
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
             />
           </div>
+        </div>
+
+        <div className="mt-3">
+          <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+            AI Tone & Focus Instructions
+          </label>
+          <textarea
+            rows={2}
+            value={campaignSettings.customInstructions || ''}
+            onChange={(e) => onUpdateSettings({ ...campaignSettings, customInstructions: e.target.value })}
+            placeholder="e.g. Keep messages conversational, clear, friendly, and focused on booking a quick call."
+            className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B] resize-none"
+          />
+          <p className="text-[10px] text-[#71717A] mt-1">
+            Guides the tone and priorities of AI-generated messages — e.g. "keep it casual," "lead with pricing," or
+            "focus on the free trial."
+          </p>
         </div>
       </div>
 
@@ -232,9 +270,9 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Template Selector Sidebar */}
         <div className="lg:col-span-4 space-y-3">
-          <div className="bg-white rounded-2xl border border-[#E8E4DF] p-4 shadow-xs">
-            <div className="flex items-center justify-between pb-3 border-b border-[#F0ECE6]">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-[#8C847C]">
+          <div className="bg-white rounded-2xl border border-[#E4E4E7] p-4 shadow-card">
+            <div className="flex items-center justify-between pb-3 border-b border-[#F4F4F5]">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-[#71717A]">
                 Saved Templates ({templates.length})
               </h2>
               <button
@@ -247,19 +285,24 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
             </div>
 
             <div className="mt-3 space-y-1.5">
-              {templates.map((tpl) => (
-                <button
+              {templates.map((tpl, i) => (
+                <motion.button
                   key={tpl.id}
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.2, delay: i * 0.03, ease: 'easeOut' }}
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.98 }}
                   onClick={() => setSelectedTemplateId(tpl.id)}
-                  className={`w-full text-left p-3 rounded-xl text-xs transition-all flex items-center justify-between ${
+                  className={`w-full text-left p-3 rounded-xl text-xs transition-colors flex items-center justify-between ${
                     tpl.id === activeTemplate?.id
-                      ? 'bg-[#25D366]/10 border border-[#25D366]/30 text-[#0F5132] font-semibold'
-                      : 'bg-[#FAF8F5] hover:bg-[#F2EFE9] border border-transparent text-[#5D554D]'
+                      ? 'bg-[#25D366]/10 border border-[#25D366]/30 text-[#0F6D42] font-semibold'
+                      : 'bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-transparent text-[#3F3F46]'
                   }`}
                 >
                   <div className="truncate pr-2">
                     <div className="font-semibold">{tpl.name}</div>
-                    <div className="text-[10px] text-[#8C847C] capitalize mt-0.5">
+                    <div className="text-[10px] text-[#71717A] capitalize mt-0.5">
                       {tpl.category} • {tpl.channel}
                     </div>
                   </div>
@@ -269,19 +312,19 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
                         e.stopPropagation();
                         handleDeleteTemplate(tpl.id);
                       }}
-                      className="p-1 text-[#8C847C] hover:text-[#D93025] transition-colors"
+                      className="p-1 text-[#71717A] hover:text-[#DC2626] transition-colors"
                       title="Delete template"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
-                </button>
+                </motion.button>
               ))}
             </div>
 
             {/* Variable Insertion Pills */}
-            <div className="mt-5 pt-4 border-t border-[#F0ECE6]">
-              <div className="text-[11px] font-semibold text-[#8C847C] uppercase tracking-wider mb-2">
+            <div className="mt-5 pt-4 border-t border-[#F4F4F5]">
+              <div className="text-[11px] font-semibold text-[#71717A] uppercase tracking-wider mb-2">
                 Click to Copy Spreadsheet Variables
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -289,7 +332,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
                   <button
                     key={v.tag}
                     onClick={() => handleCopyVar(v.tag)}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#FAF8F5] hover:bg-[#E8F5E9] border border-[#DDD6CB] text-[11px] font-mono text-[#2D2926] transition-colors"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#FAFAFA] hover:bg-[#128C7E]/10 border border-[#D4D4D8] text-[11px] font-mono text-[#18181B] transition-colors"
                     title={`Click to copy ${v.label}`}
                   >
                     <span>{v.tag}</span>
@@ -304,17 +347,17 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
         {/* Right: Active Template Editor & Live Lead Preview */}
         <div className="lg:col-span-8 space-y-4">
           {activeTemplate && (
-            <div className="bg-white rounded-2xl border border-[#E8E4DF] p-5 shadow-xs space-y-5">
+            <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card space-y-5">
               {/* Template Name */}
               <div>
-                <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                   Template Title
                 </label>
                 <input
                   type="text"
                   value={activeTemplate.name}
                   onChange={(e) => handleUpdateActiveTemplate('name', e.target.value)}
-                  className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2926]"
+                  className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs font-semibold text-[#18181B]"
                 />
               </div>
 
@@ -325,18 +368,18 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
                     <MessageSquare className="w-4 h-4 text-[#25D366]" />
                     <span>WhatsApp Message Template</span>
                   </label>
-                  <span className="text-[11px] text-[#8C847C]">Supports *bold*, emojis, variables</span>
+                  <span className="text-[11px] text-[#71717A]">Supports *bold*, emojis, variables</span>
                 </div>
                 <textarea
                   rows={5}
                   value={activeTemplate.whatsAppContent}
                   onChange={(e) => handleUpdateActiveTemplate('whatsAppContent', e.target.value)}
-                  className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-xl p-3 text-xs text-[#2D2926] focus:ring-1 focus:ring-[#25D366] font-sans leading-relaxed"
+                  className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-xl p-3 text-xs text-[#18181B] focus:ring-1 focus:ring-[#25D366] font-sans leading-relaxed"
                 />
               </div>
 
               {/* Email Subject & Body Editor */}
-              <div className="space-y-3 pt-3 border-t border-[#F0ECE6]">
+              <div className="space-y-3 pt-3 border-t border-[#F4F4F5]">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-[#1967D2] flex items-center gap-1.5">
                     <Mail className="w-4 h-4 text-[#4285F4]" />
@@ -345,37 +388,37 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                  <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                     Email Subject Line
                   </label>
                   <input
                     type="text"
                     value={activeTemplate.emailSubject}
                     onChange={(e) => handleUpdateActiveTemplate('emailSubject', e.target.value)}
-                    className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926] font-semibold"
+                    className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B] font-semibold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+                  <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                     Email Body
                   </label>
                   <textarea
                     rows={7}
                     value={activeTemplate.emailBody}
                     onChange={(e) => handleUpdateActiveTemplate('emailBody', e.target.value)}
-                    className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-xl p-3 text-xs text-[#2D2926] focus:ring-1 focus:ring-[#4285F4] font-sans leading-relaxed"
+                    className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-xl p-3 text-xs text-[#18181B] focus:ring-1 focus:ring-[#4285F4] font-sans leading-relaxed"
                   />
                 </div>
               </div>
 
               {/* Live Render Preview on Sample Lead */}
-              <div className="pt-4 border-t border-[#F0ECE6] space-y-2">
-                <div className="flex items-center gap-2 text-xs font-bold text-[#2D2926]">
-                  <Eye className="w-3.5 h-3.5 text-[#8C847C]" />
+              <div className="pt-4 border-t border-[#F4F4F5] space-y-2">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#18181B]">
+                  <Eye className="w-3.5 h-3.5 text-[#71717A]" />
                   <span>Live Render Preview (Sample Contact: {sampleLead.name})</span>
                 </div>
-                <div className="p-3.5 bg-[#FAF9F6] rounded-xl border border-[#E8E4DF] text-xs text-[#4A443F] whitespace-pre-line font-sans">
+                <div className="p-3.5 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] text-xs text-[#3F3F46] whitespace-pre-line font-sans">
                   {interpolateTemplate(
                     activeTemplate.whatsAppContent,
                     sampleLead,

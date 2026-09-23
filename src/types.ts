@@ -38,6 +38,9 @@ export interface Lead {
   meetingDate?: string;
   meetingTime?: string;
   notes?: string;
+  tags?: string[];
+  /** YYYY-MM-DD — a manual reminder date, unrelated to AI-booked meetings. */
+  followUpDate?: string;
   lastContacted?: string;
   channelUsed?: 'omnichannel' | 'whatsapp' | 'email' | 'none';
   isValidPhone: boolean;
@@ -100,6 +103,13 @@ export interface ChannelApiSettings {
   twilioFromNumber?: string;
   whatsappCloudApiKey?: string;
   whatsappCloudPhoneId?: string;
+  // Shown right next to Phone Number ID on Meta's WhatsApp -> API Setup page. Only needed
+  // to click "Subscribe App to WABA" in Settings — not used for sending.
+  whatsappBusinessAccountId?: string;
+  // From this org's own Meta App Dashboard -> Settings -> Basic -> App Secret. Verifies
+  // the X-Hub-Signature-256 header on inbound webhooks are genuinely from *this* org's
+  // Meta App — each org brings their own Meta App, so a single shared secret can't work.
+  whatsappAppSecret?: string;
 
   // Free-form text (works only within the 24h customer-service window) vs
   // an approved Message Template (required to initiate cold outreach)
@@ -109,6 +119,12 @@ export interface ChannelApiSettings {
   whatsappTemplateName?: string;
   whatsappTemplateLanguage?: string; // e.g. 'en_US'
   whatsappTemplateVariables?: string[]; // values for {{1}}, {{2}}... — may contain {{name}}/{{company}}/etc tokens
+
+  // Meta caps unique WhatsApp conversations per rolling 24h based on the number's
+  // messaging tier (250 -> 1K -> 10K -> 100K as quality rating/volume proves out).
+  // A batch larger than this gets auto-split across days by BatchCampaignRunner
+  // rather than blasted all at once and risking the number's quality rating.
+  safeDailyWhatsAppLimit?: number;
 
   // Twilio Content Template (WhatsApp)
   twilioContentSid?: string;

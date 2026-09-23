@@ -96,6 +96,7 @@ export interface RecipientContext {
   clientName?: string;
   clientCompany?: string;
   clientEmail?: string;
+  clientCountry?: string;
 }
 
 /**
@@ -108,7 +109,7 @@ export async function getContextFromCampaignRecipientId(campaignRecipientId: str
   if (!supabase) return null;
   const { data } = await supabase
     .from('campaign_recipients')
-    .select('org_id, client_id, clients(name, company, email)')
+    .select('org_id, client_id, clients(name, company, email, country)')
     .eq('id', campaignRecipientId)
     .maybeSingle();
   if (!data) return null;
@@ -119,6 +120,7 @@ export async function getContextFromCampaignRecipientId(campaignRecipientId: str
     clientName: client?.name,
     clientCompany: client?.company,
     clientEmail: client?.email,
+    clientCountry: client?.country,
   };
 }
 
@@ -126,9 +128,9 @@ export async function getContextFromCampaignRecipientId(campaignRecipientId: str
 export async function getContextFromClientId(clientId: string): Promise<RecipientContext | null> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
-  const { data } = await supabase.from('clients').select('id, org_id, name, company, email').eq('id', clientId).maybeSingle();
+  const { data } = await supabase.from('clients').select('id, org_id, name, company, email, country').eq('id', clientId).maybeSingle();
   if (!data) return null;
-  return { orgId: data.org_id, clientId: data.id, clientName: data.name, clientCompany: data.company, clientEmail: data.email };
+  return { orgId: data.org_id, clientId: data.id, clientName: data.name, clientCompany: data.company, clientEmail: data.email, clientCountry: data.country };
 }
 
 export async function markClientOptedOut(orgId: string, clientId: string): Promise<void> {

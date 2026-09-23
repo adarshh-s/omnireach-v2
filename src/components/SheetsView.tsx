@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
 import {
   Table,
   Plus,
@@ -24,8 +25,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { Lead, LeadStatus, ChannelDeliveryStatus } from '../types';
-import { exportLeadsToExcel } from '../utils/excelParser';
-import { generateWhatsAppLink, generateMailtoLink } from '../utils/outreachEngine';
+import { exportLeadsToExcel, sanitizePhoneNumber } from '../utils/excelParser';
 
 interface SheetsViewProps {
   leads: Lead[];
@@ -36,6 +36,8 @@ interface SheetsViewProps {
   onSelectLeadForSimulator: (leadId: string) => void;
   onOpenExcelUpload: () => void;
   onStartCampaignWithSelected?: (selectedIds: string[]) => void;
+  /** Falls back to +91 (matching excelParser's own default) when not provided. */
+  defaultCountryCode?: string;
 }
 
 export const SheetsView: React.FC<SheetsViewProps> = ({
@@ -47,6 +49,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   onSelectLeadForSimulator,
   onOpenExcelUpload,
   onStartCampaignWithSelected,
+  defaultCountryCode,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
@@ -69,13 +72,16 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
     e.preventDefault();
     if (!newLead.name) return;
 
+    // Previously hardcoded +91 whenever the typed number had no leading "+" — a lead
+    // manually added with Country set to e.g. "United States" and a bare 10-digit number
+    // silently got saved as an Indian number, and any WhatsApp send went to a real, wrong
+    // number. Reuses the same country-aware sanitizer the Excel import path already uses.
+    const { formatted, isValid: isPhoneValid } = sanitizePhoneNumber(newLead.phone, defaultCountryCode || '+91');
     const lead: Lead = {
       id: `lead-${Date.now()}`,
       name: newLead.name,
       company: newLead.company || 'Prospective Client',
-      phone: newLead.phone.startsWith('+')
-        ? newLead.phone
-        : `+91${newLead.phone.replace(/\D/g, '')}`,
+      phone: formatted || newLead.phone,
       rawPhone: newLead.phone,
       email: newLead.email,
       country: newLead.country || undefined,
@@ -84,8 +90,8 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       emailStatus: 'Pending',
       notes: newLead.notes || '',
       lastContacted: '',
-      isValidPhone: Boolean(newLead.phone && newLead.phone.length >= 7),
-      isValidEmail: Boolean(newLead.email && newLead.email.includes('@')),
+      isValidPhone: isPhoneValid,
+      isValidEmail: Boolean(newLead.email && newLead.email.includes('@') && newLead.email.includes('.')),
     };
 
     onAddLead(lead);
@@ -96,15 +102,42 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   const handleEditSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingLead) return;
-    onUpdateLead(editingLead);
+    // Re-derive validity from whatever phone/email the user just typed — these flags are
+    // what the batch outreach engine checks before sending, so a lead edited to add an
+    // email/phone that was previously missing must be re-validated here, not left stuck
+    // on the isValidPhone/isValidEmail computed back when the lead was first imported.
+    const { formatted, isValid: isPhoneValid } = sanitizePhoneNumber(editingLead.phone, defaultCountryCode || '+91');
+    onUpdateLead({
+      ...editingLead,
+      phone: formatted || editingLead.phone,
+      isValidPhone: isPhoneValid,
+      isValidEmail: Boolean(editingLead.email && editingLead.email.includes('@') && editingLead.email.includes('.')),
+    });
     setEditingLead(null);
   };
 
+  // Deleting a selected lead (or replacing the whole list via import) used to leave its id
+  // in selectedIds forever — the "N leads selected" bar kept counting leads that no longer
+  // exist, and a bulk action would silently include stale ids. Prune on every leads change.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const liveIds = new Set(leads.map((l) => l.id));
+      const next = prev.filter((id) => liveIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [leads]);
+
   const toggleSelectAll = () => {
-    if (selectedIds.length === filteredLeads.length) {
-      setSelectedIds([]);
+    // Comparing lengths alone was wrong once the filter changes: switching to a different
+    // subset that happens to be the same size showed the header checkbox as "all selected"
+    // even though none of the currently-visible rows were actually selected. Compare the
+    // actual id sets instead.
+    const filteredIds = filteredLeads.map((l) => l.id);
+    const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.includes(id));
+    if (allFilteredSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !filteredIds.includes(id)));
     } else {
-      setSelectedIds(filteredLeads.map((l) => l.id));
+      setSelectedIds((prev) => [...new Set([...prev, ...filteredIds])]);
     }
   };
 
@@ -112,36 +145,6 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
-  };
-
-  // Direct single actions
-  const handleQuickWhatsApp = (lead: Lead) => {
-    const text = lead.whatsAppMessage || `Hi ${lead.name.split(' ')[0]}! Reaching out regarding a quick demo. Let me know if you'd like a quick overview!`;
-    const url = generateWhatsAppLink(lead.phone, text);
-    window.open(url, '_blank');
-
-    onUpdateLead({
-      ...lead,
-      status: 'Contacted',
-      whatsAppStatus: 'Delivered',
-      channelUsed: 'whatsapp',
-      lastContacted: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-    });
-  };
-
-  const handleQuickEmail = (lead: Lead) => {
-    const subject = lead.emailSubject || `Introduction & 10-min Demo for ${lead.company}`;
-    const body = lead.emailBody || `Hi ${lead.name.split(' ')[0]},\n\nI hope you're doing well.\n\nI'm reaching out regarding automated client outreach solutions for ${lead.company}.\n\nBest regards`;
-    const url = generateMailtoLink(lead.email, subject, body);
-    window.open(url, '_blank');
-
-    onUpdateLead({
-      ...lead,
-      status: 'Contacted',
-      emailStatus: 'Sent',
-      channelUsed: 'email',
-      lastContacted: new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-    });
   };
 
   const filteredLeads = leads.filter((l) => {
@@ -169,18 +172,18 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   return (
     <div className="space-y-5">
       {/* Top Toolbar */}
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] p-4 sm:p-5 shadow-xs">
+      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-4 sm:p-5 shadow-card">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-[#2D2926]">
+              <h2 className="text-base font-bold text-[#18181B]">
                 Client Outreach Spreadsheet & Lead Records
               </h2>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#FAF8F5] border border-[#DDD6CB] text-[#6C635B]">
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#FAFAFA] border border-[#D4D4D8] text-[#71717A]">
                 {leads.length} Total Rows
               </span>
             </div>
-            <p className="text-xs text-[#7A7269] mt-0.5">
+            <p className="text-xs text-[#71717A] mt-0.5">
               Live two-way synced contact records. Ingest Excel sheets, monitor WhatsApp & Email delivery status, and launch targeted sequences.
             </p>
           </div>
@@ -190,7 +193,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               id="sheet-add-lead-btn"
               onClick={() => setIsAddingLead(!isAddingLead)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAF8F5] hover:bg-[#F2EFE9] border border-[#DDD6CB] text-[#2D2926] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Lead</span>
@@ -199,25 +202,25 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               id="sheet-import-excel-btn"
               onClick={onOpenExcelUpload}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAF8F5] hover:bg-[#F2EFE9] border border-[#DDD6CB] text-[#2D2926] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
             >
-              <Upload className="w-3.5 h-3.5 text-[#8C847C]" />
+              <Upload className="w-3.5 h-3.5 text-[#71717A]" />
               <span>Import Sheet</span>
             </button>
 
             <button
               id="sheet-export-excel-btn"
               onClick={() => exportLeadsToExcel(leads)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAF8F5] hover:bg-[#F2EFE9] border border-[#DDD6CB] text-[#2D2926] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
             >
-              <Download className="w-3.5 h-3.5 text-[#8C847C]" />
+              <Download className="w-3.5 h-3.5 text-[#71717A]" />
               <span>Export Excel</span>
             </button>
 
             <button
               id="sheet-reset-btn"
               onClick={onResetLeads}
-              className="p-2 text-xs font-semibold rounded-lg text-[#8C847C] hover:text-[#2D2926] hover:bg-[#F2EFE9] border border-[#DDD6CB] transition-colors"
+              className="p-2 text-xs font-semibold rounded-lg text-[#71717A] hover:text-[#18181B] hover:bg-[#F4F4F5] border border-[#D4D4D8] transition-colors"
               title="Reset to initial sample leads"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -226,17 +229,17 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
         </div>
 
         {/* Filters & Search Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mt-4 pt-4 border-t border-[#F0ECE6]">
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mt-4 pt-4 border-t border-[#F4F4F5]">
           {/* Search Box */}
           <div className="sm:col-span-6 relative">
-            <Search className="w-4 h-4 text-[#8C847C] absolute left-3 top-2.5" />
+            <Search className="w-4 h-4 text-[#71717A] absolute left-3 top-2.5" />
             <input
               id="sheet-search-input"
               type="text"
               placeholder="Search by name, company, phone, or email..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg pl-9 pr-3 py-2 text-xs text-[#2D2926] placeholder-[#A69F96] focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg pl-9 pr-3 py-2 text-xs text-[#18181B] placeholder-[#A1A1AA] focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366]"
             />
           </div>
 
@@ -246,7 +249,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               id="sheet-status-filter"
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-2 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-xs text-[#18181B]"
             >
               <option value="ALL">All Lead Statuses</option>
               <option value="PENDING">Pending Outreach</option>
@@ -261,7 +264,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               id="sheet-channel-filter"
               value={filterChannel}
               onChange={(e) => setFilterChannel(e.target.value)}
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-2 text-xs text-[#2D2926]"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-xs text-[#18181B]"
             >
               <option value="ALL">All Delivery Statuses</option>
               <option value="WA_SENT">WhatsApp Delivered</option>
@@ -273,7 +276,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
         {/* Batch Selected Actions Bar */}
         {selectedIds.length > 0 && (
-          <div className="mt-3 p-2.5 bg-[#E8F5E9] border border-[#C8E6C9] rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="mt-3 p-2.5 bg-[#128C7E]/10 border border-[#128C7E]/30 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs">
             <span className="font-semibold text-[#128C7E]">
               {selectedIds.length} leads selected
             </span>
@@ -281,7 +284,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               {onStartCampaignWithSelected && (
                 <button
                   onClick={() => onStartCampaignWithSelected(selectedIds)}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#25D366] text-white font-semibold text-xs shadow-xs hover:bg-[#1EBE5D]"
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#25D366] text-white font-semibold text-xs shadow-xs hover:bg-[#25D366]"
                 >
                   <Send className="w-3 h-3" />
                   <span>Launch Sequence for Selected</span>
@@ -289,7 +292,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               )}
               <button
                 onClick={() => setSelectedIds([])}
-                className="px-2.5 py-1.5 rounded-lg bg-white text-[#5D554D] font-medium text-xs hover:bg-[#F2EFE9] border border-[#C8E6C9]"
+                className="px-2.5 py-1.5 rounded-lg bg-white text-[#3F3F46] font-medium text-xs hover:bg-[#F4F4F5] border border-[#128C7E]/30"
               >
                 Clear Selection
               </button>
@@ -302,14 +305,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {isAddingLead && (
         <form
           onSubmit={handleAddSubmit}
-          className="bg-white rounded-2xl border border-[#25D366]/40 p-5 shadow-sm space-y-4"
+          className="bg-white rounded-2xl border border-[#25D366]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-[#2D2926]">Add New Client Contact</h3>
+            <h3 className="text-sm font-bold text-[#18181B]">Add New Client Contact</h3>
             <button
               type="button"
               onClick={() => setIsAddingLead(false)}
-              className="text-xs text-[#8C847C] hover:text-[#2D2926]"
+              className="text-xs text-[#71717A] hover:text-[#18181B]"
             >
               Cancel
             </button>
@@ -317,7 +320,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                 Full Name *
               </label>
               <input
@@ -326,11 +329,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. John Doe"
                 value={newLead.name}
                 onChange={(e) => setNewLead({ ...newLead, name: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                 Company Name
               </label>
               <input
@@ -338,11 +341,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. Acme Corp"
                 value={newLead.company}
                 onChange={(e) => setNewLead({ ...newLead, company: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                 WhatsApp Phone (E.164) *
               </label>
               <input
@@ -351,11 +354,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. +919876543210"
                 value={newLead.phone}
                 onChange={(e) => setNewLead({ ...newLead, phone: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                 Email Address
               </label>
               <input
@@ -363,11 +366,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. john@acme.com"
                 value={newLead.email}
                 onChange={(e) => setNewLead({ ...newLead, email: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
                 Country
               </label>
               <input
@@ -375,7 +378,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. United Arab Emirates"
                 value={newLead.country}
                 onChange={(e) => setNewLead({ ...newLead, country: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs text-[#2D2926]"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
               />
             </div>
           </div>
@@ -384,13 +387,13 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               type="button"
               onClick={() => setIsAddingLead(false)}
-              className="px-3 py-1.5 text-xs text-[#6C635B] hover:bg-[#FAF8F5] rounded-lg border border-[#DDD6CB]"
+              className="px-3 py-1.5 text-xs text-[#71717A] hover:bg-[#FAFAFA] rounded-lg border border-[#D4D4D8]"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-1.5 text-xs font-semibold text-white bg-[#25D366] hover:bg-[#1EBE5D] rounded-lg shadow-xs"
+              className="px-4 py-1.5 text-xs font-semibold text-white bg-[#25D366] hover:bg-[#25D366] rounded-lg shadow-xs"
             >
               Save Contact
             </button>
@@ -402,14 +405,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {editingLead && (
         <form
           onSubmit={handleEditSubmit}
-          className="bg-white rounded-2xl border border-[#4285F4]/40 p-5 shadow-sm space-y-4"
+          className="bg-white rounded-2xl border border-[#4285F4]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-[#2D2926]">Edit Lead: {editingLead.name}</h3>
+            <h3 className="text-sm font-bold text-[#18181B]">Edit Lead: {editingLead.name}</h3>
             <button
               type="button"
               onClick={() => setEditingLead(null)}
-              className="text-xs text-[#8C847C] hover:text-[#2D2926]"
+              className="text-xs text-[#71717A] hover:text-[#18181B]"
             >
               Cancel
             </button>
@@ -417,73 +420,103 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Name</label>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Name</label>
               <input
                 type="text"
                 value={editingLead.name}
                 onChange={(e) => setEditingLead({ ...editingLead, name: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Company</label>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Company</label>
               <input
                 type="text"
                 value={editingLead.company}
                 onChange={(e) => setEditingLead({ ...editingLead, company: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Phone</label>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Phone</label>
               <input
                 type="text"
                 value={editingLead.phone}
                 onChange={(e) => setEditingLead({ ...editingLead, phone: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Email</label>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Email</label>
               <input
                 type="email"
                 value={editingLead.email}
                 onChange={(e) => setEditingLead({ ...editingLead, email: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Country</label>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Country</label>
               <input
                 type="text"
                 value={editingLead.country || ''}
                 onChange={(e) => setEditingLead({ ...editingLead, country: e.target.value })}
-                className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-[#8C847C] mb-1">Notes / Remarks</label>
+            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Notes / Remarks</label>
             <input
               type="text"
               value={editingLead.notes || ''}
               onChange={(e) => setEditingLead({ ...editingLead, notes: e.target.value })}
-              className="w-full bg-[#FAF8F5] border border-[#DDD6CB] rounded-lg px-3 py-1.5 text-xs"
+              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
             />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Tags (comma-separated)</label>
+              <input
+                type="text"
+                value={(editingLead.tags || []).join(', ')}
+                onChange={(e) =>
+                  setEditingLead({
+                    ...editingLead,
+                    tags: e.target.value
+                      .split(',')
+                      .map((t) => t.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder="hot lead, enterprise"
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Follow-up Date</label>
+              <input
+                type="date"
+                value={editingLead.followUpDate || ''}
+                onChange={(e) => setEditingLead({ ...editingLead, followUpDate: e.target.value || undefined })}
+                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+              />
+            </div>
           </div>
 
           <div className="flex justify-end gap-2">
             <button
               type="button"
               onClick={() => setEditingLead(null)}
-              className="px-3 py-1.5 text-xs text-[#6C635B] hover:bg-[#FAF8F5] rounded-lg border border-[#DDD6CB]"
+              className="px-3 py-1.5 text-xs text-[#71717A] hover:bg-[#FAFAFA] rounded-lg border border-[#D4D4D8]"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-1.5 text-xs font-semibold text-white bg-[#2D2926] hover:bg-[#1A1817] rounded-lg shadow-xs"
+              className="px-4 py-1.5 text-xs font-semibold text-white bg-[#18181B] hover:bg-[#09090B] rounded-lg shadow-xs"
             >
               Update Lead
             </button>
@@ -492,18 +525,18 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       )}
 
       {/* Main Leads Table */}
-      <div className="bg-white rounded-2xl border border-[#E8E4DF] shadow-xs overflow-hidden">
+      <div className="bg-white rounded-2xl border border-[#E4E4E7] shadow-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
-              <tr className="bg-[#FAF8F5] border-b border-[#E8E4DF] text-[#7A7269] font-semibold">
+              <tr className="bg-[#FAFAFA] border-b border-[#E4E4E7] text-[#71717A] font-semibold">
                 <th className="py-3 px-3.5 w-10 text-center">
                   <button
                     onClick={toggleSelectAll}
-                    className="text-[#8C847C] hover:text-[#2D2926]"
+                    className="text-[#71717A] hover:text-[#18181B]"
                     title="Select All"
                   >
-                    {selectedIds.length === filteredLeads.length && filteredLeads.length > 0 ? (
+                    {filteredLeads.length > 0 && filteredLeads.every((l) => selectedIds.includes(l.id)) ? (
                       <CheckSquare className="w-4 h-4 text-[#25D366]" />
                     ) : (
                       <Square className="w-4 h-4" />
@@ -520,15 +553,18 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 <th className="py-3 px-3 text-right">Quick Dispatch & Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#F0ECE6]">
+            <tbody className="divide-y divide-[#F4F4F5]">
               {filteredLeads.length > 0 ? (
                 filteredLeads.map((lead) => {
                   const isSelected = selectedIds.includes(lead.id);
 
                   return (
-                    <tr
+                    <motion.tr
                       key={lead.id}
-                      className={`hover:bg-[#FAF9F6] transition-colors ${
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.2 }}
+                      className={`hover:bg-[#FAFAFA] transition-colors ${
                         isSelected ? 'bg-[#25D366]/5' : ''
                       }`}
                     >
@@ -536,7 +572,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       <td className="py-3 px-3.5 text-center">
                         <button
                           onClick={() => toggleSelectLead(lead.id)}
-                          className="text-[#8C847C] hover:text-[#2D2926]"
+                          className="text-[#71717A] hover:text-[#18181B]"
                         >
                           {isSelected ? (
                             <CheckSquare className="w-4 h-4 text-[#25D366]" />
@@ -548,34 +584,57 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
                       {/* Name & Company */}
                       <td className="py-3 px-3">
-                        <div className="font-semibold text-[#2D2926]">{lead.name}</div>
-                        <div className="text-[11px] text-[#7A7269]">
+                        <div className="font-semibold text-[#18181B]">{lead.name}</div>
+                        <div className="text-[11px] text-[#71717A]">
                           {lead.company}
-                          {lead.country && <span className="text-[#A69F96]"> · {lead.country}</span>}
+                          {lead.country && <span className="text-[#A1A1AA]"> · {lead.country}</span>}
                         </div>
+                        {(lead.tags?.length || lead.followUpDate) && (
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            {lead.tags?.map((tag) => (
+                              <span
+                                key={tag}
+                                className="px-1.5 py-0.5 rounded-full bg-[#4285F4]/10 text-[#1967D2] text-[10px] font-medium"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {lead.followUpDate && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
+                                  new Date(lead.followUpDate) <= new Date()
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-[#F4F4F5] text-[#71717A]'
+                                }`}
+                              >
+                                Follow up {lead.followUpDate}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Phone */}
                       <td className="py-3 px-3">
-                        <div className="font-mono text-[#2D2926] flex items-center gap-1">
+                        <div className="font-mono text-[#18181B] flex items-center gap-1">
                           <span>{lead.phone}</span>
                           {lead.isValidPhone ? (
                             <span className="w-1.5 h-1.5 rounded-full bg-[#25D366]" title="Valid E.164"></span>
                           ) : (
-                            <span className="text-[10px] text-[#D93025]">Invalid</span>
+                            <span className="text-[10px] text-[#DC2626]">Invalid</span>
                           )}
                         </div>
                       </td>
 
                       {/* Email */}
                       <td className="py-3 px-3">
-                        <div className="text-[#4A443F] truncate max-w-[180px]">{lead.email}</div>
+                        <div className="text-[#3F3F46] truncate max-w-[180px]">{lead.email}</div>
                       </td>
 
                       {/* WhatsApp Status */}
                       <td className="py-3 px-3">
                         {lead.whatsAppStatus === 'Pending' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F5F2EB] text-[#7A7269] border border-[#DDD6CB]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F4F4F5] text-[#71717A] border border-[#D4D4D8]">
                             <Clock className="w-2.5 h-2.5" /> Pending
                           </span>
                         )}
@@ -587,9 +646,22 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                             <Clock className="w-2.5 h-2.5" /> Scheduled
                           </span>
                         )}
-                        {lead.whatsAppStatus === 'Delivered' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#E8F5E9] text-[#128C7E] border border-[#C8E6C9]">
-                            <CheckCircle2 className="w-2.5 h-2.5 text-[#25D366]" /> Delivered
+                        {lead.whatsAppStatus === 'Sending' && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
+                            <Send className="w-2.5 h-2.5" /> Sending
+                          </span>
+                        )}
+                        {lead.whatsAppStatus === 'Sent' && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]"
+                            title="Accepted by WhatsApp — will flip to Delivered once confirmed"
+                          >
+                            <Send className="w-2.5 h-2.5" /> Sent
+                          </span>
+                        )}
+                        {(lead.whatsAppStatus === 'Delivered' || lead.whatsAppStatus === 'Read') && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#128C7E]/10 text-[#128C7E] border border-[#128C7E]/30">
+                            <CheckCircle2 className="w-2.5 h-2.5 text-[#25D366]" /> {lead.whatsAppStatus === 'Read' ? 'Read' : 'Delivered'}
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Replied' && (
@@ -598,7 +670,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Failed' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FDE8E8] text-[#9B1C1C] border border-[#F8B4B4]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA]">
                             <AlertTriangle className="w-2.5 h-2.5" /> Failed
                           </span>
                         )}
@@ -607,7 +679,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       {/* Email Status */}
                       <td className="py-3 px-3">
                         {lead.emailStatus === 'Pending' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F5F2EB] text-[#7A7269] border border-[#DDD6CB]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F4F4F5] text-[#71717A] border border-[#D4D4D8]">
                             <Clock className="w-2.5 h-2.5" /> Pending
                           </span>
                         )}
@@ -620,7 +692,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           </span>
                         )}
                         {(lead.emailStatus === 'Sent' || lead.emailStatus === 'Delivered') && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#E8F0FE] text-[#1967D2] border border-[#D2E3FC]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#4285F4]/10 text-[#1967D2] border border-[#4285F4]/10">
                             <Mail className="w-2.5 h-2.5 text-[#4285F4]" /> Sent
                           </span>
                         )}
@@ -630,7 +702,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           </span>
                         )}
                         {lead.emailStatus === 'Failed' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FDE8E8] text-[#9B1C1C] border border-[#F8B4B4]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA]">
                             <AlertTriangle className="w-2.5 h-2.5" /> Failed
                           </span>
                         )}
@@ -645,44 +717,24 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                         ) : lead.status === 'Contacted' ? (
                           <span className="text-[11px] font-medium text-[#128C7E]">Contacted</span>
                         ) : (
-                          <span className="text-[11px] text-[#8C847C]">{lead.status}</span>
+                          <span className="text-[11px] text-[#71717A]">{lead.status}</span>
                         )}
                       </td>
 
                       {/* Last Contacted */}
-                      <td className="py-3 px-3 text-[#7A7269] text-[11px]">
+                      <td className="py-3 px-3 text-[#71717A] text-[11px]">
                         {lead.lastContacted || '—'}
                       </td>
 
                       {/* Actions */}
                       <td className="py-3 px-3 text-right">
                         <div className="inline-flex items-center gap-1">
-                          {/* Quick WhatsApp Send */}
-                          <button
-                            id={`quick-wa-${lead.id}`}
-                            onClick={() => handleQuickWhatsApp(lead)}
-                            className="p-1.5 text-[#128C7E] hover:bg-[#E8F5E9] rounded-md transition-colors"
-                            title="Direct Send via WhatsApp"
-                          >
-                            <MessageSquare className="w-3.5 h-3.5 text-[#25D366]" />
-                          </button>
-
-                          {/* Quick Email Send */}
-                          <button
-                            id={`quick-em-${lead.id}`}
-                            onClick={() => handleQuickEmail(lead)}
-                            className="p-1.5 text-[#1967D2] hover:bg-[#E8F0FE] rounded-md transition-colors"
-                            title="Direct Send via Email"
-                          >
-                            <Mail className="w-3.5 h-3.5 text-[#4285F4]" />
-                          </button>
-
-                          {/* Open in Simulator */}
+                          {/* Send — routes through the real AI-personalized, tracked dispatch path */}
                           <button
                             id={`sim-${lead.id}`}
                             onClick={() => onSelectLeadForSimulator(lead.id)}
-                            className="p-1.5 text-[#8C847C] hover:text-[#2D2926] hover:bg-[#FAF8F5] rounded-md transition-colors"
-                            title="Open in Chat & Email Previewer"
+                            className="p-1.5 text-[#128C7E] hover:bg-[#128C7E]/10 rounded-md transition-colors"
+                            title="Send Message"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                           </button>
@@ -690,7 +742,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           {/* Edit */}
                           <button
                             onClick={() => setEditingLead(lead)}
-                            className="p-1.5 text-[#8C847C] hover:text-[#2D2926] hover:bg-[#FAF8F5] rounded-md transition-colors"
+                            className="p-1.5 text-[#71717A] hover:text-[#18181B] hover:bg-[#FAFAFA] rounded-md transition-colors"
                             title="Edit Contact"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
@@ -699,19 +751,19 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           {/* Delete */}
                           <button
                             onClick={() => onDeleteLead(lead.id)}
-                            className="p-1.5 text-[#8C847C] hover:text-[#D93025] hover:bg-[#FDE8E8] rounded-md transition-colors"
+                            className="p-1.5 text-[#71717A] hover:text-[#DC2626] hover:bg-[#FEF2F2] rounded-md transition-colors"
                             title="Delete Contact"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </td>
-                    </tr>
+                    </motion.tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-xs text-[#8C847C]">
+                  <td colSpan={9} className="py-10 text-center text-xs text-[#71717A]">
                     No contacts found matching the search filter.
                   </td>
                 </tr>

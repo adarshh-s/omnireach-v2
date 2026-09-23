@@ -34,7 +34,7 @@ export function parseMultipartFields(req: IncomingMessage): Promise<Record<strin
   });
 }
 
-function readRawBody(req: IncomingMessage): Promise<string> {
+export function readRawBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk) => chunks.push(chunk));

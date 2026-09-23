@@ -1,9 +1,15 @@
-import { verifyWhatsAppWebhook, processWhatsAppWebhookPayload } from '../../lib/whatsappWebhookHandler.js';
+import type { IncomingMessage } from 'http';
+import { readRawBody } from '../../lib/parseMultipart.js';
+import {
+  verifyWhatsAppWebhook,
+  verifyWhatsAppSignature,
+  resolveWhatsAppSignatureSecret,
+  processWhatsAppWebhookPayload,
+} from '../../lib/whatsappWebhookHandler.js';
 
-interface ApiRequest {
+interface ApiRequest extends IncomingMessage {
   method?: string;
   query?: Record<string, unknown>;
-  body?: unknown;
 }
 
 interface ApiResponse {
@@ -28,7 +34,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     // drops the processing mid-flight. Meta's webhook timeout is generous enough (~20s)
     // to tolerate the extra latency from the AI call + WhatsApp send happening first.
     try {
-      await processWhatsAppWebhookPayload(req.body);
+      const rawBody = await readRawBody(req);
+      const signature = req.headers['x-hub-signature-256'] as string | undefined;
+      const secret = await resolveWhatsAppSignatureSecret(rawBody);
+      if (!verifyWhatsAppSignature(rawBody, signature, secret)) {
+        console.warn('[WhatsApp Webhook] Signature verification failed — rejecting payload.');
+        return res.status(403).json({ error: 'Invalid signature' });
+      }
+      await processWhatsAppWebhookPayload(JSON.parse(rawBody || '{}'));
     } catch (err) {
       console.error('[WhatsApp Webhook] Processing error:', err);
     }

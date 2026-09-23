@@ -14,6 +14,8 @@ import { createServer as createViteServer } from 'vite';
 import {
   seedConversationFromLead,
   verifyWhatsAppWebhook,
+  verifyWhatsAppSignature,
+  resolveWhatsAppSignatureSecret,
   processWhatsAppWebhookPayload,
 } from './lib/whatsappWebhookHandler';
 import { getSupabaseAdmin } from './lib/supabaseAdmin';
@@ -24,6 +26,9 @@ import { verifyEmailWebhookToken, processInboundEmail, seedEmailConversationFrom
 import { sendCampaignWhatsAppMessage } from './lib/whatsappCampaignSender';
 import { sendEmailViaOrgProvider } from './lib/emailSender';
 import { getOrgChannelSettings } from './lib/orgSettings';
+import { generateViaGroq } from './lib/groqClient';
+import { subscribeAppToWaba } from './lib/whatsappSubscribe';
+import { checkChannelHealth } from './lib/channelHealth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,7 +36,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+    // Preserves the exact raw bytes alongside the parsed body — needed to verify Meta's
+    // X-Hub-Signature-256 HMAC on the WhatsApp webhook route, which must be computed over
+    // the untouched wire bytes, not a re-serialized JSON.stringify of the parsed object.
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  })
+);
 
 // In-Memory Dispatch Logs for Outreach Monitoring & Audit
 interface OutreachDispatchLog {
@@ -85,7 +100,7 @@ function interpolate(
 // API Route: AI-Personalized WhatsApp & Email Generator
 app.post('/api/outreach/generate-message', async (req, res) => {
   try {
-    const { lead, settings, template, availableSlots } = req.body;
+    const { lead, settings, template } = req.body;
     const ai = getGenAI();
 
     const firstName = (lead?.name || 'there').split(' ')[0];
@@ -95,11 +110,6 @@ app.post('/api/outreach/generate-message', async (req, res) => {
     const senderPhone = settings?.senderPhone || '';
     const clientCompany = lead?.company || 'your team';
     const leadNotes = lead?.notes || '';
-
-    const nextSlot = (availableSlots || []).find((s: { available: boolean }) => s.available) || availableSlots?.[0];
-    const bookingLink = nextSlot
-      ? `https://calendar.google.com/booking?date=${nextSlot.date}&slot=${encodeURIComponent(nextSlot.time)}`
-      : 'https://meet.google.com/demo-slot';
 
     const vars: Record<string, string> = {
       name: lead?.name || 'there',
@@ -111,12 +121,9 @@ app.post('/api/outreach/generate-message', async (req, res) => {
       sender_name: senderName,
       sender_email: senderEmail,
       sender_phone: senderPhone,
-      booking_link: bookingLink,
     };
 
-    if (ai) {
-      try {
-        const prompt = `You are a world-class B2B copywriter specialized in high-converting WhatsApp messages and cold/warm outreach emails.
+    const prompt = `You are a world-class B2B copywriter specialized in high-converting WhatsApp messages and cold/warm outreach emails.
 Generate a personalized WhatsApp message AND Email for this prospect:
 - Client Name: ${lead?.name}
 - Client Company: ${clientCompany}
@@ -126,17 +133,24 @@ Generate a personalized WhatsApp message AND Email for this prospect:
 - Sender Company: ${companyName}
 - Sender Name: ${senderName}
 - Offering/Value Prop: ${settings?.serviceDescription || 'Outreach automation synced with Google Calendar and spreadsheets'}
-- Booking Link: ${bookingLink}
 - Custom Instructions: "${settings?.customInstructions || 'Keep it friendly, high-value, crisp, and direct.'}"
 ${template ? `- Base Template Guidance:\nWhatsApp Base: ${template.whatsAppContent}\nEmail Subject Base: ${template.emailSubject}\nEmail Body Base: ${template.emailBody}` : ''}
 
+There is no booking link or scheduling page — do NOT invent or include one. Instead, the
+call to action must ask the prospect to simply reply with a day/time that works for them;
+an AI assistant will read their reply and confirm the meeting directly on the calendar.
+
 Output strict JSON with these 3 keys:
 {
-  "whatsApp": "A concise, engaging WhatsApp message formatted with natural emojis, bolding (*text*), and the booking link ${bookingLink}",
+  "whatsApp": "A concise, engaging WhatsApp message formatted with natural emojis, bolding (*text*), ending with a call-to-action to reply with a day/time that works",
   "emailSubject": "High-open rate email subject line (under 60 chars)",
-  "emailBody": "Clear, professional, punchy email with greeting, value prop, bullet points, call to action with booking link, and sender sign-off"
+  "emailBody": "Clear, professional, punchy email with greeting, value prop, bullet points, a call-to-action asking them to reply with a day/time that works, and sender sign-off"
 }`;
 
+    let aiResult: { whatsApp?: string; emailSubject?: string; emailBody?: string } | null = null;
+
+    if (ai) {
+      try {
         const response = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
           contents: prompt,
@@ -145,24 +159,36 @@ Output strict JSON with these 3 keys:
           },
         });
 
-        let parsed: { whatsApp?: string; emailSubject?: string; emailBody?: string } = {};
-        try {
-          parsed = JSON.parse(response.text || '{}');
-        } catch {
-          parsed = {};
-        }
-
+        const parsed = JSON.parse(response.text || '{}');
         if (parsed.whatsApp && parsed.emailSubject && parsed.emailBody) {
-          return res.json({
-            whatsApp: parsed.whatsApp,
-            emailSubject: parsed.emailSubject,
-            emailBody: parsed.emailBody,
-            isAiGenerated: true,
-          });
+          aiResult = parsed;
         }
       } catch (aiErr) {
-        console.warn('Gemini generateContent error in server.ts, falling back:', aiErr);
+        console.warn('Gemini generateContent error in server.ts, trying Groq fallback:', aiErr);
       }
+    }
+
+    // Groq (free tier, much higher daily ceiling) — tried whenever Gemini didn't produce a
+    // usable result, whether that's a quota/overload failure or no key configured.
+    if (!aiResult && process.env.GROQ_API_KEY) {
+      try {
+        const { text } = await generateViaGroq(prompt);
+        const parsed = JSON.parse(text || '{}');
+        if (parsed.whatsApp && parsed.emailSubject && parsed.emailBody) {
+          aiResult = parsed;
+        }
+      } catch (groqErr) {
+        console.warn('Groq generation fallback failed in server.ts:', groqErr);
+      }
+    }
+
+    if (aiResult) {
+      return res.json({
+        whatsApp: aiResult.whatsApp,
+        emailSubject: aiResult.emailSubject,
+        emailBody: aiResult.emailBody,
+        isAiGenerated: true,
+      });
     }
 
     // Fallback template interpolation
@@ -177,9 +203,9 @@ Output strict JSON with these 3 keys:
 
     // Standard fallback
     return res.json({
-      whatsApp: `Hi ${firstName} 👋! ${senderName} from ${companyName} here. We noticed your work at *${clientCompany}* and wanted to share how you can automate client outreach directly from spreadsheets. Open to a 10-min demo? Grab a slot here: ${bookingLink}`,
-      emailSubject: `Automating outreach workflow for ${clientCompany} (10-min Demo)`,
-      emailBody: `Hi ${firstName},\n\nI hope you're having a productive week.\n\nI'm reaching out from ${companyName}. We help teams at ${clientCompany} eliminate manual messaging by connecting spreadsheets directly to automated WhatsApp and Email dispatch.\n\nWould you be open to a brief 10-minute introduction this week?\n\nPick a convenient time here:\n👉 ${bookingLink}\n\nBest regards,\n${senderName}\n${companyName}`,
+      whatsApp: `Hi ${firstName} 👋! ${senderName} from ${companyName} here. We noticed your work at *${clientCompany}* and wanted to share how you can automate client outreach directly from spreadsheets. Open to a quick call? Just reply with a day/time that works and I'll lock it in!`,
+      emailSubject: `Automating outreach workflow for ${clientCompany}`,
+      emailBody: `Hi ${firstName},\n\nI hope you're having a productive week.\n\nI'm reaching out from ${companyName}. We help teams at ${clientCompany} eliminate manual messaging by connecting spreadsheets directly to automated WhatsApp and Email dispatch.\n\nWould you be open to a brief 10-minute introduction this week?\n\nJust reply with a day/time that works for you and I'll get it on the calendar.\n\nBest regards,\n${senderName}\n${companyName}`,
       isAiGenerated: false,
     });
   } catch (error) {
@@ -191,16 +217,12 @@ Output strict JSON with these 3 keys:
 // API Route: AI Auto-Reply to Incoming WhatsApp / Email Messages
 app.post('/api/ai/auto-reply', async (req, res) => {
   try {
-    const { incomingMessage, lead, settings, availableSlots } = req.body;
+    const { incomingMessage, lead, settings } = req.body;
     const ai = getGenAI();
 
     const clientName = lead?.name || 'there';
     const firstName = clientName.split(' ')[0];
     const companyName = settings?.companyName || 'our company';
-    const nextSlot = (availableSlots || []).find((s: { available: boolean }) => s.available) || availableSlots?.[0];
-    const bookingLink = nextSlot
-      ? `https://calendar.google.com/booking?date=${nextSlot.date}&slot=${encodeURIComponent(nextSlot.time)}`
-      : 'https://meet.google.com/demo-slot';
 
     if (ai && incomingMessage) {
       const prompt = `A client named ${clientName} at company ${lead?.company || 'their firm'} replied to our outreach with:
@@ -208,11 +230,11 @@ app.post('/api/ai/auto-reply', async (req, res) => {
 
 Our company: ${companyName}
 Our value prop: ${settings?.serviceDescription || 'AI outreach and calendar booking automation'}
-Booking Link: ${bookingLink}
 
-Generate a concise, helpful, polite, and persuasive response (under 75 words).
-- If they are interested or asking for times: provide the booking link ${bookingLink}.
-- If they ask about pricing or features: answer positively with general context and invite them to the 10-minute demo via ${bookingLink}.
+There is no booking link or scheduling page. Generate a concise, helpful, polite, and
+persuasive response (under 75 words).
+- If they are interested or asking for times: ask them to reply with a day/time that works for them so it can be confirmed directly on the calendar.
+- If they ask about pricing or features: answer positively with general context and invite them to reply with a day/time for a quick call.
 - If they say not interested or unsubscribe: acknowledge politely and confirm they are opted out.
 
 Return strict JSON:
@@ -237,18 +259,18 @@ Return strict JSON:
     const lower = (incomingMessage || '').toLowerCase();
     if (lower.includes('price') || lower.includes('cost')) {
       return res.json({
-        reply: `Our pricing scales flexibly with your contact volume. We'd love to show you a quick breakdown for ${lead?.company || 'your team'} on a 10-minute call: ${bookingLink}`,
+        reply: `Our pricing scales flexibly with your contact volume. We'd love to show you a quick breakdown for ${lead?.company || 'your team'} on a 10-minute call — just reply with a day/time that works!`,
       });
     }
 
-    if (lower.includes('yes') || lower.includes('sure') || lower.includes('demo') || lower.includes('link')) {
+    if (lower.includes('yes') || lower.includes('sure') || lower.includes('demo')) {
       return res.json({
-        reply: `Awesome, ${firstName}! You can choose any open time that fits your calendar here: ${bookingLink}. Looking forward to connecting!`,
+        reply: `Awesome, ${firstName}! Just reply with a day/time that works for you and I'll get it on the calendar. Looking forward to connecting!`,
       });
     }
 
     return res.json({
-      reply: `Thanks for the response, ${firstName}! Would Thursday at 11:00 AM or Friday at 3:00 PM work for a quick walk-through? Or pick any time here: ${bookingLink}`,
+      reply: `Thanks for the response, ${firstName}! Would Thursday at 11:00 AM or Friday at 3:00 PM work for a quick walk-through? Or just reply with a time that suits you better.`,
     });
   } catch (err) {
     console.error('Error in /api/ai/auto-reply:', err);
@@ -309,7 +331,7 @@ app.post('/api/outreach/send-email', async (req, res) => {
   try {
     const { lead, subject, body, channelSettings, webhookUrl, senderName, senderEmail, campaignRecipientId } = req.body;
     const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
-    const replyTo = buildEmailReplyToAddress(campaignRecipientId) || undefined;
+    const replyTo = buildEmailReplyToAddress(campaignRecipientId, lead?.id) || undefined;
 
     const mailtoUrl = `mailto:${lead?.email || ''}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
 
@@ -360,32 +382,39 @@ app.post('/api/outreach/send-email', async (req, res) => {
   }
 });
 
-// API Route: Calendar Booking & Google Meet Link Generator
-app.post('/api/calendar/book', async (req, res) => {
-  try {
-    const { slotId, date, time, lead } = req.body;
-    const meetCode = `${Math.random().toString(36).substring(2, 5)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 5)}`;
-    const meetLink = `https://meet.google.com/${meetCode}`;
-
-    res.json({
-      success: true,
-      bookingId: `gcal-${Date.now()}`,
-      meetLink,
-      date,
-      time,
-      clientName: lead?.name,
-      clientEmail: lead?.email,
-      confirmedAt: new Date().toISOString(),
-    });
-  } catch (error: unknown) {
-    const err = error as { message?: string };
-    res.status(500).json({ error: err.message || 'Failed to book calendar slot' });
-  }
-});
-
 // API Route: Get Outreach Dispatch Logs
 app.get('/api/outreach/logs', (req, res) => {
   res.json({ logs: dispatchLogs });
+});
+
+// Also returns the shared WHATSAPP_VERIFY_TOKEN value on GET (not sensitive — Meta's
+// handshake echo string, not a credential) so orgs can copy it straight into their own
+// Meta App's webhook config, instead of just seeing the env var's name.
+app.get('/api/whatsapp/subscribe-app', async (req, res) => {
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+
+  if (req.query.action === 'health') {
+    const health = await checkChannelHealth(orgId);
+    return res.json(health);
+  }
+
+  res.json({ verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null });
+});
+
+// Subscribes this app to an org's WhatsApp Business Account so inbound webhooks actually
+// deliver — a step Meta requires but doesn't surface in its dashboard UI.
+app.post('/api/whatsapp/subscribe-app', async (req, res) => {
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+
+  const { accessToken, wabaId } = req.body || {};
+  if (!accessToken || !wabaId) {
+    return res.status(400).json({ error: 'accessToken and wabaId are required.' });
+  }
+
+  const result = await subscribeAppToWaba(accessToken, wabaId);
+  return res.status(result.ok ? 200 : 400).json(result);
 });
 
 // WhatsApp Webhook Verification — Meta calls this once when you register the webhook URL
@@ -401,6 +430,12 @@ app.get('/api/whatsapp/webhook', (req, res) => {
 // WhatsApp Webhook Receiver — incoming prospect replies, handled by the AI booking bot
 app.post('/api/whatsapp/webhook', async (req, res) => {
   try {
+    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    const secret = await resolveWhatsAppSignatureSecret((req as any).rawBody || '');
+    if (!verifyWhatsAppSignature((req as any).rawBody || '', signature, secret)) {
+      console.warn('[WhatsApp Webhook] Signature verification failed — rejecting payload.');
+      return res.sendStatus(403);
+    }
     await processWhatsAppWebhookPayload(req.body);
   } catch (err) {
     console.error('[WhatsApp Webhook] Processing error:', err);

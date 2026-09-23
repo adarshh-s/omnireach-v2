@@ -266,3 +266,67 @@ create index if not exists idx_campaign_recipients_due
 -- stale reply. See lib/whatsappWebhookHandler.ts.
 -- ---------------------------------------------------------------------------
 alter table whatsapp_conversations add column if not exists last_inbound_message_id text;
+
+-- ---------------------------------------------------------------------------
+-- Per-conversation processing lock. Two messages sent seconds apart (e.g. "Yes"
+-- then "Friday" as separate texts) can trigger two concurrent webhook invocations
+-- that each read the conversation before the other writes back — a distinct race
+-- from the message-id redelivery one above (different message ids, so that dedup
+-- doesn't catch it). See acquireConversationLock in lib/whatsappWebhookHandler.ts.
+-- ---------------------------------------------------------------------------
+alter table whatsapp_conversations add column if not exists locked_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Retry/backoff for failed sends. api/cron/dispatch-scheduled.ts now also picks
+-- up rows whose whatsapp_status/email_status is 'Failed', past a backoff window,
+-- and under the retry cap — reusing the same payload column (see the peak-time
+-- scheduling comment above) which BatchCampaignRunner.tsx now also populates on
+-- any failure, not just scheduled sends, so a retry has real content to resend.
+-- ---------------------------------------------------------------------------
+alter table campaign_recipients add column if not exists retry_count int not null default 0;
+
+-- ---------------------------------------------------------------------------
+-- Lightweight CRM fields on clients — tags and a manual follow-up reminder date.
+-- Mirrors the existing `notes` column's end-to-end pattern (see src/types.ts's
+-- Lead type and src/hooks/useCloudClients.ts's leadToRow/rowToLead mapping).
+-- ---------------------------------------------------------------------------
+alter table clients add column if not exists tags text[] not null default '{}'::text[];
+alter table clients add column if not exists follow_up_date date;
+
+create index if not exists idx_clients_follow_up_date on clients(follow_up_date) where follow_up_date is not null;
+
+-- ---------------------------------------------------------------------------
+-- Real WhatsApp delivery tracking. Meta's send-time API response only means the
+-- message was ACCEPTED for processing (message id issued) — actual sent/delivered/
+-- read/failed status arrives later as an async webhook status callback, keyed by
+-- this message id. Without storing it at send time, that callback has nothing to
+-- match back to the right campaign_recipients row, so whatsapp_status got stuck on
+-- whatever was set optimistically the instant Meta accepted the request (see
+-- lib/whatsappWebhookHandler.ts's status-callback handling).
+-- ---------------------------------------------------------------------------
+alter table campaign_recipients add column if not exists whatsapp_message_id text;
+
+create index if not exists idx_campaign_recipients_whatsapp_message_id
+  on campaign_recipients(whatsapp_message_id) where whatsapp_message_id is not null;
+
+-- ---------------------------------------------------------------------------
+-- Per-conversation processing lock for the email side of the AI booking bot —
+-- mirrors whatsapp_conversations.locked_at (see lib/whatsappWebhookHandler.ts's
+-- acquireConversationLock). Two emails from the same prospect sent seconds apart
+-- can trigger two concurrent inbound-webhook invocations that each read the same
+-- conversation row before the other writes back; without a lock, one reply is
+-- silently dropped, or — worse — both branches can independently confirm and book
+-- a duplicate calendar event for the same conversation.
+-- ---------------------------------------------------------------------------
+alter table email_conversations add column if not exists locked_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Lead's country, denormalized onto both conversation tables the same way
+-- lead_name/lead_company already are — lets the AI booking bot (see
+-- lib/conversationEngine.ts) resolve the lead's own local timezone and interpret
+-- "3 PM" as 3 PM *their* time instead of naively parsing it as server-local (UTC
+-- on Vercel), which previously booked real Google Meet invites hours off from
+-- what was actually agreed.
+-- ---------------------------------------------------------------------------
+alter table whatsapp_conversations add column if not exists lead_country text;
+alter table email_conversations add column if not exists lead_country text;

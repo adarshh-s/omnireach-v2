@@ -18,6 +18,8 @@ interface ApiResponse {
 }
 
 const BATCH_SIZE = 25;
+const RETRY_BACKOFF_MS = 10 * 60 * 1000; // wait 10 min after a failure before retrying
+const MAX_RETRIES = 2;
 
 /**
  * Accepts either Vercel's own automatic `Authorization: Bearer $CRON_SECRET` header
@@ -60,20 +62,36 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
 
   const nowIso = new Date().toISOString();
-  const { data: due, error } = await supabase
-    .from('campaign_recipients')
-    .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, campaigns(status), clients(*)')
-    .lte('scheduled_for', nowIso)
-    .or('whatsapp_status.eq.Queued,email_status.eq.Queued')
-    .limit(BATCH_SIZE);
+  const backoffCutoffIso = new Date(Date.now() - RETRY_BACKOFF_MS).toISOString();
 
-  if (error) {
-    return res.status(500).json({ error: error.message });
+  const [{ data: due, error }, { data: retryable, error: retryError }] = await Promise.all([
+    supabase
+      .from('campaign_recipients')
+      .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, retry_count, campaigns(status), clients(*)')
+      .lte('scheduled_for', nowIso)
+      .or('whatsapp_status.eq.Queued,email_status.eq.Queued')
+      .limit(BATCH_SIZE),
+    // Failed sends, past their backoff window and under the retry cap — see the
+    // Retry/backoff schema comment in supabase/schema.sql. Kept as a separate query
+    // (rather than one combined OR filter) since eligibility rules genuinely differ
+    // per set: Queued rows key off scheduled_for, Failed rows off updated_at + retry_count.
+    supabase
+      .from('campaign_recipients')
+      .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, retry_count, campaigns(status), clients(*)')
+      .or('whatsapp_status.eq.Failed,email_status.eq.Failed')
+      .lt('updated_at', backoffCutoffIso)
+      .lt('retry_count', MAX_RETRIES)
+      .limit(BATCH_SIZE),
+  ]);
+
+  if (error || retryError) {
+    return res.status(500).json({ error: error?.message || retryError?.message });
   }
 
   let sent = 0;
   let failed = 0;
   let skipped = 0;
+  let retried = 0;
   const settingsCache = new Map<string, ChannelApiSettings | null>();
 
   for (const row of due || []) {
@@ -109,6 +127,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           .update({
             whatsapp_status: result.delivered ? 'Sent' : 'Failed',
             error_detail: result.errorDetail || null,
+            ...(result.delivered && (result.providerResponse as any)?.messageId
+              ? { whatsapp_message_id: (result.providerResponse as any).messageId }
+              : {}),
             updated_at: new Date().toISOString(),
           })
           .eq('id', row.id);
@@ -164,5 +185,105 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
   }
 
-  return res.status(200).json({ processed: (due || []).length, sent, failed, skipped });
+  for (const row of retryable || []) {
+    const campaign: any = Array.isArray((row as any).campaigns) ? (row as any).campaigns[0] : (row as any).campaigns;
+    const client: any = Array.isArray((row as any).clients) ? (row as any).clients[0] : (row as any).clients;
+    if (!campaign || campaign.status !== 'running' || !client) {
+      skipped++;
+      continue;
+    }
+
+    if (!settingsCache.has(row.org_id)) {
+      settingsCache.set(row.org_id, await getOrgChannelSettings(row.org_id));
+    }
+    const channelSettings = settingsCache.get(row.org_id);
+    const payload: DuePayload = row.payload || {};
+    // Rows that failed before payload started being saved on every failure (not just
+    // scheduled sends) have nothing to resend — skip rather than blast an empty message.
+    const hasContent = Boolean(payload.whatsappMessage || payload.emailBody);
+    if (!hasContent) {
+      skipped++;
+      continue;
+    }
+
+    if (row.whatsapp_status === 'Failed') {
+      const { data: claimed } = await supabase
+        .from('campaign_recipients')
+        .update({ whatsapp_status: 'Sending', retry_count: (row.retry_count || 0) + 1 })
+        .eq('id', row.id)
+        .eq('whatsapp_status', 'Failed')
+        .select('id');
+
+      if (claimed && claimed.length > 0) {
+        const result = await sendCampaignWhatsAppMessage(channelSettings, {
+          toPhone: client.phone || '',
+          messageText: payload.whatsappMessage || '',
+          templateParams: payload.templateParams,
+        });
+        await supabase
+          .from('campaign_recipients')
+          .update({
+            whatsapp_status: result.delivered ? 'Sent' : 'Failed',
+            error_detail: result.errorDetail || null,
+            ...(result.delivered && (result.providerResponse as any)?.messageId
+              ? { whatsapp_message_id: (result.providerResponse as any).messageId }
+              : {}),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', row.id);
+
+        retried++;
+        if (result.delivered) {
+          sent++;
+          if (result.provider === 'cloud_api') {
+            seedConversationFromLead(row.org_id, client, row.id).catch(() => {});
+          }
+        } else {
+          failed++;
+        }
+      }
+    }
+
+    if (row.email_status === 'Failed') {
+      const { data: claimed } = await supabase
+        .from('campaign_recipients')
+        .update({ email_status: 'Sending', retry_count: (row.retry_count || 0) + 1 })
+        .eq('id', row.id)
+        .eq('email_status', 'Failed')
+        .select('id');
+
+      if (claimed && claimed.length > 0) {
+        const replyTo = buildEmailReplyToAddress(row.id) || undefined;
+        const result = await sendEmailViaOrgProvider(channelSettings, {
+          to: client.email || '',
+          toName: client.name,
+          subject: payload.emailSubject || 'Meeting Request',
+          body: payload.emailBody || '',
+          fromName: payload.senderName || 'OmniReach AI',
+          fromAddress: payload.senderEmail,
+          replyTo,
+        });
+        await supabase
+          .from('campaign_recipients')
+          .update({
+            email_status: result.ok ? 'Sent' : 'Failed',
+            error_detail: result.error || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', row.id);
+
+        retried++;
+        if (result.ok) {
+          sent++;
+          if (replyTo) {
+            seedEmailConversationFromLead(row.org_id, client, row.id, payload.emailSubject).catch(() => {});
+          }
+        } else {
+          failed++;
+        }
+      }
+    }
+  }
+
+  return res.status(200).json({ processed: (due || []).length + (retryable || []).length, sent, failed, skipped, retried });
 }

@@ -1,17 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Header, ActiveTab } from './components/Header';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Sidebar, ActiveTab } from './components/Sidebar';
 import { BatchCampaignRunner } from './components/BatchCampaignRunner';
 import { MessageSimulator } from './components/MessageSimulator';
 import { SheetsView } from './components/SheetsView';
 import { CalendarView } from './components/CalendarView';
 import { CampaignAnalytics } from './components/CampaignAnalytics';
-import { N8nWorkflowView } from './components/N8nWorkflowView';
 import { ConversationsView } from './components/ConversationsView';
 import { DashboardView } from './components/DashboardView';
-import { ArchitectureView } from './components/ArchitectureView';
 import { TemplateManagerView } from './components/TemplateManagerView';
 import { ExcelUploadModal } from './components/ExcelUploadModal';
 import { ChannelConfigModal } from './components/ChannelConfigModal';
+import { OnboardingWizard } from './components/OnboardingWizard';
 import { AuthGate } from './components/AuthGate';
 import { AuthState } from './hooks/useAuth';
 import { useCloudSettings } from './hooks/useCloudSettings';
@@ -33,6 +33,7 @@ const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
   twilioAuthToken: '',
   emailApiKey: '',
   n8nWebhookUrl: '',
+  safeDailyWhatsAppLimit: 250,
 };
 
 export default function App() {
@@ -63,18 +64,27 @@ function AppContent({ auth }: { auth: AuthState }) {
   // to the localStorage-backed state above when Supabase/auth isn't available.
   const cloudClients = useCloudClients(auth.user?.id);
   const loadedClientsForUser = React.useRef<string | null>(null);
+  // Gates the sync effect below until the initial cloud load actually resolves. Without
+  // this, both effects fire as soon as auth.user?.id is set, and if the load (a real
+  // network round-trip) takes longer than the sync's 600ms debounce, the sync effect wins
+  // the race and upserts whatever `leads` happened to be first — on a fresh browser, the
+  // INITIAL_LEADS sample data, or leftover localStorage from a previous session — into
+  // this org's real Supabase row before the authoritative fetch ever lands.
+  const cloudClientsReadyRef = React.useRef(false);
   useEffect(() => {
     const userId = auth.user?.id;
     if (!userId || loadedClientsForUser.current === userId) return;
     loadedClientsForUser.current = userId;
+    cloudClientsReadyRef.current = false;
     cloudClients.loadClients().then((loaded) => {
       if (loaded !== null) setLeads(loaded);
+      cloudClientsReadyRef.current = true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.user?.id]);
 
   useEffect(() => {
-    if (!auth.user?.id) return;
+    if (!auth.user?.id || !cloudClientsReadyRef.current) return;
     const timer = setTimeout(() => {
       cloudClients.syncClients(leads);
     }, 600);
@@ -103,7 +113,7 @@ function AppContent({ auth }: { auth: AuthState }) {
     DEFAULT_CAMPAIGN_SETTINGS,
     auth.user?.id
   );
-  const [channelSettings, setChannelSettings] = useCloudSettings<ChannelApiSettings>(
+  const [channelSettings, setChannelSettings, channelSettingsStatus] = useCloudSettings<ChannelApiSettings>(
     'org_channel_settings',
     'omnireach_channels_v1',
     DEFAULT_CHANNEL_SETTINGS,
@@ -126,6 +136,28 @@ function AppContent({ auth }: { auth: AuthState }) {
   // Modals State
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const onboardingCheckedRef = React.useRef(false);
+  useEffect(() => {
+    if (onboardingCheckedRef.current) return;
+    if (auth.configured && channelSettingsStatus.loading) return; // wait for real cloud data first
+    onboardingCheckedRef.current = true;
+    if (typeof window === 'undefined') return;
+    const dismissed = localStorage.getItem('omnireach_onboarding_dismissed_v1');
+    const nothingConfiguredYet =
+      !campaignSettings.companyName &&
+      !campaignSettings.senderName &&
+      channelSettings.whatsAppProvider === 'web_direct' &&
+      !channelSettings.whatsappCloudApiKey;
+    if (!dismissed && nothingConfiguredYet) setShowOnboarding(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelSettingsStatus.loading]);
+  const dismissOnboarding = () => {
+    setShowOnboarding(false);
+    try {
+      localStorage.setItem('omnireach_onboarding_dismissed_v1', '1');
+    } catch {}
+  };
 
   // Selected Lead for Simulator
   const [selectedLeadId, setSelectedLeadId] = useState<string>(leads[0]?.id || 'lead-1');
@@ -196,7 +228,20 @@ function AppContent({ auth }: { auth: AuthState }) {
 
   const handleImportLeads = (importedLeads: Lead[], appendMode: boolean) => {
     if (appendMode) {
-      setLeads((prev) => [...prev, ...importedLeads]);
+      // Re-uploading the master sheet to add a handful of new leads is a natural workflow —
+      // without dedup, every existing lead got a duplicate row with a fresh id, and the next
+      // campaign run would silently double-message the same phone/email.
+      setLeads((prev) => {
+        const existingPhones = new Set(prev.map((l) => l.phone.replace(/\D/g, '')).filter(Boolean));
+        const existingEmails = new Set(prev.map((l) => l.email.trim().toLowerCase()).filter(Boolean));
+        const deduped = importedLeads.filter((l) => {
+          const phoneDigits = l.phone.replace(/\D/g, '');
+          const emailLower = l.email.trim().toLowerCase();
+          const isDup = (phoneDigits && existingPhones.has(phoneDigits)) || (emailLower && existingEmails.has(emailLower));
+          return !isDup;
+        });
+        return [...prev, ...deduped];
+      });
     } else {
       setLeads(importedLeads);
     }
@@ -217,7 +262,7 @@ function AppContent({ auth }: { auth: AuthState }) {
               bookedBy: lead.name,
               leadEmail: lead.email,
               leadPhone: lead.phone,
-              title: `${lead.company || lead.name} Discovery Demo with ${campaignSettings.senderName}`,
+              title: `${lead.company || lead.name} Discovery Call with ${campaignSettings.senderName}`,
               meetLink: `https://meet.google.com/${Math.random().toString(36).substring(2, 5)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 5)}`,
             }
           : slot
@@ -270,7 +315,7 @@ function AppContent({ auth }: { auth: AuthState }) {
   const scheduledCount = leads.filter((l) => l.status === 'Meeting Scheduled').length;
 
   return (
-    <div className="min-h-screen bg-[#FAF9F6] text-[#4A443F] flex flex-col font-sans">
+    <div className="min-h-screen bg-[#FAFAFA] text-[#3F3F46] flex font-sans">
       {/* Global Modals */}
       <ExcelUploadModal
         isOpen={isExcelModalOpen}
@@ -290,33 +335,88 @@ function AppContent({ auth }: { auth: AuthState }) {
         accessToken={auth.accessToken}
       />
 
-      {/* Main Header with Navigation */}
-      <Header
+      <OnboardingWizard
+        isOpen={showOnboarding}
+        onClose={dismissOnboarding}
+        onHide={() => setShowOnboarding(false)}
+        campaignSettings={campaignSettings}
+        onUpdateSettings={setCampaignSettings}
+        onOpenChannelConfig={() => setIsChannelModalOpen(true)}
+        onOpenExcelUpload={() => setIsExcelModalOpen(true)}
+      />
+
+      {/* Sidebar Navigation */}
+      <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         pendingCount={pendingCount}
         scheduledCount={scheduledCount}
+        userId={auth.user?.id}
         onOpenExcelUpload={() => setIsExcelModalOpen(true)}
         onOpenChannelConfig={() => setIsChannelModalOpen(true)}
       />
 
-      {calendarBanner && (
-        <div
-          className={`px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between ${
-            calendarBanner.type === 'success' ? 'bg-[#8BA888]/15 text-[#375534]' : 'bg-rose-50 text-rose-700'
-          }`}
-        >
-          <span>{calendarBanner.message}</span>
-          <button onClick={() => setCalendarBanner(null)} className="opacity-70 hover:opacity-100">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
+      <AnimatePresence>
+        {channelSettingsStatus.saveError && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between bg-rose-50 text-rose-700">
+              <span>
+                Channel Setup couldn't save to the cloud ({channelSettingsStatus.saveError}) — your changes only exist in
+                this browser right now. The AI bot reads settings from the cloud, so replies may keep using old
+                credentials until this succeeds. Try saving again, or check you're still signed in.
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {calendarBanner && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div
+              className={`px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between ${
+                calendarBanner.type === 'success' ? 'bg-[#128C7E]/15 text-[#375534]' : 'bg-rose-50 text-rose-700'
+              }`}
+            >
+              <span>{calendarBanner.message}</span>
+              <button onClick={() => setCalendarBanner(null)} className="opacity-70 hover:opacity-100">
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main View Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <AnimatePresence mode="wait">
+      <motion.div
+        key={activeTab}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+      >
         {activeTab === 'dashboard' && (
-          <DashboardView leads={leads} userId={auth.user?.id} onOpenExcelUpload={() => setIsExcelModalOpen(true)} />
+          <DashboardView
+            leads={leads}
+            userId={auth.user?.id}
+            accessToken={auth.accessToken}
+            onOpenExcelUpload={() => setIsExcelModalOpen(true)}
+          />
         )}
 
         {activeTab === 'campaign' && (
@@ -348,6 +448,7 @@ function AppContent({ auth }: { auth: AuthState }) {
             onSelectLeadForSimulator={handleOpenLeadInSimulator}
             onOpenExcelUpload={() => setIsExcelModalOpen(true)}
             onStartCampaignWithSelected={handleStartCampaignWithSelected}
+            defaultCountryCode={campaignSettings.defaultCountryCode}
           />
         )}
 
@@ -360,6 +461,7 @@ function AppContent({ auth }: { auth: AuthState }) {
             campaignSettings={campaignSettings}
             channelSettings={channelSettings}
             templates={templates}
+            accessToken={auth.accessToken}
             onUpdateLead={handleUpdateLead}
             onUpdateSettings={setCampaignSettings}
             onBookCalendarSlot={handleBookCalendarSlot}
@@ -374,6 +476,7 @@ function AppContent({ auth }: { auth: AuthState }) {
             onUpdateSettings={setCampaignSettings}
             leads={leads}
             availableSlots={calendarSlots}
+            accessToken={auth.accessToken}
           />
         )}
 
@@ -389,17 +492,16 @@ function AppContent({ auth }: { auth: AuthState }) {
           <ConversationsView leads={leads} onUpdateLead={handleUpdateLead} accessToken={auth.accessToken} />
         )}
 
-        {activeTab === 'analytics' && <CampaignAnalytics leads={leads} />}
-
-        {activeTab === 'n8n' && <N8nWorkflowView />}
-
-        {activeTab === 'architecture' && <ArchitectureView />}
+        {activeTab === 'analytics' && <CampaignAnalytics leads={leads} userId={auth.user?.id} />}
+      </motion.div>
+      </AnimatePresence>
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[#E8E4DF] bg-white/80 py-4 text-center text-xs text-[#8C847C]">
+      <footer className="border-t border-[#E4E4E7] bg-white/80 py-4 text-center text-xs text-[#71717A]">
         OmniReach AI • Automated WhatsApp & Email Outreach Engine with Spreadsheet Ingestion & Google Calendar Sync • Powered by Gemini 3.7
       </footer>
+      </div>
     </div>
   );
 }

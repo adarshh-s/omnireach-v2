@@ -36,7 +36,13 @@ export async function sendEmailViaOrgProvider(
   settings: ChannelApiSettings | null | undefined,
   params: SendEmailParams
 ): Promise<SendEmailResult> {
-  const provider = settings?.emailProvider || 'mailto_direct';
+  // An org that explicitly configured its own provider in Settings (BYO SendGrid/SMTP/
+  // Mailgun/webhook, or its own Resend key) always wins. Otherwise, fall back to the
+  // platform's own shared Resend account/domain (see .env.example) so an org needs zero
+  // setup to send — matches how GEMINI_API_KEY/SUPABASE_SERVICE_ROLE_KEY already work.
+  const orgConfiguredProvider =
+    settings?.emailProvider && settings.emailProvider !== 'mailto_direct' ? settings.emailProvider : undefined;
+  const provider = orgConfiguredProvider || (process.env.RESEND_API_KEY ? 'resend' : 'mailto_direct');
   const { to, toName, subject, body, fromName, replyTo, webhookUrl, webhookContext } = params;
   const html = body.replace(/\n/g, '<br/>');
 
@@ -46,8 +52,10 @@ export async function sendEmailViaOrgProvider(
       ? settings!.smtpFromEmail!.trim()
       : undefined;
 
-  if (provider === 'resend' && settings?.emailApiKey) {
-    const apiKey = settings.emailApiKey.trim();
+  const resendApiKey = settings?.emailApiKey?.trim() || process.env.RESEND_API_KEY?.trim();
+  if (provider === 'resend' && resendApiKey) {
+    const apiKey = resendApiKey;
+    const platformFromAddress = process.env.RESEND_FROM_ADDRESS?.trim() || 'onboarding@resend.dev';
     const sendResend = async (fromAddr: string) => {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -72,7 +80,7 @@ export async function sendEmailViaOrgProvider(
     };
 
     try {
-      const firstFrom = preferredFrom || 'onboarding@resend.dev';
+      const firstFrom = preferredFrom || platformFromAddress;
       let { res, data } = await sendResend(firstFrom);
 
       // Automatic fallback: if a custom domain is unverified, retry with onboarding@resend.dev
@@ -210,8 +218,16 @@ export async function sendEmailViaOrgProvider(
   if (provider === 'webhook') {
     return { ok: false, provider, error: 'A webhook URL is required. Set it under n8n / Webhook in Settings.' };
   }
-  // mailto_direct (default): actual delivery happens client-side via a mailto: link for
-  // interactive sends — this isn't a failure, so no error message (matches prior route behavior).
-  // For headless callers (AI bot replies, scheduled dispatch) this correctly surfaces as ok:false.
-  return { ok: false, provider };
+  // mailto_direct: the org has Email set to Manual in Channel Setup. That's fine for a human
+  // clicking a mailto: link one at a time, but this function runs server-side (batch campaigns,
+  // the AI bot's replies, the scheduled dispatcher) where there's no mail client to open — so a
+  // manual-mode org's automated sends always land here. Previously this returned no error at all
+  // ({ok:false} with nothing else), which surfaced in the UI as a bare, unhelpful "Provider
+  // dispatch failed" and made it look like a random delivery bug rather than a settings fix.
+  return {
+    ok: false,
+    provider,
+    error:
+      'Email is set to Manual mode in Channel Setup, so this can\'t be sent automatically. Switch Email to Automatic (Resend) in Channel Setup to let campaigns send it for you.',
+  };
 }

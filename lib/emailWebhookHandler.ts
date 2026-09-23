@@ -9,9 +9,10 @@ import {
 } from './orgSettings.js';
 import { sendEmailViaOrgProvider } from './emailSender.js';
 import { runConversationTurn, ConversationTurn } from './conversationEngine.js';
-import { createMeetingEvent } from './googleCalendar.js';
+import { createMeetingEvent, cancelMeetingEvent } from './googleCalendar.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
+import { toMeetingStartIso } from './countryTiming.js';
 
 /** Verifies the shared secret appended to the Inbound Parse Destination URL, so this
  * endpoint can't be spammed by anyone who finds the URL. */
@@ -20,8 +21,20 @@ export function verifyEmailWebhookToken(token: string | undefined): boolean {
   return !!expected && token === expected;
 }
 
+/** A domain env value pasted with stray quotes/whitespace (an easy mistake in a dashboard
+ * env-var field) silently produced a Reply-To address a mail provider rejects at send time
+ * — e.g. `reply+client_x@"quardlink.com"` — which failed the ENTIRE send, not just tracking.
+ * Sanitizing and validating it here means a bad value degrades to "no Reply-To" instead of
+ * breaking outbound mail outright, and the health check below can flag it directly. */
+export function sanitizeInboundDomain(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
+  const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+  return domainPattern.test(cleaned) ? cleaned : null;
+}
+
 function trackingAddressFor(type: 'cr' | 'client', id: string): string {
-  const domain = process.env.EMAIL_INBOUND_DOMAIN || '';
+  const domain = sanitizeInboundDomain(process.env.EMAIL_INBOUND_DOMAIN) || '';
   return `reply+${type}_${id}@${domain}`;
 }
 
@@ -34,6 +47,50 @@ function extractTrackingToken(toHeader: string): { type: 'cr' | 'client'; id: st
 function extractEmailAddress(fromHeader: string): string {
   const match = fromHeader.match(/<([^>]+)>/);
   return (match ? match[1] : fromHeader).trim().toLowerCase();
+}
+
+const LOCK_STALE_MS = 30000; // a crashed/timed-out holder shouldn't wedge the conversation forever
+const LOCK_MAX_WAIT_MS = 8000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Mirrors lib/whatsappWebhookHandler.ts's acquireConversationLock — two emails from the
+ * same prospect sent seconds apart can trigger two concurrent invocations of this webhook
+ * that each read the same email_conversations row before the other writes back, silently
+ * dropping a turn or double-booking a calendar event. Backed by a plain conditional UPDATE
+ * (and an INSERT for the rare case where no row exists yet), not a Postgres advisory lock —
+ * those are session-scoped, and Supabase's REST interface doesn't guarantee the same
+ * underlying connection across calls, so a session lock could never be reliably released.
+ */
+async function acquireEmailConversationLock(supabase: any, orgId: string, clientEmail: string): Promise<boolean> {
+  const deadline = Date.now() + LOCK_MAX_WAIT_MS;
+  while (Date.now() < deadline) {
+    const staleThreshold = new Date(Date.now() - LOCK_STALE_MS).toISOString();
+    const { data: claimed } = await supabase
+      .from('email_conversations')
+      .update({ locked_at: new Date().toISOString() })
+      .eq('org_id', orgId)
+      .eq('client_email', clientEmail)
+      .or(`locked_at.is.null,locked_at.lt.${staleThreshold}`)
+      .select('id');
+    if (claimed && claimed.length > 0) return true;
+
+    const { error: insertError } = await supabase
+      .from('email_conversations')
+      .insert({ org_id: orgId, client_email: clientEmail, locked_at: new Date().toISOString() });
+    if (!insertError) return true;
+
+    await sleep(400 + Math.random() * 400);
+  }
+  console.warn('[Email Bot] Could not acquire conversation lock for', clientEmail, '— proceeding unlocked to avoid dropping the message.');
+  return false;
+}
+
+async function releaseEmailConversationLock(supabase: any, orgId: string, clientEmail: string): Promise<void> {
+  await supabase.from('email_conversations').update({ locked_at: null }).eq('org_id', orgId).eq('client_email', clientEmail);
 }
 
 /**
@@ -74,6 +131,14 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     return;
   }
 
+  const locked = await acquireEmailConversationLock(supabase, orgId, fromEmail);
+  try {
+    await processLockedEmail();
+  } finally {
+    if (locked) await releaseEmailConversationLock(supabase, orgId, fromEmail);
+  }
+
+  async function processLockedEmail(): Promise<void> {
   const { data: existing } = await supabase
     .from('email_conversations')
     .select('*')
@@ -113,6 +178,16 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       { onConflict: 'org_id,client_email' }
     );
 
+    {
+      const recipientId = token.type === 'cr' ? token.id : existing?.campaign_recipient_id;
+      if (recipientId) {
+        await supabase
+          .from('campaign_recipients')
+          .update({ ai_conversation_status: 'declined', updated_at: new Date().toISOString() })
+          .eq('id', recipientId);
+      }
+    }
+
     await sendEmailViaOrgProvider(orgChannelSettings, {
       to: fromEmail,
       subject: subject ? `Re: ${subject}` : 'Unsubscribed',
@@ -131,6 +206,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
         inboundSubject: subject,
         leadName: existing?.lead_name || context.clientName,
         leadCompany: existing?.lead_company || context.clientCompany,
+        leadCountry: existing?.lead_country || context.clientCountry,
         companyName: orgProfile?.companyName,
         senderName: orgProfile?.senderName,
         serviceDescription: orgProfile?.serviceDescription,
@@ -142,6 +218,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
         replySubject: subject ? `Re: ${subject}` : 'Re: your inquiry',
         status: 'active' as const,
         meeting: null,
+        meetingTimeZone: null,
       };
 
   let finalStatus = result.status;
@@ -153,7 +230,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   if (result.status === 'confirmed' && result.meeting) {
     if (calendarToken) {
       try {
-        const startIso = new Date(`${result.meeting.date}T${result.meeting.time}:00`).toISOString();
+        const startIso = toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone);
         const event = await createMeetingEvent({
           refreshToken: calendarToken.refreshToken,
           calendarId: calendarToken.calendarId,
@@ -173,18 +250,29 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
         } else {
           finalStatus = 'active';
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('[Email Bot] Google Calendar booking failed:', err);
         finalStatus = 'active';
-        replyText = `${replyText}\n\n(I had trouble locking that into the calendar — mind confirming the date and time once more?)`;
+        replyText =
+          err?.message === 'SLOT_ALREADY_BOOKED'
+            ? `${replyText}\n\n(Looks like that exact time just got taken by another booking — could you suggest a different time?)`
+            : `${replyText}\n\n(I had trouble locking that into the calendar — mind confirming the date and time once more?)`;
       }
     } else {
-      meetingDateTimeIso = new Date(`${result.meeting.date}T${result.meeting.time}:00`).toISOString();
+      meetingDateTimeIso = toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone);
     }
   }
 
   if (meetLink) {
     replyText = `${replyText}\n\nMeeting confirmed! Google Meet link: ${meetLink}`;
+  }
+
+  // See lib/whatsappWebhookHandler.ts for the full rationale — the prospect's latest
+  // message walked back an earlier confirmation, so cancel the real event instead of
+  // leaving a stale booking on the org's calendar.
+  const retractedMeeting = existing?.status === 'confirmed' && !!existing?.calendar_event_id && finalStatus !== 'confirmed';
+  if (retractedMeeting && calendarToken) {
+    await cancelMeetingEvent(calendarToken.refreshToken, calendarToken.calendarId, existing!.calendar_event_id);
   }
 
   history.push({ role: 'assistant', text: replyText, timestamp: new Date().toISOString() });
@@ -200,16 +288,30 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       status: finalStatus,
       subject: existing?.subject || subject,
       history,
-      meeting_date: meetingDateTimeIso ? meetingDateTimeIso.slice(0, 10) : existing?.meeting_date,
-      meeting_time: meetingDateTimeIso ? result.meeting?.time : existing?.meeting_time,
-      meeting_datetime_iso: meetingDateTimeIso || existing?.meeting_datetime_iso,
-      meet_link: meetLink || existing?.meet_link,
-      calendar_event_id: calendarEventId || existing?.calendar_event_id,
+      meeting_date: meetingDateTimeIso ? meetingDateTimeIso.slice(0, 10) : retractedMeeting ? null : existing?.meeting_date,
+      meeting_time: meetingDateTimeIso ? result.meeting?.time : retractedMeeting ? null : existing?.meeting_time,
+      meeting_datetime_iso: meetingDateTimeIso || (retractedMeeting ? null : existing?.meeting_datetime_iso),
+      meet_link: meetLink || (retractedMeeting ? null : existing?.meet_link),
+      calendar_event_id: calendarEventId || (retractedMeeting ? null : existing?.calendar_event_id),
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'org_id,client_email' }
   );
+
+  {
+    const recipientId = token.type === 'cr' ? token.id : existing?.campaign_recipient_id;
+    if (recipientId) {
+      await supabase
+        .from('campaign_recipients')
+        .update({
+          ai_conversation_status: finalStatus,
+          meeting_booked: finalStatus === 'confirmed',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', recipientId);
+    }
+  }
 
   const sendResult = await sendEmailViaOrgProvider(orgChannelSettings, {
     to: fromEmail,
@@ -221,6 +323,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   if (!sendResult.ok) {
     console.error('[Email Bot] Failed to send auto-reply:', sendResult.error);
   }
+  } // end processLockedEmail
 }
 
 /**
@@ -229,7 +332,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
  */
 export async function seedEmailConversationFromLead(
   orgId: string,
-  lead: { id?: string; name?: string; company?: string; email?: string },
+  lead: { id?: string; name?: string; company?: string; email?: string; country?: string },
   campaignRecipientId?: string | null,
   subject?: string
 ): Promise<void> {
@@ -247,6 +350,7 @@ export async function seedEmailConversationFromLead(
         campaign_recipient_id: campaignRecipientId || null,
         lead_name: lead.name,
         lead_company: lead.company,
+        lead_country: lead.country,
         subject: subject || null,
         updated_at: new Date().toISOString(),
       },
@@ -257,9 +361,18 @@ export async function seedEmailConversationFromLead(
   }
 }
 
-/** Builds the Reply-To tracking address to attach to an outbound campaign email. */
-export function buildEmailReplyToAddress(campaignRecipientId: string | null | undefined): string | null {
-  const domain = process.env.EMAIL_INBOUND_DOMAIN;
-  if (!domain || !campaignRecipientId) return null;
-  return trackingAddressFor('cr', campaignRecipientId);
+/** Builds the Reply-To tracking address to attach to an outbound email. Falls back to a
+ * client-keyed address (resolved via getContextFromClientId on inbound) whenever there's no
+ * campaign_recipients row yet — a Message Simulator test send, a one-off send outside a
+ * batch campaign, or a campaign whose campaign_recipients insert silently failed — so a
+ * reply still routes back to the AI bot instead of landing on the plain From address. */
+export function buildEmailReplyToAddress(
+  campaignRecipientId: string | null | undefined,
+  clientId?: string | null
+): string | null {
+  const domain = sanitizeInboundDomain(process.env.EMAIL_INBOUND_DOMAIN);
+  if (!domain) return null;
+  if (campaignRecipientId) return trackingAddressFor('cr', campaignRecipientId);
+  if (clientId) return trackingAddressFor('client', clientId);
+  return null;
 }
