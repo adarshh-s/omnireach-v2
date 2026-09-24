@@ -1,23 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
-import {
-  BarChart3,
-  TrendingUp,
-  CheckCircle2,
-  Calendar,
-  Clock,
-  MessageSquare,
-  Mail,
-  AlertTriangle,
-  Users,
-  Download,
-  Percent,
-  Sparkles,
-  XCircle,
-} from 'lucide-react';
+import { BarChart3, TrendingUp, Calendar, MessageSquare, Mail, Download } from 'lucide-react';
 import { Lead } from '../types';
 import { exportLeadsToExcel } from '../utils/excelParser';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
+import { StatTile } from './StatTile';
+import { useLiveHistory } from '../hooks/useLiveHistory';
 
 interface CampaignAnalyticsProps {
   leads: Lead[];
@@ -136,6 +123,14 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
     );
   };
 
+  const waEngagementRate = waDelivered > 0 ? Math.round((waReplied / waDelivered) * 100) : 0;
+  const emailResponseRate = emailSent > 0 ? Math.round((emailReplied / emailSent) * 100) : 0;
+
+  const meetingRateHistory = useLiveHistory(meetingConversionRate);
+  const meetingsBookedHistory = useLiveHistory(meetingsForRate);
+  const waEngagementHistory = useLiveHistory(waEngagementRate);
+  const emailResponseHistory = useLiveHistory(emailResponseRate);
+
   return (
     <div className="space-y-6">
       {/* Header Banner */}
@@ -162,130 +157,47 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
         </button>
       </div>
 
-      {/* 4 Metric KPI Cards */}
+      {/* 4 Metric KPI Cards — same StatTile the Dashboard uses, for a consistent look */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, delay: 0, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
-        >
-          <div className="flex items-center justify-between text-ink-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Meeting Conversion Rate</span>
-            <TrendingUp className="w-4 h-4 text-[#25D366]" />
-          </div>
-          <div className="text-2xl font-bold text-ink">{meetingConversionRate}%</div>
-          <p className="text-[11px] text-[#128C7E] font-medium">
-            {meetingsForRate} meetings booked from {dispatchedForRate} dispatched
-          </p>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, delay: 0.05, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
-        >
-          <div className="flex items-center justify-between text-ink-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Total Meetings Booked</span>
-            <Calendar className="w-4 h-4 text-[#4285F4]" />
-          </div>
-          <div className="text-2xl font-bold text-[#1967D2]">{cloud ? cloud.meetingsBooked : scheduled}</div>
-          <p className="text-[11px] text-ink-muted">
-            {cloud ? 'Booked by the AI bot & synced to Google Calendar' : 'Synced with Google Calendar'}
-          </p>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, delay: 0.1, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
-        >
-          <div className="flex items-center justify-between text-ink-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">WhatsApp Engagement</span>
-            <MessageSquare className="w-4 h-4 text-[#25D366]" />
-          </div>
-          <div className="text-2xl font-bold text-ink">
-            {waDelivered > 0 ? Math.round((waReplied / waDelivered) * 100) : 0}%
-          </div>
-          <p className="text-[11px] text-ink-muted">
-            {waReplied} replies from {waDelivered} delivered
-          </p>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, delay: 0.15, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
-        >
-          <div className="flex items-center justify-between text-ink-muted">
-            <span className="text-xs font-bold uppercase tracking-wider">Email Response Rate</span>
-            <Mail className="w-4 h-4 text-[#4285F4]" />
-          </div>
-          <div className="text-2xl font-bold text-ink">
-            {emailSent > 0 ? Math.round((emailReplied / emailSent) * 100) : 0}%
-          </div>
-          <p className="text-[11px] text-ink-muted">
-            {emailReplied} replies • {emailOpened} opened
-          </p>
-        </motion.div>
+        <StatTile
+          label="Meeting Conversion Rate"
+          value={meetingConversionRate}
+          suffix="%"
+          icon={TrendingUp}
+          accentClass="text-[#25D366] bg-[#25D366]/10"
+          history={meetingRateHistory}
+          color="#25D366"
+        />
+        <StatTile
+          label="Total Meetings Booked"
+          value={meetingsForRate}
+          icon={Calendar}
+          accentClass="text-[#4285F4] bg-[#4285F4]/10"
+          history={meetingsBookedHistory}
+          color="#4285F4"
+          delay={0.05}
+        />
+        <StatTile
+          label="WhatsApp Engagement"
+          value={waEngagementRate}
+          suffix="%"
+          icon={MessageSquare}
+          accentClass="text-[#25D366] bg-[#25D366]/10"
+          history={waEngagementHistory}
+          color="#25D366"
+          delay={0.1}
+        />
+        <StatTile
+          label="Email Response Rate"
+          value={emailResponseRate}
+          suffix="%"
+          icon={Mail}
+          accentClass="text-blue-400 bg-blue-500/10"
+          history={emailResponseHistory}
+          color="#4285F4"
+          delay={0.15}
+        />
       </div>
-
-      {/* Cloud-backed message & meeting stats — real outcomes across every device/campaign,
-          not just what this browser has seen locally. */}
-      {cloud && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, ease: 'easeOut' }}
-          className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card space-y-4"
-        >
-          <div>
-            <h3 className="font-bold text-sm text-ink">Live Message & Meeting Stats</h3>
-            <p className="text-[11px] text-ink-muted mt-0.5">
-              Real outcomes synced from the cloud — every message dispatched and meeting booked by the AI bot,
-              across all devices.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-ink">{cloud.messagesDispatched}</div>
-              <p className="text-[10px] text-ink-muted">Messages Dispatched</p>
-            </div>
-            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-[#128C7E]">{cloud.meetingsBooked}</div>
-              <p className="text-[10px] text-ink-muted">Meetings Booked</p>
-            </div>
-            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-[#4285F4]">{cloud.activeConversations}</div>
-              <p className="text-[10px] text-ink-muted">Active AI Conversations</p>
-            </div>
-            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-ink flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
-                {cloud.whatsappDelivered}
-                <span className="text-ink-muted font-normal mx-0.5">/</span>
-                <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                {cloud.whatsappFailed}
-              </div>
-              <p className="text-[10px] text-ink-muted">WhatsApp Delivered / Failed</p>
-            </div>
-            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-ink flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
-                {cloud.emailSent}
-                <span className="text-ink-muted font-normal mx-0.5">/</span>
-                <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                {cloud.emailFailed}
-              </div>
-              <p className="text-[10px] text-ink-muted">Email Sent / Failed</p>
-            </div>
-          </div>
-        </motion.div>
-      )}
 
       {/* Outcome Distribution Bar & Breakdown */}
       <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card space-y-5">

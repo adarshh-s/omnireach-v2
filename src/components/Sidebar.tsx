@@ -13,6 +13,7 @@ import {
   LayoutDashboard,
   Menu,
   X,
+  LogOut,
 } from 'lucide-react';
 import { NotificationBell } from './NotificationBell';
 
@@ -33,6 +34,8 @@ interface SidebarProps {
   scheduledCount: number;
   inboxCount?: number;
   userId?: string | null;
+  userEmail?: string | null;
+  onSignOut?: () => void | Promise<void>;
   onOpenExcelUpload: () => void;
   onOpenChannelConfig: () => void;
 }
@@ -57,6 +60,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   scheduledCount,
   inboxCount,
   userId,
+  userEmail,
+  onSignOut,
   onOpenExcelUpload,
   onOpenChannelConfig,
 }) => {
@@ -184,6 +189,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const QuickActions = ({ onNavigate }: { onNavigate?: () => void }) => (
     <div className="p-3 border-t border-border space-y-1.5">
+      {userEmail && (
+        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-surface-hover/50 backdrop-blur-xl border border-border mb-1.5">
+          <span className="text-[11px] text-ink-muted truncate" title={userEmail}>
+            {userEmail}
+          </span>
+          {onSignOut && (
+            <button
+              onClick={() => onSignOut()}
+              className="p-1 rounded-md text-ink-muted hover:text-ink shrink-0 transition-colors"
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
       <button
         id="header-channel-config-btn"
         onClick={() => {

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Zap, Mail, Lock, LogOut, Loader2 } from 'lucide-react';
+import { Zap, Mail, Lock, Loader2 } from 'lucide-react';
 import { useAuth, AuthState } from '../hooks/useAuth';
 
 interface AuthGateProps {
@@ -121,16 +121,5 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
     );
   }
 
-  return (
-    <>
-      <div className="bg-[#18181B] text-white text-xs px-4 sm:px-6 lg:px-8 py-1.5 flex items-center justify-between">
-        <span className="text-ink-muted">Signed in as {auth.user.email}</span>
-        <button onClick={() => auth.signOut()} className="flex items-center gap-1 text-ink-muted hover:text-white transition-colors">
-          <LogOut className="w-3 h-3" />
-          Sign out
-        </button>
-      </div>
-      {children(auth)}
-    </>
-  );
+  return <>{children(auth)}</>;
 };

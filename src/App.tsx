@@ -352,6 +352,8 @@ function AppContent({ auth }: { auth: AuthState }) {
         pendingCount={pendingCount}
         scheduledCount={scheduledCount}
         userId={auth.user?.id}
+        userEmail={auth.configured ? auth.user?.email ?? null : null}
+        onSignOut={auth.configured ? auth.signOut : undefined}
         onOpenExcelUpload={() => setIsExcelModalOpen(true)}
         onOpenChannelConfig={() => setIsChannelModalOpen(true)}
       />
