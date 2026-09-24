@@ -49,7 +49,7 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, delay, ease: 'easeOut' }}
-      className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200 flex flex-col"
+      className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200 flex flex-col"
     >
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="flex items-center gap-2.5 min-w-0">

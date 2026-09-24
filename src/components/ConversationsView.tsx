@@ -155,7 +155,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
 
   if (loading) {
     return (
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
         <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#128C7E]" />
         Loading AI conversations…
       </div>
@@ -164,7 +164,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
 
   if (!configured) {
     return (
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-8 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-8 shadow-card">
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center flex-shrink-0">
             <AlertTriangle className="w-5 h-5 text-amber-400" />
@@ -187,7 +187,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
 
   return (
     <div className="space-y-6">
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card flex items-center justify-between gap-4">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
             <Bot className="w-3.5 h-3.5 text-[#4285F4]" />
@@ -206,7 +206,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
       </div>
 
       {conversations.length === 0 ? (
-        <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
+        <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
           No conversations yet. Once a prospect replies to a WhatsApp or Email campaign message, it'll show up here.
         </div>
       ) : (
@@ -221,7 +221,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
             return (
               <div
                 key={`${conv.channel}-${conv.id}`}
-                className="bg-surface/70 backdrop-blur-2xl border border-border rounded-[20px] shadow-sm overflow-hidden hover:border-[#128C7E]/40 transition-all"
+                className="bg-surface/50 backdrop-blur-3xl border border-border rounded-[20px] shadow-sm overflow-hidden hover:border-[#128C7E]/40 transition-all"
               >
                 <button
                   className="w-full text-left p-4 flex items-start justify-between gap-4"

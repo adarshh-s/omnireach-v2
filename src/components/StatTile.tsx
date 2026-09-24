@@ -38,7 +38,7 @@ export const StatTile: React.FC<StatTileProps> = ({ label, value, icon: Icon, ac
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, delay, ease: 'easeOut' }}
-      className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+      className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
     >
       <div className="flex items-center justify-between mb-3">
         <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${accentClass}`}>

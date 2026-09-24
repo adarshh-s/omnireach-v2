@@ -29,7 +29,7 @@ export const ChannelHealthPanel: React.FC<ChannelHealthPanelProps> = ({ accessTo
   if (!accessToken) return null;
 
   return (
-    <div className="p-4 bg-surface/70 backdrop-blur-2xl rounded-xl border border-border space-y-2.5 hover:shadow-card transition-shadow duration-200">
+    <div className="p-4 bg-surface/50 backdrop-blur-3xl rounded-xl border border-border space-y-2.5 hover:shadow-card transition-shadow duration-200">
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold text-ink">Channel Health</span>
         <button

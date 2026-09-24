@@ -173,7 +173,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   return (
     <div className="space-y-5">
       {/* Top Toolbar */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-4 sm:p-5 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-4 sm:p-5 shadow-card">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -307,7 +307,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {isAddingLead && (
         <form
           onSubmit={handleAddSubmit}
-          className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-[#25D366]/40 p-5 shadow-card space-y-4"
+          className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-[#25D366]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold text-ink">Add New Client Contact</h3>
@@ -407,7 +407,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {editingLead && (
         <form
           onSubmit={handleEditSubmit}
-          className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-[#4285F4]/40 p-5 shadow-card space-y-4"
+          className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-[#4285F4]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold text-ink">Edit Lead: {editingLead.name}</h3>
@@ -527,7 +527,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       )}
 
       {/* Main Leads Table */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border shadow-card overflow-hidden">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border shadow-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>

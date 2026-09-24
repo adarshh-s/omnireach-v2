@@ -244,7 +244,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
   if (!lead) {
     return (
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-10 text-center">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-10 text-center">
         <div className="w-12 h-12 rounded-full bg-canvas border border-border-strong flex items-center justify-center mx-auto text-ink-muted mb-3">
           <MessageSquare className="w-5 h-5" />
         </div>
@@ -259,7 +259,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Header Card & Lead Selector */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -486,7 +486,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
 
           {/* Right: Quick Simulated Reply Triggers & One-Click Actions */}
           <div className="lg:col-span-5 space-y-4">
-            <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card space-y-4">
+            <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card space-y-4">
               <button
                 type="button"
                 onClick={() => setShowTestTools((v) => !v)}
@@ -564,7 +564,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
         </div>
       ) : (
         /* Email Client Simulator */
-        <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border shadow-card overflow-hidden">
+        <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border shadow-card overflow-hidden">
           {/* Email Top Bar */}
           <div className="bg-canvas border-b border-border px-6 py-4 flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs text-ink-secondary">

@@ -159,7 +159,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Settings Header */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -273,7 +273,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Template Selector Sidebar */}
         <div className="lg:col-span-4 space-y-3">
-          <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-4 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-4 shadow-card">
             <div className="flex items-center justify-between pb-3 border-b border-border">
               <h2 className="text-xs font-bold uppercase tracking-wider text-ink-muted">
                 Saved Templates ({templates.length})
@@ -350,7 +350,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
         {/* Right: Active Template Editor & Live Lead Preview */}
         <div className="lg:col-span-8 space-y-4">
           {activeTemplate && (
-            <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card space-y-5">
+            <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card space-y-5">
               {/* Template Name */}
               <div>
                 <label className="block text-[11px] font-semibold text-ink-muted mb-1">

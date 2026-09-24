@@ -139,7 +139,7 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
   return (
     <div className="space-y-6">
       {/* Header Banner */}
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
             <BarChart3 className="w-3.5 h-3.5 text-[#25D366]" />
@@ -240,7 +240,7 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, ease: 'easeOut' }}
-          className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card space-y-4"
+          className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card space-y-4"
         >
           <div>
             <h3 className="font-bold text-sm text-ink">Live Message & Meeting Stats</h3>
@@ -288,7 +288,7 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
       )}
 
       {/* Outcome Distribution Bar & Breakdown */}
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card space-y-5">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card space-y-5">
         <h3 className="font-bold text-sm text-ink">Overall Lead Status Distribution</h3>
 
         {/* Multi-segment Progress Bar */}

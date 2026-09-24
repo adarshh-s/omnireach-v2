@@ -3,13 +3,14 @@
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
-  /* Dark, warm-brown design system — every surface in the app reads off these tokens
-     instead of hardcoded hex, so the whole product reskins from this one block. */
-  --color-canvas: #0D0906;
-  --color-surface: #221510;
-  --color-surface-hover: #2D1C14;
-  --color-border: #3A2620;
-  --color-border-strong: #4D3226;
+  /* Dark liquid-glass design system. The glow (body::before) carries the warm color —
+     the glass itself stays near-neutral so it reads as clear tinted glass over a warm
+     room, not warm-colored plastic. Every surface reads off these tokens. */
+  --color-canvas: #0B0A09;
+  --color-surface: #1B1917;
+  --color-surface-hover: #242220;
+  --color-border: #ffffff1f;
+  --color-border-strong: #ffffff33;
   --color-ink: #F5F0EA;
   --color-ink-secondary: #D8CFC5;
   --color-ink-muted: #948A7E;
@@ -17,9 +18,9 @@
   --color-brand: #25D366;
   --color-brand-strong: #128C7E;
 
-  --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 8px 24px -8px rgb(0 0 0 / 0.6);
-  --shadow-elevated: 0 1px 0 0 rgb(255 255 255 / 0.06) inset, 0 16px 40px -12px rgb(0 0 0 / 0.7);
-  --shadow-modal: 0 1px 0 0 rgb(255 255 255 / 0.08) inset, 0 24px 60px -12px rgb(0 0 0 / 0.85);
+  --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.14) inset, 0 0 0 1px rgb(255 255 255 / 0.04) inset, 0 8px 24px -8px rgb(0 0 0 / 0.6);
+  --shadow-elevated: 0 1px 0 0 rgb(255 255 255 / 0.18) inset, 0 0 0 1px rgb(255 255 255 / 0.05) inset, 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  --shadow-modal: 0 1px 0 0 rgb(255 255 255 / 0.2) inset, 0 0 0 1px rgb(255 255 255 / 0.06) inset, 0 24px 60px -12px rgb(0 0 0 / 0.85);
 }
 
 body {

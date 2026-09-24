@@ -673,7 +673,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           <button
             id="campaign-restart-icon-btn"
             onClick={handleRestartAll}
-            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/70 backdrop-blur-2xl hover:bg-surface-hover border border-border transition-colors"
+            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/50 backdrop-blur-3xl hover:bg-surface-hover border border-border transition-colors"
             title="Start automation again (re-send to all leads)"
           >
             <RotateCcw className="w-4 h-4" />
@@ -681,7 +681,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           <button
             id="campaign-reset-btn"
             onClick={handleReset}
-            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/70 backdrop-blur-2xl hover:bg-surface-hover border border-border transition-colors"
+            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/50 backdrop-blur-3xl hover:bg-surface-hover border border-border transition-colors"
             title="Reset campaign state"
           >
             <RotateCcw className="w-4 h-4" />
@@ -749,7 +749,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       </AnimatePresence>
 
       {/* Compact Settings Row */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {/* Channel Mode Selector */}
           <div>
@@ -1013,7 +1013,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       </AnimatePresence>
 
       {/* Progress Bar & Status Line */}
-      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
         <div className="flex items-center justify-between text-xs text-ink-muted mb-1.5">
           <span className="font-medium">
             Campaign Progress: {totalLeadsCount - pendingLeads.length} of {totalLeadsCount} Leads Contacted
@@ -1032,7 +1032,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Live Active Lead & Message Personalization Stream */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
             <div className="flex items-center justify-between pb-4 border-b border-border">
               <div className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-full bg-[#25D366] animate-pulse"></div>
@@ -1149,7 +1149,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
         {/* Right Column: Live Dispatch Feed & Audit Logs */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
             <div className="flex items-center justify-between pb-4 border-b border-border">
               <h2 className="text-sm font-bold text-ink flex items-center gap-2">
                 <Clock className="w-4 h-4 text-ink-muted" />
@@ -1236,7 +1236,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               exit={{ opacity: 0, scale: 0.96, y: 8 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-md w-full shadow-modal overflow-hidden p-6 space-y-4"
+              className="bg-surface/65 backdrop-blur-3xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-md w-full shadow-modal overflow-hidden p-6 space-y-4"
             >
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center text-amber-400 shrink-0">

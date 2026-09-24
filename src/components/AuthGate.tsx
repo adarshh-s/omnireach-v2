@@ -53,7 +53,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
             <span className="font-semibold text-lg text-ink tracking-tight">OmniReach AI</span>
           </div>
 
-          <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-7 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-7 shadow-card">
             <h2 className="text-lg font-bold text-ink mb-1">
               {mode === 'signin' ? 'Sign in to your workspace' : 'Create your workspace'}
             </h2>

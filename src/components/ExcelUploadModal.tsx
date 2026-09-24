@@ -161,7 +161,7 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-2xl w-full shadow-modal overflow-hidden flex flex-col max-h-[90vh]"
+            className="bg-surface/65 backdrop-blur-3xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-2xl w-full shadow-modal overflow-hidden flex flex-col max-h-[90vh]"
           >
         {/* Header */}
         <div className="px-6 py-5 border-b border-border flex items-center justify-between bg-canvas">

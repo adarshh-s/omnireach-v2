@@ -128,7 +128,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
 
   return (
     <div className="space-y-6">
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
             <TrendingUp className="w-3.5 h-3.5 text-[#4285F4]" />
@@ -220,7 +220,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.25, ease: 'easeOut' }}
-          className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
           <h3 className="font-semibold text-sm text-ink mb-3">Client Pipeline</h3>
           <div className="space-y-2.5 text-xs">
@@ -249,7 +249,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.3, ease: 'easeOut' }}
-          className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
           <div className="flex items-center gap-2 mb-3">
             <Clock className="w-4 h-4 text-ink-muted" />

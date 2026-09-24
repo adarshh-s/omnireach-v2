@@ -41,7 +41,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Banner */}
-      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
             <CalendarIcon className="w-3.5 h-3.5 text-[#128C7E]" />
@@ -67,7 +67,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
       {isAdding && (
         <form
           onSubmit={handleAddSubmit}
-          className="bg-surface/70 backdrop-blur-2xl border border-[#128C7E]/40 rounded-2xl p-6 shadow-card flex flex-wrap items-end gap-4 animate-in fade-in"
+          className="bg-surface/50 backdrop-blur-3xl border border-[#128C7E]/40 rounded-2xl p-6 shadow-card flex flex-wrap items-end gap-4 animate-in fade-in"
         >
           <div>
             <label className="block text-xs font-medium text-ink-secondary mb-1">Date</label>
@@ -114,7 +114,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Booked Meetings (Left) */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card">
             <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
               <h3 className="font-semibold text-sm text-ink flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#128C7E]" />
@@ -192,7 +192,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
         {/* Available Calendar Slots (Right) */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card">
+          <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card">
             <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
               <h3 className="font-semibold text-sm text-ink flex items-center gap-2">
                 <Clock className="w-4 h-4 text-[#128C7E]" />

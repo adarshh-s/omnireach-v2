@@ -480,7 +480,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl shadow-modal max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+            className="bg-surface/65 backdrop-blur-3xl border border-white/10 ring-1 ring-white/5 rounded-3xl shadow-modal max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden"
           >
         {/* Modal Header — pinned so the close button is always reachable, even when a
             provider panel below (e.g. WhatsApp Cloud API's template editor) grows tall. */}

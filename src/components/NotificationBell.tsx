@@ -128,7 +128,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: -4 }}
             transition={{ duration: 0.12, ease: 'easeOut' }}
-            className={`absolute top-full mt-1.5 w-72 max-w-[85vw] bg-surface/70 backdrop-blur-2xl border border-border rounded-xl shadow-elevated py-1.5 z-50 max-h-80 overflow-y-auto ${
+            className={`absolute top-full mt-1.5 w-72 max-w-[85vw] bg-surface/50 backdrop-blur-3xl border border-border rounded-xl shadow-elevated py-1.5 z-50 max-h-80 overflow-y-auto ${
               align === 'left' ? 'left-0 origin-top-left' : 'right-0 origin-top-right'
             }`}
           >
