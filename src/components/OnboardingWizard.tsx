@@ -57,7 +57,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="bg-white/90 backdrop-blur-2xl border border-white/60 ring-1 ring-black/5 rounded-3xl max-w-lg w-full shadow-[0_20px_25px_-5px_rgb(0_0_0/0.1),0_8px_10px_-6px_rgb(0_0_0/0.1),inset_0_1px_0_0_rgba(255,255,255,0.8)] overflow-hidden flex flex-col"
+            className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-lg w-full shadow-modal overflow-hidden flex flex-col"
           >
             {/* Progress dots */}
             <div className="px-6 pt-5 flex items-center justify-between">
@@ -66,12 +66,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                   <span
                     key={s}
                     className={`h-1.5 rounded-full transition-all ${
-                      i === stepIndex ? 'w-6 bg-[#128C7E]' : i < stepIndex ? 'w-1.5 bg-[#128C7E]/50' : 'w-1.5 bg-[#E4E4E7]'
+                      i === stepIndex ? 'w-6 bg-[#128C7E]' : i < stepIndex ? 'w-1.5 bg-[#128C7E]/50' : 'w-1.5 bg-border-strong'
                     }`}
                   />
                 ))}
               </div>
-              <button onClick={onClose} className="p-1.5 rounded-full text-[#71717A] hover:text-[#18181B] hover:bg-[#F4F4F5] transition-colors">
+              <button onClick={onClose} className="p-1.5 rounded-full text-ink-muted hover:text-ink hover:bg-surface-hover transition-colors">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -82,8 +82,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                   <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#25D366] via-[#128C7E] to-[#4285F4] flex items-center justify-center text-white shadow-sm mx-auto">
                     <Zap className="w-7 h-7 fill-white" />
                   </div>
-                  <h2 className="text-lg font-bold text-[#18181B]">Welcome to OmniReach AI</h2>
-                  <p className="text-sm text-[#3F3F46] max-w-sm mx-auto">
+                  <h2 className="text-lg font-bold text-ink">Welcome to OmniReach AI</h2>
+                  <p className="text-sm text-ink-secondary max-w-sm mx-auto">
                     Let's get your workspace set up — connecting WhatsApp, Email, and Calendar takes about 2 minutes.
                   </p>
                 </div>
@@ -91,36 +91,36 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
               {step === 'profile' && (
                 <div className="space-y-3">
-                  <h2 className="text-base font-bold text-[#18181B]">Tell us about your business</h2>
-                  <p className="text-xs text-[#71717A]">This shapes every AI-generated message you send.</p>
+                  <h2 className="text-base font-bold text-ink">Tell us about your business</h2>
+                  <p className="text-xs text-ink-muted">This shapes every AI-generated message you send.</p>
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Company Name</label>
+                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">Company Name</label>
                     <input
                       type="text"
                       value={campaignSettings.companyName}
                       onChange={(e) => onUpdateSettings({ ...campaignSettings, companyName: e.target.value })}
                       placeholder="Acme Inc."
-                      className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-sm text-[#18181B]"
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-sm text-ink"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Your Full Name</label>
+                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">Your Full Name</label>
                     <input
                       type="text"
                       value={campaignSettings.senderName}
                       onChange={(e) => onUpdateSettings({ ...campaignSettings, senderName: e.target.value })}
                       placeholder="Jane Doe"
-                      className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-sm text-[#18181B]"
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-sm text-ink"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Your Email</label>
+                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">Your Email</label>
                     <input
                       type="email"
                       value={campaignSettings.senderEmail}
                       onChange={(e) => onUpdateSettings({ ...campaignSettings, senderEmail: e.target.value })}
                       placeholder="jane@acme.com"
-                      className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-sm text-[#18181B]"
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-sm text-ink"
                     />
                   </div>
                 </div>
@@ -128,21 +128,21 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
               {step === 'channels' && (
                 <div className="space-y-3">
-                  <h2 className="text-base font-bold text-[#18181B]">Connect your channels</h2>
-                  <p className="text-xs text-[#71717A]">
+                  <h2 className="text-base font-bold text-ink">Connect your channels</h2>
+                  <p className="text-xs text-ink-muted">
                     WhatsApp, Email, and Google Calendar credentials live in Channel Setup — open it now, or skip and
                     do it later.
                   </p>
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-[#FAFAFA] border border-[#E4E4E7] text-xs text-[#3F3F46]">
+                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
                       <MessageSquare className="w-4 h-4 text-[#25D366] shrink-0" />
                       <span>WhatsApp Cloud API — for cold outreach & AI replies</span>
                     </div>
-                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-[#FAFAFA] border border-[#E4E4E7] text-xs text-[#3F3F46]">
+                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
                       <Mail className="w-4 h-4 text-[#4285F4] shrink-0" />
                       <span>Email — works out of the box, no setup required</span>
                     </div>
-                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-[#FAFAFA] border border-[#E4E4E7] text-xs text-[#3F3F46]">
+                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
                       <Calendar className="w-4 h-4 text-[#4285F4] shrink-0" />
                       <span>Google Calendar — so booked meetings show up automatically</span>
                     </div>
@@ -153,7 +153,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                       onOpenChannelConfig();
                       onHide();
                     }}
-                    className="w-full py-2.5 rounded-xl bg-[#18181B] hover:bg-[#09090B] text-white text-sm font-medium shadow-sm transition-all"
+                    className="w-full py-2.5 rounded-xl bg-brand-strong hover:bg-[#0d6e62] text-white text-sm font-medium shadow-sm transition-all"
                   >
                     Open Channel Setup
                   </button>
@@ -162,8 +162,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
               {step === 'leads' && (
                 <div className="space-y-3">
-                  <h2 className="text-base font-bold text-[#18181B]">Import your first leads</h2>
-                  <p className="text-xs text-[#71717A]">
+                  <h2 className="text-base font-bold text-ink">Import your first leads</h2>
+                  <p className="text-xs text-ink-muted">
                     Upload an Excel or CSV file with names, phone numbers, and emails — we'll auto-detect the columns.
                   </p>
                   <button
@@ -172,7 +172,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                       onOpenExcelUpload();
                       onHide();
                     }}
-                    className="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#18181B] hover:bg-[#09090B] text-white text-sm font-medium shadow-sm transition-all"
+                    className="w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-brand-strong hover:bg-[#0d6e62] text-white text-sm font-medium shadow-sm transition-all"
                   >
                     <Upload className="w-4 h-4" />
                     <span>Import Excel / CSV</span>
@@ -182,11 +182,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
               {step === 'done' && (
                 <div className="text-center space-y-3 py-4">
-                  <div className="w-14 h-14 rounded-full bg-[#128C7E]/10 border border-[#128C7E]/30 flex items-center justify-center mx-auto text-[#0F6D42]">
+                  <div className="w-14 h-14 rounded-full bg-[#128C7E]/10 border border-[#128C7E]/30 flex items-center justify-center mx-auto text-emerald-300">
                     <CheckCircle2 className="w-7 h-7 text-[#25D366]" />
                   </div>
-                  <h2 className="text-lg font-bold text-[#18181B]">You're all set!</h2>
-                  <p className="text-sm text-[#3F3F46] max-w-sm mx-auto">
+                  <h2 className="text-lg font-bold text-ink">You're all set!</h2>
+                  <p className="text-sm text-ink-secondary max-w-sm mx-auto">
                     Head to Batch Outreach when you're ready to launch your first campaign. You can always revisit
                     Channel Setup from the sidebar.
                   </p>
@@ -198,7 +198,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                   <button
                     type="button"
                     onClick={onClose}
-                    className="text-xs text-[#71717A] hover:text-[#18181B] font-medium"
+                    className="text-xs text-ink-muted hover:text-ink font-medium"
                   >
                     Skip for now
                   </button>

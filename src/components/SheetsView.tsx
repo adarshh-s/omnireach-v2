@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { Lead, LeadStatus, ChannelDeliveryStatus } from '../types';
 import { exportLeadsToExcel, sanitizePhoneNumber } from '../utils/excelParser';
+import { AdvancedSection } from './AdvancedSection';
 
 interface SheetsViewProps {
   leads: Lead[];
@@ -172,18 +173,18 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   return (
     <div className="space-y-5">
       {/* Top Toolbar */}
-      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-4 sm:p-5 shadow-card">
+      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-4 sm:p-5 shadow-card">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-[#18181B]">
+              <h2 className="text-base font-bold text-ink">
                 Client Outreach Spreadsheet & Lead Records
               </h2>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#FAFAFA] border border-[#D4D4D8] text-[#71717A]">
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-canvas border border-border-strong text-ink-muted">
                 {leads.length} Total Rows
               </span>
             </div>
-            <p className="text-xs text-[#71717A] mt-0.5">
+            <p className="text-xs text-ink-muted mt-0.5">
               Live two-way synced contact records. Ingest Excel sheets, monitor WhatsApp & Email delivery status, and launch targeted sequences.
             </p>
           </div>
@@ -193,7 +194,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               id="sheet-add-lead-btn"
               onClick={() => setIsAddingLead(!isAddingLead)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Lead</span>
@@ -202,25 +203,25 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               id="sheet-import-excel-btn"
               onClick={onOpenExcelUpload}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
             >
-              <Upload className="w-3.5 h-3.5 text-[#71717A]" />
+              <Upload className="w-3.5 h-3.5 text-ink-muted" />
               <span>Import Sheet</span>
             </button>
 
             <button
               id="sheet-export-excel-btn"
               onClick={() => exportLeadsToExcel(leads)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#18181B] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
             >
-              <Download className="w-3.5 h-3.5 text-[#71717A]" />
+              <Download className="w-3.5 h-3.5 text-ink-muted" />
               <span>Export Excel</span>
             </button>
 
             <button
               id="sheet-reset-btn"
               onClick={onResetLeads}
-              className="p-2 text-xs font-semibold rounded-lg text-[#71717A] hover:text-[#18181B] hover:bg-[#F4F4F5] border border-[#D4D4D8] transition-colors"
+              className="p-2 text-xs font-semibold rounded-lg text-ink-muted hover:text-ink hover:bg-surface-hover border border-border-strong transition-colors"
               title="Reset to initial sample leads"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -228,50 +229,51 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
           </div>
         </div>
 
-        {/* Filters & Search Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 mt-4 pt-4 border-t border-[#F4F4F5]">
-          {/* Search Box */}
-          <div className="sm:col-span-6 relative">
-            <Search className="w-4 h-4 text-[#71717A] absolute left-3 top-2.5" />
+        {/* Search + Filters */}
+        <div className="mt-4 pt-4 border-t border-border space-y-3">
+          <div className="relative">
+            <Search className="w-4 h-4 text-ink-muted absolute left-3 top-2.5" />
             <input
               id="sheet-search-input"
               type="text"
               placeholder="Search by name, company, phone, or email..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg pl-9 pr-3 py-2 text-xs text-[#18181B] placeholder-[#A1A1AA] focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366]"
+              className="w-full bg-canvas border border-border-strong rounded-lg pl-9 pr-3 py-2 text-xs text-ink placeholder-ink-muted focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366]"
             />
           </div>
 
-          {/* Status Filter */}
-          <div className="sm:col-span-3">
-            <select
-              id="sheet-status-filter"
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-xs text-[#18181B]"
-            >
-              <option value="ALL">All Lead Statuses</option>
-              <option value="PENDING">Pending Outreach</option>
-              <option value="CONTACTED">Contacted / Interested</option>
-              <option value="BOOKED">Meeting Booked</option>
-            </select>
-          </div>
+          <AdvancedSection
+            label={filterStatus !== 'ALL' || filterChannel !== 'ALL' ? 'Filters (active)' : 'Filters'}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Status Filter */}
+              <select
+                id="sheet-status-filter"
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-xs text-ink"
+              >
+                <option value="ALL">All Lead Statuses</option>
+                <option value="PENDING">Pending Outreach</option>
+                <option value="CONTACTED">Contacted / Interested</option>
+                <option value="BOOKED">Meeting Booked</option>
+              </select>
 
-          {/* Channel Status Filter */}
-          <div className="sm:col-span-3">
-            <select
-              id="sheet-channel-filter"
-              value={filterChannel}
-              onChange={(e) => setFilterChannel(e.target.value)}
-              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-2 text-xs text-[#18181B]"
-            >
-              <option value="ALL">All Delivery Statuses</option>
-              <option value="WA_SENT">WhatsApp Delivered</option>
-              <option value="EMAIL_SENT">Email Sent</option>
-              <option value="REPLIED">Client Replied</option>
-            </select>
-          </div>
+              {/* Channel Status Filter */}
+              <select
+                id="sheet-channel-filter"
+                value={filterChannel}
+                onChange={(e) => setFilterChannel(e.target.value)}
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-xs text-ink"
+              >
+                <option value="ALL">All Delivery Statuses</option>
+                <option value="WA_SENT">WhatsApp Delivered</option>
+                <option value="EMAIL_SENT">Email Sent</option>
+                <option value="REPLIED">Client Replied</option>
+              </select>
+            </div>
+          </AdvancedSection>
         </div>
 
         {/* Batch Selected Actions Bar */}
@@ -292,7 +294,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               )}
               <button
                 onClick={() => setSelectedIds([])}
-                className="px-2.5 py-1.5 rounded-lg bg-white text-[#3F3F46] font-medium text-xs hover:bg-[#F4F4F5] border border-[#128C7E]/30"
+                className="px-2.5 py-1.5 rounded-lg bg-surface text-ink-secondary font-medium text-xs hover:bg-surface-hover border border-[#128C7E]/30"
               >
                 Clear Selection
               </button>
@@ -305,14 +307,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {isAddingLead && (
         <form
           onSubmit={handleAddSubmit}
-          className="bg-white rounded-2xl border border-[#25D366]/40 p-5 shadow-card space-y-4"
+          className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-[#25D366]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-[#18181B]">Add New Client Contact</h3>
+            <h3 className="text-sm font-bold text-ink">Add New Client Contact</h3>
             <button
               type="button"
               onClick={() => setIsAddingLead(false)}
-              className="text-xs text-[#71717A] hover:text-[#18181B]"
+              className="text-xs text-ink-muted hover:text-ink"
             >
               Cancel
             </button>
@@ -320,7 +322,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">
                 Full Name *
               </label>
               <input
@@ -329,11 +331,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. John Doe"
                 value={newLead.name}
                 onChange={(e) => setNewLead({ ...newLead, name: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">
                 Company Name
               </label>
               <input
@@ -341,11 +343,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. Acme Corp"
                 value={newLead.company}
                 onChange={(e) => setNewLead({ ...newLead, company: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">
                 WhatsApp Phone (E.164) *
               </label>
               <input
@@ -354,11 +356,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. +919876543210"
                 value={newLead.phone}
                 onChange={(e) => setNewLead({ ...newLead, phone: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">
                 Email Address
               </label>
               <input
@@ -366,11 +368,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. john@acme.com"
                 value={newLead.email}
                 onChange={(e) => setNewLead({ ...newLead, email: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">
                 Country
               </label>
               <input
@@ -378,7 +380,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 placeholder="e.g. United Arab Emirates"
                 value={newLead.country}
                 onChange={(e) => setNewLead({ ...newLead, country: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B]"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
           </div>
@@ -387,7 +389,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               type="button"
               onClick={() => setIsAddingLead(false)}
-              className="px-3 py-1.5 text-xs text-[#71717A] hover:bg-[#FAFAFA] rounded-lg border border-[#D4D4D8]"
+              className="px-3 py-1.5 text-xs text-ink-muted hover:bg-canvas rounded-lg border border-border-strong"
             >
               Cancel
             </button>
@@ -405,14 +407,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       {editingLead && (
         <form
           onSubmit={handleEditSubmit}
-          className="bg-white rounded-2xl border border-[#4285F4]/40 p-5 shadow-card space-y-4"
+          className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-[#4285F4]/40 p-5 shadow-card space-y-4"
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-[#18181B]">Edit Lead: {editingLead.name}</h3>
+            <h3 className="text-sm font-bold text-ink">Edit Lead: {editingLead.name}</h3>
             <button
               type="button"
               onClick={() => setEditingLead(null)}
-              className="text-xs text-[#71717A] hover:text-[#18181B]"
+              className="text-xs text-ink-muted hover:text-ink"
             >
               Cancel
             </button>
@@ -420,65 +422,65 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Name</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Name</label>
               <input
                 type="text"
                 value={editingLead.name}
                 onChange={(e) => setEditingLead({ ...editingLead, name: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Company</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Company</label>
               <input
                 type="text"
                 value={editingLead.company}
                 onChange={(e) => setEditingLead({ ...editingLead, company: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Phone</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Phone</label>
               <input
                 type="text"
                 value={editingLead.phone}
                 onChange={(e) => setEditingLead({ ...editingLead, phone: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Email</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Email</label>
               <input
                 type="email"
                 value={editingLead.email}
                 onChange={(e) => setEditingLead({ ...editingLead, email: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Country</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Country</label>
               <input
                 type="text"
                 value={editingLead.country || ''}
                 onChange={(e) => setEditingLead({ ...editingLead, country: e.target.value })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Notes / Remarks</label>
+            <label className="block text-[11px] font-semibold text-ink-muted mb-1">Notes / Remarks</label>
             <input
               type="text"
               value={editingLead.notes || ''}
               onChange={(e) => setEditingLead({ ...editingLead, notes: e.target.value })}
-              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+              className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Tags (comma-separated)</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Tags (comma-separated)</label>
               <input
                 type="text"
                 value={(editingLead.tags || []).join(', ')}
@@ -492,16 +494,16 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                   })
                 }
                 placeholder="hot lead, enterprise"
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#71717A] mb-1">Follow-up Date</label>
+              <label className="block text-[11px] font-semibold text-ink-muted mb-1">Follow-up Date</label>
               <input
                 type="date"
                 value={editingLead.followUpDate || ''}
                 onChange={(e) => setEditingLead({ ...editingLead, followUpDate: e.target.value || undefined })}
-                className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs"
+                className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs"
               />
             </div>
           </div>
@@ -510,13 +512,13 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             <button
               type="button"
               onClick={() => setEditingLead(null)}
-              className="px-3 py-1.5 text-xs text-[#71717A] hover:bg-[#FAFAFA] rounded-lg border border-[#D4D4D8]"
+              className="px-3 py-1.5 text-xs text-ink-muted hover:bg-canvas rounded-lg border border-border-strong"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-1.5 text-xs font-semibold text-white bg-[#18181B] hover:bg-[#09090B] rounded-lg shadow-xs"
+              className="px-4 py-1.5 text-xs font-semibold text-white bg-brand-strong hover:bg-[#0d6e62] rounded-lg shadow-xs"
             >
               Update Lead
             </button>
@@ -525,15 +527,15 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       )}
 
       {/* Main Leads Table */}
-      <div className="bg-white rounded-2xl border border-[#E4E4E7] shadow-card overflow-hidden">
+      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border shadow-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
-              <tr className="bg-[#FAFAFA] border-b border-[#E4E4E7] text-[#71717A] font-semibold">
+              <tr className="bg-canvas border-b border-border text-ink-muted font-semibold">
                 <th className="py-3 px-3.5 w-10 text-center">
                   <button
                     onClick={toggleSelectAll}
-                    className="text-[#71717A] hover:text-[#18181B]"
+                    className="text-ink-muted hover:text-ink"
                     title="Select All"
                   >
                     {filteredLeads.length > 0 && filteredLeads.every((l) => selectedIds.includes(l.id)) ? (
@@ -553,7 +555,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 <th className="py-3 px-3 text-right">Quick Dispatch & Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#F4F4F5]">
+            <tbody className="divide-y divide-surface-hover">
               {filteredLeads.length > 0 ? (
                 filteredLeads.map((lead) => {
                   const isSelected = selectedIds.includes(lead.id);
@@ -564,7 +566,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ duration: 0.2 }}
-                      className={`hover:bg-[#FAFAFA] transition-colors ${
+                      className={`hover:bg-canvas transition-colors ${
                         isSelected ? 'bg-[#25D366]/5' : ''
                       }`}
                     >
@@ -572,7 +574,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       <td className="py-3 px-3.5 text-center">
                         <button
                           onClick={() => toggleSelectLead(lead.id)}
-                          className="text-[#71717A] hover:text-[#18181B]"
+                          className="text-ink-muted hover:text-ink"
                         >
                           {isSelected ? (
                             <CheckSquare className="w-4 h-4 text-[#25D366]" />
@@ -584,10 +586,10 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
                       {/* Name & Company */}
                       <td className="py-3 px-3">
-                        <div className="font-semibold text-[#18181B]">{lead.name}</div>
-                        <div className="text-[11px] text-[#71717A]">
+                        <div className="font-semibold text-ink">{lead.name}</div>
+                        <div className="text-[11px] text-ink-muted">
                           {lead.company}
-                          {lead.country && <span className="text-[#A1A1AA]"> · {lead.country}</span>}
+                          {lead.country && <span className="text-ink-muted"> · {lead.country}</span>}
                         </div>
                         {(lead.tags?.length || lead.followUpDate) && (
                           <div className="flex flex-wrap items-center gap-1 mt-1">
@@ -603,8 +605,8 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                               <span
                                 className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
                                   new Date(lead.followUpDate) <= new Date()
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-[#F4F4F5] text-[#71717A]'
+                                    ? 'bg-amber-500/15 text-amber-300'
+                                    : 'bg-surface-hover text-ink-muted'
                                 }`}
                               >
                                 Follow up {lead.followUpDate}
@@ -616,44 +618,44 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
                       {/* Phone */}
                       <td className="py-3 px-3">
-                        <div className="font-mono text-[#18181B] flex items-center gap-1">
+                        <div className="font-mono text-ink flex items-center gap-1">
                           <span>{lead.phone}</span>
                           {lead.isValidPhone ? (
                             <span className="w-1.5 h-1.5 rounded-full bg-[#25D366]" title="Valid E.164"></span>
                           ) : (
-                            <span className="text-[10px] text-[#DC2626]">Invalid</span>
+                            <span className="text-[10px] text-red-400">Invalid</span>
                           )}
                         </div>
                       </td>
 
                       {/* Email */}
                       <td className="py-3 px-3">
-                        <div className="text-[#3F3F46] truncate max-w-[180px]">{lead.email}</div>
+                        <div className="text-ink-secondary truncate max-w-[180px]">{lead.email}</div>
                       </td>
 
                       {/* WhatsApp Status */}
                       <td className="py-3 px-3">
                         {lead.whatsAppStatus === 'Pending' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F4F4F5] text-[#71717A] border border-[#D4D4D8]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-hover text-ink-muted border border-border-strong">
                             <Clock className="w-2.5 h-2.5" /> Pending
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Queued' && (
                           <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"
                             title={lead.scheduledFor ? `Scheduled for ${new Date(lead.scheduledFor).toLocaleString()}` : undefined}
                           >
                             <Clock className="w-2.5 h-2.5" /> Scheduled
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Sending' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
                             <Send className="w-2.5 h-2.5" /> Sending
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Sent' && (
                           <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#EFF6FF] text-[#1D4ED8] border border-[#BFDBFE]"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20"
                             title="Accepted by WhatsApp — will flip to Delivered once confirmed"
                           >
                             <Send className="w-2.5 h-2.5" /> Sent
@@ -665,12 +667,12 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Replied' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#E0F2FE] text-[#0369A1] border border-[#BAE6FD]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">
                             <MessageSquare className="w-2.5 h-2.5" /> Replied
                           </span>
                         )}
                         {lead.whatsAppStatus === 'Failed' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
                             <AlertTriangle className="w-2.5 h-2.5" /> Failed
                           </span>
                         )}
@@ -679,13 +681,13 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       {/* Email Status */}
                       <td className="py-3 px-3">
                         {lead.emailStatus === 'Pending' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#F4F4F5] text-[#71717A] border border-[#D4D4D8]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-hover text-ink-muted border border-border-strong">
                             <Clock className="w-2.5 h-2.5" /> Pending
                           </span>
                         )}
                         {lead.emailStatus === 'Queued' && (
                           <span
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"
                             title={lead.scheduledFor ? `Scheduled for ${new Date(lead.scheduledFor).toLocaleString()}` : undefined}
                           >
                             <Clock className="w-2.5 h-2.5" /> Scheduled
@@ -697,12 +699,12 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           </span>
                         )}
                         {(lead.emailStatus === 'Opened' || lead.emailStatus === 'Clicked') && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
                             <Sparkles className="w-2.5 h-2.5" /> {lead.emailStatus}
                           </span>
                         )}
                         {lead.emailStatus === 'Failed' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">
                             <AlertTriangle className="w-2.5 h-2.5" /> Failed
                           </span>
                         )}
@@ -711,18 +713,18 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                       {/* Lead Status */}
                       <td className="py-3 px-3">
                         {lead.status === 'Meeting Scheduled' ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#FEF3C7] text-[#B45309] border border-[#FDE68A]">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
                             <Calendar className="w-2.5 h-2.5" /> {lead.meetingTime || 'Booked'}
                           </span>
                         ) : lead.status === 'Contacted' ? (
                           <span className="text-[11px] font-medium text-[#128C7E]">Contacted</span>
                         ) : (
-                          <span className="text-[11px] text-[#71717A]">{lead.status}</span>
+                          <span className="text-[11px] text-ink-muted">{lead.status}</span>
                         )}
                       </td>
 
                       {/* Last Contacted */}
-                      <td className="py-3 px-3 text-[#71717A] text-[11px]">
+                      <td className="py-3 px-3 text-ink-muted text-[11px]">
                         {lead.lastContacted || '—'}
                       </td>
 
@@ -742,7 +744,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           {/* Edit */}
                           <button
                             onClick={() => setEditingLead(lead)}
-                            className="p-1.5 text-[#71717A] hover:text-[#18181B] hover:bg-[#FAFAFA] rounded-md transition-colors"
+                            className="p-1.5 text-ink-muted hover:text-ink hover:bg-canvas rounded-md transition-colors"
                             title="Edit Contact"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
@@ -751,7 +753,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                           {/* Delete */}
                           <button
                             onClick={() => onDeleteLead(lead.id)}
-                            className="p-1.5 text-[#71717A] hover:text-[#DC2626] hover:bg-[#FEF2F2] rounded-md transition-colors"
+                            className="p-1.5 text-ink-muted hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
                             title="Delete Contact"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -763,7 +765,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-xs text-[#71717A]">
+                  <td colSpan={9} className="py-10 text-center text-xs text-ink-muted">
                     No contacts found matching the search filter.
                   </td>
                 </tr>

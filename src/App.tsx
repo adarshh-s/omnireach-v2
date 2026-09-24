@@ -315,7 +315,7 @@ function AppContent({ auth }: { auth: AuthState }) {
   const scheduledCount = leads.filter((l) => l.status === 'Meeting Scheduled').length;
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-[#3F3F46] flex font-sans">
+    <div className="relative min-h-screen text-ink-secondary flex font-sans">
       {/* Global Modals */}
       <ExcelUploadModal
         isOpen={isExcelModalOpen}
@@ -366,7 +366,7 @@ function AppContent({ auth }: { auth: AuthState }) {
             transition={{ duration: 0.2, ease: 'easeOut' }}
             className="overflow-hidden"
           >
-            <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between bg-rose-50 text-rose-700">
+            <div className="px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between bg-rose-500/10 text-rose-400">
               <span>
                 Channel Setup couldn't save to the cloud ({channelSettingsStatus.saveError}) — your changes only exist in
                 this browser right now. The AI bot reads settings from the cloud, so replies may keep using old
@@ -388,7 +388,7 @@ function AppContent({ auth }: { auth: AuthState }) {
           >
             <div
               className={`px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between ${
-                calendarBanner.type === 'success' ? 'bg-[#128C7E]/15 text-[#375534]' : 'bg-rose-50 text-rose-700'
+                calendarBanner.type === 'success' ? 'bg-[#128C7E]/15 text-emerald-300' : 'bg-rose-500/10 text-rose-400'
               }`}
             >
               <span>{calendarBanner.message}</span>
@@ -498,7 +498,7 @@ function AppContent({ auth }: { auth: AuthState }) {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[#E4E4E7] bg-white/80 py-4 text-center text-xs text-[#71717A]">
+      <footer className="border-t border-border bg-surface/80 py-4 text-center text-xs text-ink-muted">
         OmniReach AI • Automated WhatsApp & Email Outreach Engine with Spreadsheet Ingestion & Google Calendar Sync • Powered by Gemini 3.7
       </footer>
       </div>

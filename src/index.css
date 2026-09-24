@@ -3,17 +3,47 @@
 @theme {
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
-  --color-canvas: #FAFAFA;
-  --color-surface: #FFFFFF;
-  --color-border: #E4E4E7;
-  --color-ink: #18181B;
-  --color-ink-secondary: #3F3F46;
-  --color-ink-muted: #71717A;
+  /* Dark, warm-brown design system — every surface in the app reads off these tokens
+     instead of hardcoded hex, so the whole product reskins from this one block. */
+  --color-canvas: #0D0906;
+  --color-surface: #221510;
+  --color-surface-hover: #2D1C14;
+  --color-border: #3A2620;
+  --color-border-strong: #4D3226;
+  --color-ink: #F5F0EA;
+  --color-ink-secondary: #D8CFC5;
+  --color-ink-muted: #948A7E;
 
   --color-brand: #25D366;
   --color-brand-strong: #128C7E;
 
-  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.04), 0 1px 3px 0 rgb(0 0 0 / 0.06);
-  --shadow-elevated: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 10px 15px -3px rgb(0 0 0 / 0.08);
-  --shadow-modal: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 8px 24px -8px rgb(0 0 0 / 0.6);
+  --shadow-elevated: 0 1px 0 0 rgb(255 255 255 / 0.06) inset, 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  --shadow-modal: 0 1px 0 0 rgb(255 255 255 / 0.08) inset, 0 24px 60px -12px rgb(0 0 0 / 0.85);
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink-secondary);
+  position: relative;
+}
+
+/* Warm glow behind the whole app, matching the reference dashboard's ambient lighting.
+   Lives on body::before (not a React-rendered div) so it shows on every screen — the
+   login gate included — without every top-level view needing to remember to add it. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(90rem 50rem at -10% -20%, rgb(220 90 40 / 0.32), transparent 60%),
+    radial-gradient(60rem 40rem at 10% -10%, rgb(240 140 60 / 0.2), transparent 55%),
+    radial-gradient(70rem 60rem at 110% 10%, rgb(18 140 126 / 0.12), transparent 60%);
+}
+
+#root {
+  position: relative;
+  z-index: 1;
 }

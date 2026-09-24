@@ -110,7 +110,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
     <div className="relative" ref={ref}>
       <button
         onClick={handleToggle}
-        className="relative p-2 rounded-lg text-ink-muted hover:bg-[#F4F4F5] transition-colors"
+        className="relative p-2 rounded-lg text-ink-muted hover:bg-surface-hover transition-colors"
         aria-label="Notifications"
       >
         <Bell className="w-4 h-4" />
@@ -128,7 +128,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: -4 }}
             transition={{ duration: 0.12, ease: 'easeOut' }}
-            className={`absolute top-full mt-1.5 w-72 max-w-[85vw] bg-white border border-border rounded-xl shadow-elevated py-1.5 z-50 max-h-80 overflow-y-auto ${
+            className={`absolute top-full mt-1.5 w-72 max-w-[85vw] bg-surface/70 backdrop-blur-2xl border border-border rounded-xl shadow-elevated py-1.5 z-50 max-h-80 overflow-y-auto ${
               align === 'left' ? 'left-0 origin-top-left' : 'right-0 origin-top-right'
             }`}
           >
@@ -145,7 +145,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
                     onOpenInbox();
                     setOpen(false);
                   }}
-                  className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-[#F4F4F5] transition-colors"
+                  className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-surface-hover transition-colors"
                 >
                   <CalendarCheck2 className="w-3.5 h-3.5 text-[#128C7E] mt-0.5 shrink-0" />
                   <div className="min-w-0">

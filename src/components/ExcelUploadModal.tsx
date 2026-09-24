@@ -161,19 +161,19 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="bg-white/90 backdrop-blur-2xl border border-white/60 ring-1 ring-black/5 rounded-3xl max-w-2xl w-full shadow-[0_20px_25px_-5px_rgb(0_0_0/0.1),0_8px_10px_-6px_rgb(0_0_0/0.1),inset_0_1px_0_0_rgba(255,255,255,0.8)] overflow-hidden flex flex-col max-h-[90vh]"
+            className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-2xl w-full shadow-modal overflow-hidden flex flex-col max-h-[90vh]"
           >
         {/* Header */}
-        <div className="px-6 py-5 border-b border-[#E4E4E7] flex items-center justify-between bg-[#FAFAFA]">
+        <div className="px-6 py-5 border-b border-border flex items-center justify-between bg-canvas">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-2xl bg-[#25D366]/15 border border-[#25D366]/30 flex items-center justify-center text-[#128C7E]">
               <FileSpreadsheet className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-[#18181B] text-base">
+              <h3 className="font-bold text-ink text-base">
                 Import Client Spreadsheet (Excel / CSV)
               </h3>
-              <p className="text-xs text-[#71717A]">
+              <p className="text-xs text-ink-muted">
                 Auto-sanitize phone numbers for WhatsApp, validate emails, and prepare automated outreach
               </p>
             </div>
@@ -183,7 +183,7 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
               onClose();
               resetState();
             }}
-            className="p-2 rounded-full text-[#71717A] hover:text-[#18181B] hover:bg-[#E4E4E7]/50 transition-colors"
+            className="p-2 rounded-full text-ink-muted hover:text-ink hover:bg-border-strong/50 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -192,8 +192,8 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
           {errorMsg && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 flex items-start gap-2.5 text-xs text-rose-800">
-              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-start gap-2.5 text-xs text-rose-300">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
               <span>{errorMsg}</span>
             </div>
           )}
@@ -205,7 +205,7 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-[#128C7E]/40 hover:border-[#128C7E] bg-[#FAFAFA] hover:bg-[#F4F4F5] rounded-3xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-3"
+                className="border-2 border-dashed border-[#128C7E]/40 hover:border-[#128C7E] bg-canvas hover:bg-surface-hover rounded-3xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-3"
               >
                 <input
                   type="file"
@@ -214,25 +214,25 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   accept=".xlsx, .xls, .csv"
                   className="hidden"
                 />
-                <div className="w-14 h-14 rounded-full bg-white shadow-sm border border-[#E4E4E7] flex items-center justify-center text-[#128C7E]">
+                <div className="w-14 h-14 rounded-full bg-surface shadow-sm border border-border flex items-center justify-center text-[#128C7E]">
                   <Upload className="w-6 h-6" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-[#18181B]">
+                  <p className="text-sm font-semibold text-ink">
                     Click to upload or drag & drop your spreadsheet
                   </p>
-                  <p className="text-xs text-[#71717A] mt-1">
-                    Supports Microsoft Excel (<strong className="text-[#3F3F46]">.xlsx, .xls</strong>) and CSV (<strong className="text-[#3F3F46]">.csv</strong>)
+                  <p className="text-xs text-ink-muted mt-1">
+                    Supports Microsoft Excel (<strong className="text-ink-secondary">.xlsx, .xls</strong>) and CSV (<strong className="text-ink-secondary">.csv</strong>)
                   </p>
                 </div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white border border-[#E4E4E7] text-[11px] text-[#3F3F46] font-medium">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface border border-border text-[11px] text-ink-secondary font-medium">
                   <Sparkles className="w-3.5 h-3.5 text-[#128C7E]" />
                   Auto-detects Name, Phone & Company columns
                 </div>
               </div>
 
               {/* Sample Template & Help */}
-              <div className="flex items-center justify-between pt-2 text-xs text-[#71717A]">
+              <div className="flex items-center justify-between pt-2 text-xs text-ink-muted">
                 <button
                   type="button"
                   onClick={downloadSampleExcel}
@@ -241,7 +241,7 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   <Download className="w-3.5 h-3.5" />
                   <span>Download Sample Template (.csv)</span>
                 </button>
-                <span className="flex items-center gap-1 text-[#71717A]">
+                <span className="flex items-center gap-1 text-ink-muted">
                   <Globe className="w-3.5 h-3.5" />
                   Auto-formats Indian (+91) & Global numbers
                 </span>
@@ -252,19 +252,19 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
           {/* STEP 2: COLUMN MAPPING & COUNTRY CODE */}
           {step === 'mapping' && (
             <div className="space-y-5">
-              <div className="p-4 rounded-2xl bg-[#FAFAFA] border border-[#E4E4E7] flex items-center justify-between">
+              <div className="p-4 rounded-2xl bg-canvas border border-border flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                   <FileSpreadsheet className="w-5 h-5 text-[#128C7E]" />
                   <div>
-                    <p className="text-xs font-bold text-[#18181B]">{fileName}</p>
-                    <p className="text-[11px] text-[#71717A]">
+                    <p className="text-xs font-bold text-ink">{fileName}</p>
+                    <p className="text-[11px] text-ink-muted">
                       {rawRows.length} rows found • {headers.length} columns detected
                     </p>
                   </div>
                 </div>
                 <button
                   onClick={resetState}
-                  className="text-xs text-[#71717A] hover:text-[#18181B] underline"
+                  className="text-xs text-ink-muted hover:text-ink underline"
                 >
                   Change File
                 </button>
@@ -272,14 +272,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
 
               {/* Default Country Selector */}
               <div>
-                <label className="block text-xs font-bold text-[#18181B] mb-1.5 flex items-center gap-1.5">
+                <label className="block text-xs font-bold text-ink mb-1.5 flex items-center gap-1.5">
                   <Globe className="w-4 h-4 text-[#128C7E]" />
                   Default Country Code (for 10-digit numbers without prefix)
                 </label>
                 <select
                   value={selectedCountryCode}
                   onChange={(e) => setSelectedCountryCode(e.target.value)}
-                  className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-2xl px-4 py-2.5 text-xs text-[#18181B] font-medium focus:outline-none focus:ring-2 focus:ring-[#128C7E]/30"
+                  className="w-full bg-canvas border border-border rounded-2xl px-4 py-2.5 text-xs text-ink font-medium focus:outline-none focus:ring-2 focus:ring-[#128C7E]/30"
                 >
                   {COMMON_COUNTRY_CODES.map((c) => (
                     <option key={c.code} value={c.code}>
@@ -287,28 +287,28 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-[#71717A] mt-1">
+                <p className="text-[11px] text-ink-muted mt-1">
                   Example: If phone in Excel is <code className="text-[#128C7E] font-mono">9061584951</code>, it will automatically become <code className="text-[#128C7E] font-mono">+919061584951</code> in E.164.
                 </p>
               </div>
 
               {/* Column Mapping Selectors */}
-              <div className="space-y-3 pt-2 border-t border-[#E4E4E7]">
-                <h4 className="text-xs font-bold text-[#18181B] uppercase tracking-wider">
+              <div className="space-y-3 pt-2 border-t border-border">
+                <h4 className="text-xs font-bold text-ink uppercase tracking-wider">
                   Map Spreadsheet Columns
                 </h4>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   {/* Phone (Required) */}
-                  <div className="p-3 rounded-2xl bg-white border-2 border-[#128C7E]/50 shadow-card">
-                    <label className="block text-xs font-bold text-[#18181B] mb-1 flex items-center justify-between">
+                  <div className="p-3 rounded-2xl bg-surface border-2 border-[#128C7E]/50 shadow-card">
+                    <label className="block text-xs font-bold text-ink mb-1 flex items-center justify-between">
                       <span>Phone Number *</span>
                       <span className="text-[10px] text-[#128C7E] bg-[#128C7E]/15 px-2 py-0.5 rounded-full font-bold">REQUIRED</span>
                     </label>
                     <select
                       value={mapping.phone}
                       onChange={(e) => setMapping({ ...mapping, phone: e.target.value })}
-                      className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-xl px-3 py-2 text-xs font-semibold text-[#18181B] focus:outline-none"
+                      className="w-full bg-canvas border border-border rounded-xl px-3 py-2 text-xs font-semibold text-ink focus:outline-none"
                     >
                       <option value="">-- Select Phone Column --</option>
                       {headers.map((h) => (
@@ -320,14 +320,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   </div>
 
                   {/* Name */}
-                  <div className="p-3 rounded-2xl bg-white border border-[#E4E4E7]">
-                    <label className="block text-xs font-semibold text-[#18181B] mb-1">
+                  <div className="p-3 rounded-2xl bg-surface border border-border">
+                    <label className="block text-xs font-semibold text-ink mb-1">
                       Full Name
                     </label>
                     <select
                       value={mapping.name}
                       onChange={(e) => setMapping({ ...mapping, name: e.target.value })}
-                      className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-xl px-3 py-2 text-xs text-[#18181B] focus:outline-none"
+                      className="w-full bg-canvas border border-border rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
                     >
                       <option value="">-- Select Name Column --</option>
                       {headers.map((h) => (
@@ -339,14 +339,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   </div>
 
                   {/* Company */}
-                  <div className="p-3 rounded-2xl bg-white border border-[#E4E4E7]">
-                    <label className="block text-xs font-semibold text-[#18181B] mb-1">
+                  <div className="p-3 rounded-2xl bg-surface border border-border">
+                    <label className="block text-xs font-semibold text-ink mb-1">
                       Company / Organization
                     </label>
                     <select
                       value={mapping.company}
                       onChange={(e) => setMapping({ ...mapping, company: e.target.value })}
-                      className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-xl px-3 py-2 text-xs text-[#18181B] focus:outline-none"
+                      className="w-full bg-canvas border border-border rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
                     >
                       <option value="">-- Optional: Select Company --</option>
                       {headers.map((h) => (
@@ -358,14 +358,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   </div>
 
                   {/* Email */}
-                  <div className="p-3 rounded-2xl bg-white border border-[#E4E4E7]">
-                    <label className="block text-xs font-semibold text-[#18181B] mb-1">
+                  <div className="p-3 rounded-2xl bg-surface border border-border">
+                    <label className="block text-xs font-semibold text-ink mb-1">
                       Email Address
                     </label>
                     <select
                       value={mapping.email}
                       onChange={(e) => setMapping({ ...mapping, email: e.target.value })}
-                      className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-xl px-3 py-2 text-xs text-[#18181B] focus:outline-none"
+                      className="w-full bg-canvas border border-border rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
                     >
                       <option value="">-- Optional: Select Email --</option>
                       {headers.map((h) => (
@@ -377,14 +377,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                   </div>
 
                   {/* Country */}
-                  <div className="p-3 rounded-2xl bg-white border border-[#E4E4E7]">
-                    <label className="block text-xs font-semibold text-[#18181B] mb-1">
+                  <div className="p-3 rounded-2xl bg-surface border border-border">
+                    <label className="block text-xs font-semibold text-ink mb-1">
                       Country
                     </label>
                     <select
                       value={mapping.country}
                       onChange={(e) => setMapping({ ...mapping, country: e.target.value })}
-                      className="w-full bg-[#FAFAFA] border border-[#E4E4E7] rounded-xl px-3 py-2 text-xs text-[#18181B] focus:outline-none"
+                      className="w-full bg-canvas border border-border rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
                     >
                       <option value="">-- Optional: Select Country --</option>
                       {headers.map((h) => (
@@ -393,23 +393,23 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                         </option>
                       ))}
                     </select>
-                    <p className="text-[10px] text-[#71717A] mt-1">Used for peak-local-time campaign scheduling</p>
+                    <p className="text-[10px] text-ink-muted mt-1">Used for peak-local-time campaign scheduling</p>
                   </div>
                 </div>
               </div>
 
               {/* Live Data Preview Table */}
-              <div className="pt-2 border-t border-[#E4E4E7]">
-                <h4 className="text-xs font-bold text-[#18181B] mb-2 flex items-center justify-between">
+              <div className="pt-2 border-t border-border">
+                <h4 className="text-xs font-bold text-ink mb-2 flex items-center justify-between">
                   <span>Sanitization & E.164 Preview (First 5 Rows)</span>
                   <span className="text-[11px] text-[#128C7E] font-medium">
                     {previewLeads.filter((p) => p.isValid).length} of {previewLeads.length} valid
                   </span>
                 </h4>
 
-                <div className="bg-[#FAFAFA] border border-[#E4E4E7] rounded-2xl overflow-hidden">
+                <div className="bg-canvas border border-border rounded-2xl overflow-hidden">
                   <table className="w-full text-left text-[11px]">
-                    <thead className="bg-[#F4F4F5] border-b border-[#E4E4E7] text-[#71717A] font-semibold">
+                    <thead className="bg-surface-hover border-b border-border text-ink-muted font-semibold">
                       <tr>
                         <th className="p-2.5">Name</th>
                         <th className="p-2.5">Raw Excel Phone</th>
@@ -417,11 +417,11 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                         <th className="p-2.5">Company</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#E4E4E7]">
+                    <tbody className="divide-y divide-border">
                       {previewLeads.map((item, idx) => (
                         <tr key={idx}>
-                          <td className="p-2.5 font-medium text-[#18181B]">{item.name}</td>
-                          <td className="p-2.5 font-mono text-[#71717A]">{item.rawPhone || '—'}</td>
+                          <td className="p-2.5 font-medium text-ink">{item.name}</td>
+                          <td className="p-2.5 font-mono text-ink-muted">{item.rawPhone || '—'}</td>
                           <td className="p-2.5 font-mono">
                             {item.isValid ? (
                               <span className="inline-flex items-center gap-1 text-[#128C7E] font-bold">
@@ -429,10 +429,10 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                                 {item.formattedPhone}
                               </span>
                             ) : (
-                              <span className="text-rose-600 font-bold">Invalid Format</span>
+                              <span className="text-rose-400 font-bold">Invalid Format</span>
                             )}
                           </td>
-                          <td className="p-2.5 text-[#3F3F46]">{item.company}</td>
+                          <td className="p-2.5 text-ink-secondary">{item.company}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -441,10 +441,10 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
               </div>
 
               {/* Import Options (Replace vs Append) */}
-              <div className="p-3.5 rounded-2xl bg-[#F4F4F5] border border-[#E4E4E7] flex items-center justify-between">
+              <div className="p-3.5 rounded-2xl bg-surface-hover border border-border flex items-center justify-between">
                 <div className="text-xs">
-                  <p className="font-bold text-[#18181B]">Import Mode</p>
-                  <p className="text-[11px] text-[#71717A]">
+                  <p className="font-bold text-ink">Import Mode</p>
+                  <p className="text-[11px] text-ink-muted">
                     {appendMode ? 'Add new leads to existing sheet rows' : 'Replace all current sheet rows with this file'}
                   </p>
                 </div>
@@ -455,8 +455,8 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
                     onChange={(e) => setAppendMode(e.target.checked)}
                     className="sr-only peer"
                   />
-                  <div className="w-11 h-6 bg-[#E4E4E7] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#E4E4E7] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#128C7E]"></div>
-                  <span className="ml-2 text-xs font-semibold text-[#18181B]">
+                  <div className="w-11 h-6 bg-border-strong peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#128C7E]"></div>
+                  <span className="ml-2 text-xs font-semibold text-ink">
                     {appendMode ? 'Append' : 'Replace'}
                   </span>
                 </label>
@@ -466,14 +466,14 @@ export const ExcelUploadModal: React.FC<ExcelUploadModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-[#E4E4E7] bg-[#FAFAFA] flex items-center justify-between">
+        <div className="px-6 py-4 border-t border-border bg-canvas flex items-center justify-between">
           <button
             type="button"
             onClick={() => {
               onClose();
               resetState();
             }}
-            className="px-4 py-2 rounded-full border border-[#E4E4E7] bg-white text-xs font-semibold text-[#3F3F46] hover:bg-[#F4F4F5] transition-all"
+            className="px-4 py-2 rounded-full border border-border bg-surface text-xs font-semibold text-ink-secondary hover:bg-surface-hover transition-all"
           >
             Cancel
           </button>

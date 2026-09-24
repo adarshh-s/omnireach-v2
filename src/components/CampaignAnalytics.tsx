@@ -139,16 +139,16 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
   return (
     <div className="space-y-6">
       {/* Header Banner */}
-      <div className="bg-white border border-[#E4E4E7] rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-[#71717A] mb-1">
+          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
             <BarChart3 className="w-3.5 h-3.5 text-[#25D366]" />
             <span>Outreach Performance & Conversion Funnel</span>
           </div>
-          <h2 className="text-xl font-bold text-[#18181B]">
+          <h2 className="text-xl font-bold text-ink">
             WhatsApp & Email Campaign Analytics
           </h2>
-          <p className="text-xs sm:text-sm text-[#3F3F46] mt-0.5">
+          <p className="text-xs sm:text-sm text-ink-secondary mt-0.5">
             Real-time delivery rates, prospect responses, and Google Meet booking conversion KPIs.
           </p>
         </div>
@@ -168,13 +168,13 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-white border border-[#E4E4E7] shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
-          <div className="flex items-center justify-between text-[#71717A]">
+          <div className="flex items-center justify-between text-ink-muted">
             <span className="text-xs font-bold uppercase tracking-wider">Meeting Conversion Rate</span>
             <TrendingUp className="w-4 h-4 text-[#25D366]" />
           </div>
-          <div className="text-2xl font-bold text-[#18181B]">{meetingConversionRate}%</div>
+          <div className="text-2xl font-bold text-ink">{meetingConversionRate}%</div>
           <p className="text-[11px] text-[#128C7E] font-medium">
             {meetingsForRate} meetings booked from {dispatchedForRate} dispatched
           </p>
@@ -184,14 +184,14 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.05, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-white border border-[#E4E4E7] shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
-          <div className="flex items-center justify-between text-[#71717A]">
+          <div className="flex items-center justify-between text-ink-muted">
             <span className="text-xs font-bold uppercase tracking-wider">Total Meetings Booked</span>
             <Calendar className="w-4 h-4 text-[#4285F4]" />
           </div>
           <div className="text-2xl font-bold text-[#1967D2]">{cloud ? cloud.meetingsBooked : scheduled}</div>
-          <p className="text-[11px] text-[#71717A]">
+          <p className="text-[11px] text-ink-muted">
             {cloud ? 'Booked by the AI bot & synced to Google Calendar' : 'Synced with Google Calendar'}
           </p>
         </motion.div>
@@ -200,16 +200,16 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.1, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-white border border-[#E4E4E7] shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
-          <div className="flex items-center justify-between text-[#71717A]">
+          <div className="flex items-center justify-between text-ink-muted">
             <span className="text-xs font-bold uppercase tracking-wider">WhatsApp Engagement</span>
             <MessageSquare className="w-4 h-4 text-[#25D366]" />
           </div>
-          <div className="text-2xl font-bold text-[#18181B]">
+          <div className="text-2xl font-bold text-ink">
             {waDelivered > 0 ? Math.round((waReplied / waDelivered) * 100) : 0}%
           </div>
-          <p className="text-[11px] text-[#71717A]">
+          <p className="text-[11px] text-ink-muted">
             {waReplied} replies from {waDelivered} delivered
           </p>
         </motion.div>
@@ -218,16 +218,16 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.15, ease: 'easeOut' }}
-          className="p-5 rounded-2xl bg-white border border-[#E4E4E7] shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
+          className="p-5 rounded-2xl bg-surface border border-border shadow-card space-y-1 hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
-          <div className="flex items-center justify-between text-[#71717A]">
+          <div className="flex items-center justify-between text-ink-muted">
             <span className="text-xs font-bold uppercase tracking-wider">Email Response Rate</span>
             <Mail className="w-4 h-4 text-[#4285F4]" />
           </div>
-          <div className="text-2xl font-bold text-[#18181B]">
+          <div className="text-2xl font-bold text-ink">
             {emailSent > 0 ? Math.round((emailReplied / emailSent) * 100) : 0}%
           </div>
-          <p className="text-[11px] text-[#71717A]">
+          <p className="text-[11px] text-ink-muted">
             {emailReplied} replies • {emailOpened} opened
           </p>
         </motion.div>
@@ -240,59 +240,59 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, ease: 'easeOut' }}
-          className="bg-white border border-[#E4E4E7] rounded-2xl p-6 shadow-card space-y-4"
+          className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card space-y-4"
         >
           <div>
-            <h3 className="font-bold text-sm text-[#18181B]">Live Message & Meeting Stats</h3>
-            <p className="text-[11px] text-[#71717A] mt-0.5">
+            <h3 className="font-bold text-sm text-ink">Live Message & Meeting Stats</h3>
+            <p className="text-[11px] text-ink-muted mt-0.5">
               Real outcomes synced from the cloud — every message dispatched and meeting booked by the AI bot,
               across all devices.
             </p>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="p-3 rounded-xl bg-[#FAFAFA] border border-[#E4E4E7] hover:border-[#D4D4D8] hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-[#18181B]">{cloud.messagesDispatched}</div>
-              <p className="text-[10px] text-[#71717A]">Messages Dispatched</p>
+            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
+              <div className="text-lg font-bold text-ink">{cloud.messagesDispatched}</div>
+              <p className="text-[10px] text-ink-muted">Messages Dispatched</p>
             </div>
-            <div className="p-3 rounded-xl bg-[#FAFAFA] border border-[#E4E4E7] hover:border-[#D4D4D8] hover:shadow-card transition-all duration-200">
+            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
               <div className="text-lg font-bold text-[#128C7E]">{cloud.meetingsBooked}</div>
-              <p className="text-[10px] text-[#71717A]">Meetings Booked</p>
+              <p className="text-[10px] text-ink-muted">Meetings Booked</p>
             </div>
-            <div className="p-3 rounded-xl bg-[#FAFAFA] border border-[#E4E4E7] hover:border-[#D4D4D8] hover:shadow-card transition-all duration-200">
+            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
               <div className="text-lg font-bold text-[#4285F4]">{cloud.activeConversations}</div>
-              <p className="text-[10px] text-[#71717A]">Active AI Conversations</p>
+              <p className="text-[10px] text-ink-muted">Active AI Conversations</p>
             </div>
-            <div className="p-3 rounded-xl bg-[#FAFAFA] border border-[#E4E4E7] hover:border-[#D4D4D8] hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-[#18181B] flex items-center gap-1">
+            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
+              <div className="text-lg font-bold text-ink flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
                 {cloud.whatsappDelivered}
-                <span className="text-[#71717A] font-normal mx-0.5">/</span>
-                <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                <span className="text-ink-muted font-normal mx-0.5">/</span>
+                <XCircle className="w-3.5 h-3.5 text-rose-400" />
                 {cloud.whatsappFailed}
               </div>
-              <p className="text-[10px] text-[#71717A]">WhatsApp Delivered / Failed</p>
+              <p className="text-[10px] text-ink-muted">WhatsApp Delivered / Failed</p>
             </div>
-            <div className="p-3 rounded-xl bg-[#FAFAFA] border border-[#E4E4E7] hover:border-[#D4D4D8] hover:shadow-card transition-all duration-200">
-              <div className="text-lg font-bold text-[#18181B] flex items-center gap-1">
+            <div className="p-3 rounded-xl bg-canvas border border-border hover:border-border-strong hover:shadow-card transition-all duration-200">
+              <div className="text-lg font-bold text-ink flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
                 {cloud.emailSent}
-                <span className="text-[#71717A] font-normal mx-0.5">/</span>
-                <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                <span className="text-ink-muted font-normal mx-0.5">/</span>
+                <XCircle className="w-3.5 h-3.5 text-rose-400" />
                 {cloud.emailFailed}
               </div>
-              <p className="text-[10px] text-[#71717A]">Email Sent / Failed</p>
+              <p className="text-[10px] text-ink-muted">Email Sent / Failed</p>
             </div>
           </div>
         </motion.div>
       )}
 
       {/* Outcome Distribution Bar & Breakdown */}
-      <div className="bg-white border border-[#E4E4E7] rounded-2xl p-6 shadow-card space-y-5">
-        <h3 className="font-bold text-sm text-[#18181B]">Overall Lead Status Distribution</h3>
+      <div className="bg-surface/70 backdrop-blur-2xl border border-border rounded-2xl p-6 shadow-card space-y-5">
+        <h3 className="font-bold text-sm text-ink">Overall Lead Status Distribution</h3>
 
         {/* Multi-segment Progress Bar */}
-        <div className="w-full bg-[#FAFAFA] h-4 rounded-full overflow-hidden flex border border-[#E4E4E7]">
+        <div className="w-full bg-canvas h-4 rounded-full overflow-hidden flex border border-border">
           {total > 0 && (
             <>
               <div
@@ -312,7 +312,7 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
               />
               <div
                 style={{ width: `${(notInterested / total) * 100}%` }}
-                className="bg-slate-300 h-full"
+                className="bg-slate-500 h-full"
                 title={`Not Interested: ${notInterested}`}
               />
             </>
@@ -323,28 +323,28 @@ export const CampaignAnalytics: React.FC<CampaignAnalyticsProps> = ({ leads, use
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 text-xs">
           <div className="flex items-center space-x-2">
             <span className="w-3 h-3 rounded-full bg-[#25D366]" />
-            <span className="text-[#3F3F46]">
+            <span className="text-ink-secondary">
               <strong>{scheduled}</strong> Meeting Scheduled ({total > 0 ? Math.round((scheduled / total) * 100) : 0}%)
             </span>
           </div>
 
           <div className="flex items-center space-x-2">
             <span className="w-3 h-3 rounded-full bg-[#4285F4]" />
-            <span className="text-[#3F3F46]">
+            <span className="text-ink-secondary">
               <strong>{contacted}</strong> Contacted / Interested
             </span>
           </div>
 
           <div className="flex items-center space-x-2">
             <span className="w-3 h-3 rounded-full bg-amber-400" />
-            <span className="text-[#3F3F46]">
+            <span className="text-ink-secondary">
               <strong>{pending}</strong> Pending ({total > 0 ? Math.round((pending / total) * 100) : 0}%)
             </span>
           </div>
 
           <div className="flex items-center space-x-2">
-            <span className="w-3 h-3 rounded-full bg-slate-300" />
-            <span className="text-[#3F3F46]">
+            <span className="w-3 h-3 rounded-full bg-slate-500" />
+            <span className="text-ink-secondary">
               <strong>{notInterested}</strong> Declined / Unsubscribed
             </span>
           </div>

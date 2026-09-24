@@ -107,11 +107,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navButtonClass = (item: NavItem) => {
     const isActive = activeTab === item.id;
     if (!isActive) {
-      return 'text-ink-muted hover:text-ink hover:bg-[#F4F4F5]';
+      return 'text-ink-muted hover:text-ink hover:bg-surface-hover';
     }
     return item.isSpecial
-      ? 'bg-brand/10 text-[#0F6D42] font-semibold border border-brand/30'
-      : 'bg-ink text-white';
+      ? 'bg-brand/10 text-emerald-300 font-semibold border border-brand/30'
+      : 'bg-brand-strong text-white';
   };
 
   const Logo = ({ compact }: { compact?: boolean }) => (
@@ -124,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-2">
             <span className="font-semibold text-base text-ink tracking-tight">OmniReach AI</span>
           </div>
-          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-brand/10 text-[#0F6D42] border border-brand/30 inline-flex items-center gap-1 mt-0.5">
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-brand/10 text-emerald-300 border border-brand/30 inline-flex items-center gap-1 mt-0.5">
             <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse"></span>
             WhatsApp + Email
           </span>
@@ -166,8 +166,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         isActive
                           ? item.isSpecial
                             ? 'bg-[#25D366] text-white'
-                            : 'bg-white/20 text-white'
-                          : 'bg-[#E4E4E7] text-ink-secondary'
+                            : 'bg-surface/20 text-white'
+                          : 'bg-border-strong text-ink-secondary'
                       }`}
                     >
                       {item.badge}
@@ -190,7 +190,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onOpenChannelConfig();
           onNavigate?.();
         }}
-        className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-ink-secondary bg-[#F4F4F5] hover:bg-[#E4E4E7] border border-border transition-colors"
+        className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-ink-secondary bg-surface-hover hover:bg-border-strong border border-border transition-colors"
         title="Configure WhatsApp & Email API keys"
       >
         <Settings2 className="w-3.5 h-3.5 text-ink-muted" />
@@ -202,7 +202,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onOpenExcelUpload();
           onNavigate?.();
         }}
-        className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-white bg-ink hover:bg-[#09090B] shadow-sm transition-all active:scale-[0.98]"
+        className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98]"
       >
         <Upload className="w-3.5 h-3.5" />
         <span>Import Excel / CSV</span>
@@ -213,7 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col border-r border-border bg-white/70 backdrop-blur-xl backdrop-saturate-150 z-40">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col border-r border-border bg-surface/40 backdrop-blur-2xl backdrop-saturate-150 z-40">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
           <Logo />
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} align="left" />
@@ -223,13 +223,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </aside>
 
       {/* Mobile top bar */}
-      <header className="lg:hidden sticky top-0 z-40 h-14 flex items-center justify-between px-4 border-b border-black/5 bg-white/70 backdrop-blur-xl backdrop-saturate-150">
+      <header className="lg:hidden sticky top-0 z-40 h-14 flex items-center justify-between px-4 border-b border-white/5 bg-surface/40 backdrop-blur-2xl backdrop-saturate-150">
         <Logo compact />
         <div className="flex items-center gap-1">
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} />
           <button
             onClick={() => setMobileOpen(true)}
-            className="p-2 rounded-lg text-ink-muted hover:bg-[#F4F4F5]"
+            className="p-2 rounded-lg text-ink-muted hover:bg-surface-hover"
             aria-label="Open navigation menu"
           >
             <Menu className="w-5 h-5" />
@@ -253,14 +253,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-              className="h-full w-72 max-w-[80vw] bg-white/95 backdrop-blur-2xl border-r border-white/60 shadow-modal flex flex-col"
+              className="h-full w-72 max-w-[80vw] bg-surface/70 backdrop-blur-2xl border-r border-white/10 shadow-modal flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
                 <Logo />
                 <button
                   onClick={() => setMobileOpen(false)}
-                  className="p-2 rounded-lg text-ink-muted hover:bg-[#F4F4F5]"
+                  className="p-2 rounded-lg text-ink-muted hover:bg-surface-hover"
                   aria-label="Close navigation menu"
                 >
                   <X className="w-4.5 h-4.5" />

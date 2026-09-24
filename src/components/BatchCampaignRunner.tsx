@@ -15,8 +15,6 @@ import {
   Layers,
   ChevronRight,
   AlertCircle,
-  FileSpreadsheet,
-  Upload,
   Zap,
 } from 'lucide-react';
 import {
@@ -38,6 +36,7 @@ import { sendEmailDirectOrBackend } from '../services/emailService';
 import { DEFAULT_TEMPLATES } from '../data/sampleTemplates';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { computeNextPeakSendTime } from '../../lib/countryTiming';
+import { AdvancedSection } from './AdvancedSection';
 
 /**
  * Counts WhatsApp sends already used up today across every campaign for this org — not
@@ -150,7 +149,6 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const whatsappVolumeIndexRef = useRef(0);
   const todaysWhatsAppVolumeUsedRef = useRef(0);
 
-  const validLeads = leads.filter((l) => l.isValidPhone || l.isValidEmail);
   const pendingLeads = leads.filter(
     (l) => l.status === 'Pending' || (channelMode === 'whatsapp' && l.whatsAppStatus === 'Pending') || (channelMode === 'email' && l.emailStatus === 'Pending')
   );
@@ -655,69 +653,117 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner / Configuration Card */}
-      <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 sm:p-6 shadow-card">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-[#F4F4F5]">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-[#18181B] tracking-tight">
-                Automated WhatsApp & Email Campaign Engine
-              </h1>
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#25D366]/15 text-[#128C7E]">
-                <Zap className="w-3 h-3 fill-[#25D366]" />
-                Gemini 3.7 Flash AI Copywriter
-              </span>
-            </div>
-            <p className="text-xs text-[#71717A] mt-1">
-              Ingest contacts from Excel spreadsheets and automatically dispatch personalized WhatsApp messages & emails with Google Calendar booking links.
-            </p>
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl font-bold text-ink tracking-tight">Batch Outreach</h1>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#25D366]/15 text-[#128C7E]">
+              <Zap className="w-3 h-3 fill-[#25D366]" />
+              Gemini 3.7 Flash AI Copywriter
+            </span>
           </div>
-
-          {/* Quick Actions */}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              id="campaign-restart-automation-top-btn"
-              onClick={handleRestartAll}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-[#128C7E]/10 hover:bg-[#128C7E]/30 border border-[#128C7E]/30 text-[#0F6D42] transition-colors"
-              title="Reset all lead statuses and start sequence from beginning"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-[#0F6D42]" />
-              <span>Start Automation Again</span>
-            </button>
-            <button
-              id="campaign-upload-excel-btn"
-              onClick={onOpenExcelUpload}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#3F3F46] transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5 text-[#71717A]" />
-              <span>Import Sheet</span>
-            </button>
-            <button
-              id="campaign-config-channels-btn"
-              onClick={onOpenChannelConfig}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-[#FAFAFA] hover:bg-[#F4F4F5] border border-[#D4D4D8] text-[#3F3F46] transition-colors"
-            >
-              <Settings className="w-3.5 h-3.5 text-[#71717A]" />
-              <span>API Settings</span>
-            </button>
-          </div>
+          <p className="text-xs sm:text-sm text-ink-muted mt-1 max-w-2xl">
+            Ingest contacts from Excel spreadsheets and automatically dispatch personalized WhatsApp messages & emails with Google Calendar booking links.
+          </p>
         </div>
 
-        {/* Campaign Settings Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-5">
+        {/* Primary Action */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            id="campaign-restart-icon-btn"
+            onClick={handleRestartAll}
+            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/70 backdrop-blur-2xl hover:bg-surface-hover border border-border transition-colors"
+            title="Start automation again (re-send to all leads)"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <button
+            id="campaign-reset-btn"
+            onClick={handleReset}
+            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/70 backdrop-blur-2xl hover:bg-surface-hover border border-border transition-colors"
+            title="Reset campaign state"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+
+          {!isRunning ? (
+            pendingLeads.length > 0 ? (
+              <button
+                id="campaign-start-btn"
+                onClick={handleStart}
+                disabled={leads.length === 0}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Play className="w-4 h-4 fill-white" />
+                <span>Launch Campaign ({pendingLeads.length})</span>
+              </button>
+            ) : (
+              <button
+                id="campaign-restart-main-btn"
+                onClick={handleRestartAll}
+                disabled={leads.length === 0}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98]"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Start Automation ({totalLeadsCount})</span>
+              </button>
+            )
+          ) : isPaused ? (
+            <button
+              id="campaign-resume-btn"
+              onClick={handleResume}
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-white bg-[#25D366] hover:bg-[#25D366] shadow-sm transition-all"
+            >
+              <Play className="w-4 h-4 fill-white" />
+              <span>Resume</span>
+            </button>
+          ) : (
+            <button
+              id="campaign-pause-btn"
+              onClick={handlePause}
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-ink bg-surface-hover hover:bg-border-strong border border-border-strong transition-all"
+            >
+              <Pause className="w-4 h-4" />
+              <span>Pause</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {persistenceWarning && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300 flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>{persistenceWarning}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Compact Settings Row */}
+      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {/* Channel Mode Selector */}
           <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-[#71717A] mb-1.5">
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
               Outreach Channel
             </label>
-            <div className="grid grid-cols-3 gap-1 p-1 bg-[#F4F4F5] rounded-lg border border-[#E4E4E7]">
+            <div className="grid grid-cols-3 gap-1 p-1 bg-surface-hover rounded-lg border border-border">
               <button
                 id="mode-omnichannel"
                 onClick={() => setChannelMode('omnichannel')}
                 className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
                   channelMode === 'omnichannel'
-                    ? 'bg-white text-[#18181B] shadow-xs font-semibold'
-                    : 'text-[#71717A] hover:text-[#18181B]'
+                    ? 'bg-surface text-ink shadow-xs font-semibold'
+                    : 'text-ink-muted hover:text-ink'
                 }`}
               >
                 Both
@@ -728,7 +774,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
                   channelMode === 'whatsapp'
                     ? 'bg-[#25D366] text-white shadow-xs font-semibold'
-                    : 'text-[#71717A] hover:text-[#18181B]'
+                    : 'text-ink-muted hover:text-ink'
                 }`}
               >
                 WhatsApp
@@ -739,7 +785,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
                   channelMode === 'email'
                     ? 'bg-[#4285F4] text-white shadow-xs font-semibold'
-                    : 'text-[#71717A] hover:text-[#18181B]'
+                    : 'text-ink-muted hover:text-ink'
                 }`}
               >
                 Email
@@ -749,14 +795,14 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
           {/* Template Selector */}
           <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-[#71717A] mb-1.5">
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
               Sequence Template
             </label>
             <select
               id="campaign-template-select"
               value={selectedTemplateId}
               onChange={(e) => setSelectedTemplateId(e.target.value)}
-              className="w-full bg-[#FAFAFA] border border-[#D4D4D8] rounded-lg px-3 py-1.5 text-xs text-[#18181B] focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366] font-medium"
+              className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366] font-medium"
             >
               {templates.map((tpl) => (
                 <option key={tpl.id} value={tpl.id}>
@@ -775,8 +821,8 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               }
               className={`mt-1.5 w-full inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold border transition-colors ${
                 campaignSettings.useAiCopywriting
-                  ? 'bg-[#128C7E]/10 border-[#128C7E]/30 text-[#0F6D42]'
-                  : 'bg-[#FAFAFA] border-[#D4D4D8] text-[#3F3F46]'
+                  ? 'bg-[#128C7E]/10 border-[#128C7E]/30 text-emerald-300'
+                  : 'bg-canvas border-border-strong text-ink-secondary'
               }`}
               title="When off, your template text is sent exactly as written (with {{variables}} filled in) — no AI rewrite."
             >
@@ -788,10 +834,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           {/* Dispatch Interval Slider */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-[11px] font-semibold uppercase tracking-wider text-[#71717A]">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
                 Pacing Interval
               </label>
-              <span className="text-xs font-semibold text-[#18181B]">{delaySeconds}s / contact</span>
+              <span className="text-xs font-semibold text-ink">{delaySeconds}s / contact</span>
             </div>
             <input
               id="campaign-delay-slider"
@@ -803,100 +849,22 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               onChange={(e) => setDelaySeconds(parseFloat(e.target.value))}
               className="w-full accent-[#25D366] cursor-pointer"
             />
-            <p className="text-[10px] text-[#71717A] mt-1">
+            <p className="text-[10px] text-ink-muted mt-1">
               Sending too fast can get a WhatsApp Business number flagged by Meta — 2-3s is a safe pace for most
               accounts; slow it down further for large batches on newer numbers.
             </p>
           </div>
-
-          {/* Execution Controls */}
-          <div className="flex items-end gap-2">
-            {!isRunning ? (
-              pendingLeads.length > 0 ? (
-                <button
-                  id="campaign-start-btn"
-                  onClick={handleStart}
-                  disabled={leads.length === 0}
-                  className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:opacity-95 shadow-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Play className="w-3.5 h-3.5 fill-white" />
-                  <span>Launch Campaign ({pendingLeads.length})</span>
-                </button>
-              ) : (
-                <button
-                  id="campaign-restart-main-btn"
-                  onClick={handleRestartAll}
-                  disabled={leads.length === 0}
-                  className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:opacity-95 shadow-sm transition-all active:scale-[0.98]"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Start Automation ({totalLeadsCount} Leads)</span>
-                </button>
-              )
-            ) : isPaused ? (
-              <button
-                id="campaign-resume-btn"
-                onClick={handleResume}
-                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-[#25D366] hover:bg-[#25D366] shadow-sm transition-all"
-              >
-                <Play className="w-3.5 h-3.5 fill-white" />
-                <span>Resume</span>
-              </button>
-            ) : (
-              <button
-                id="campaign-pause-btn"
-                onClick={handlePause}
-                className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg text-[#18181B] bg-[#F4F4F5] hover:bg-[#E4E4E7] border border-[#D4D4D8] transition-all"
-              >
-                <Pause className="w-3.5 h-3.5" />
-                <span>Pause</span>
-              </button>
-            )}
-
-            <button
-              id="campaign-restart-icon-btn"
-              onClick={handleRestartAll}
-              className="p-2 rounded-lg text-[#128C7E] bg-[#128C7E]/10 hover:bg-[#128C7E]/30 border border-[#128C7E]/30 transition-colors"
-              title="Start automation again (re-send to all leads)"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-[#0F6D42]" />
-            </button>
-
-            <button
-              id="campaign-reset-btn"
-              onClick={handleReset}
-              className="p-2 rounded-lg text-[#71717A] hover:text-[#18181B] hover:bg-[#F4F4F5] border border-[#D4D4D8] transition-colors"
-              title="Reset campaign state"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          </div>
         </div>
+      </div>
 
-        <AnimatePresence>
-          {persistenceWarning && (
-            <motion.div
-              initial={{ opacity: 0, height: 0, marginTop: 0 }}
-              animate={{ opacity: 1, height: 'auto', marginTop: 12 }}
-              exit={{ opacity: 0, height: 0, marginTop: 0 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
-              className="overflow-hidden"
-            >
-              <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span>{persistenceWarning}</span>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
+      <AdvancedSection label="Advanced settings & diagnostics">
         {/* Country Peak-Time Scheduling Toggle */}
-        <div className="mt-4 flex items-center justify-between gap-3 p-3 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7]">
+        <div className="flex items-center justify-between gap-3 p-3 bg-canvas rounded-xl border border-border">
           <div className="flex items-center gap-2.5">
-            <Clock className="w-4 h-4 text-[#71717A] shrink-0" />
+            <Clock className="w-4 h-4 text-ink-muted shrink-0" />
             <div>
-              <div className="text-xs font-semibold text-[#18181B]">Country Peak-Time Scheduling</div>
-              <div className="text-[11px] text-[#71717A]">
+              <div className="text-xs font-semibold text-ink">Country Peak-Time Scheduling</div>
+              <div className="text-[11px] text-ink-muted">
                 {usePeakScheduling
                   ? "Messages send during each client's local business hours (needs a Country column on the lead)."
                   : 'Off — every message sends immediately regardless of the client\'s country.'}
@@ -910,19 +878,19 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               onChange={(e) => setUsePeakScheduling(e.target.checked)}
               className="sr-only peer"
             />
-            <div className="w-11 h-6 bg-[#E4E4E7] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#E4E4E7] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#128C7E]"></div>
+            <div className="w-11 h-6 bg-border-strong peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface after:border-border after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#128C7E]"></div>
           </label>
         </div>
 
         {/* Live Channel Status & Automation Diagnostics */}
-        <div className="mt-4 p-3 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs">
+        <div className="p-3 bg-canvas rounded-xl border border-border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-[#71717A]">WhatsApp Dispatch:</span>
+              <span className="text-[11px] font-semibold text-ink-muted">WhatsApp Dispatch:</span>
               {(channelSettings.whatsAppProvider === 'twilio' && channelSettings.twilioAccountSid && channelSettings.twilioAuthToken) ||
               (channelSettings.whatsAppProvider === 'cloud_api' && channelSettings.whatsappCloudApiKey && channelSettings.whatsappCloudPhoneId) ||
               (channelSettings.whatsAppProvider === 'webhook' && channelSettings.n8nWebhookUrl) ? (
-                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   {channelSettings.whatsAppProvider === 'twilio'
                     ? 'Twilio API'
@@ -932,14 +900,14 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   (Pure Background)
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#71717A] bg-[#F4F4F5] px-2 py-0.5 rounded-md">
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted bg-surface-hover px-2 py-0.5 rounded-md">
                   Web Direct Mode (Click-to-chat)
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-[#71717A]">Email Dispatch:</span>
+              <span className="text-[11px] font-semibold text-ink-muted">Email Dispatch:</span>
               {/* 'resend' needs no org-supplied key to count as configured — lib/emailSender.ts
                   falls back to the platform's own shared Resend account (RESEND_FROM_ADDRESS)
                   whenever the org hasn't set their own emailApiKey, so it's still a fully
@@ -948,7 +916,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               channelSettings.emailProvider === 'resend' ||
               ((channelSettings.emailProvider === 'sendgrid' || channelSettings.emailProvider === 'mailgun') && channelSettings.emailApiKey) ||
               (channelSettings.emailProvider === 'smtp' && channelSettings.smtpHost && channelSettings.smtpUser && channelSettings.smtpPass) ? (
-                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md border border-blue-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
                   {channelSettings.emailProvider === 'resend'
                     ? 'Resend API'
@@ -960,7 +928,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   (Direct Inbox)
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#71717A] bg-[#F4F4F5] px-2 py-0.5 rounded-md">
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted bg-surface-hover px-2 py-0.5 rounded-md">
                   Mailto Mode (No API key set)
                 </span>
               )}
@@ -990,15 +958,15 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
         {/* Resend Testing & Inbox Delivery Guidance Banner */}
         {channelSettings.emailProvider === 'resend' && (
-          <div className="mt-3 p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300 flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <p className="font-semibold text-amber-950">
+              <p className="font-semibold text-amber-200">
                 📬 Why emails might not appear in Primary Inbox immediately:
               </p>
-              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-900">
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-amber-300">
                 <li>
-                  <strong>Check Gmail Spam & Promotions:</strong> Emails sent using the default free sandbox sender (<code className="bg-amber-100 px-1 rounded font-mono text-[10px]">onboarding@resend.dev</code>) often land in your <strong>Spam / Junk</strong> folder or <strong>Promotions</strong> tab.
+                  <strong>Check Gmail Spam & Promotions:</strong> Emails sent using the default free sandbox sender (<code className="bg-amber-500/15 px-1 rounded font-mono text-[10px]">onboarding@resend.dev</code>) often land in your <strong>Spam / Junk</strong> folder or <strong>Promotions</strong> tab.
                 </li>
                 <li>
                   <strong>Resend Free Sandbox Limitation:</strong> Without a custom verified domain on Resend.com, Resend <span className="underline">only allows delivering emails to the email address that owns your Resend account</span>. Attempts to send to other prospect addresses are blocked by Resend until your domain DNS is verified (Resend dashboard → Domains).
@@ -1007,95 +975,56 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             </div>
           </div>
         )}
+      </AdvancedSection>
 
-        {/* Campaign Finished Notification Banner */}
-        <AnimatePresence>
-          {!isRunning && pendingLeads.length === 0 && totalLeadsCount > 0 && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.97, y: -6 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-              className="mt-4 p-4 rounded-xl bg-gradient-to-r from-[#128C7E]/10 to-[#E0F2FE] border border-[#128C7E]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
-            >
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-[#25D366] text-white flex items-center justify-center font-bold text-sm shrink-0">
-                  ✓
+      {/* Campaign Finished Notification Banner */}
+      <AnimatePresence>
+        {!isRunning && pendingLeads.length === 0 && totalLeadsCount > 0 && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: -6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            className="p-4 rounded-xl bg-gradient-to-r from-[#128C7E]/10 to-sky-500/10 border border-[#128C7E]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-[#25D366] text-white flex items-center justify-center font-bold text-sm shrink-0">
+                ✓
+              </div>
+              <div>
+                <div className="text-xs font-bold text-emerald-300">
+                  Campaign Cycle Complete ({totalLeadsCount} of {totalLeadsCount} Leads Engaged)
                 </div>
-                <div>
-                  <div className="text-xs font-bold text-[#0F6D42]">
-                    Campaign Cycle Complete ({totalLeadsCount} of {totalLeadsCount} Leads Engaged)
-                  </div>
-                  <div className="text-[11px] text-[#0F6D42]">
-                    All contacts in your spreadsheet have been processed. You can start the automated sequence again or send another follow-up round anytime.
-                  </div>
+                <div className="text-[11px] text-emerald-300">
+                  All contacts in your spreadsheet have been processed. You can start the automated sequence again or send another follow-up round anytime.
                 </div>
               </div>
-              <button
-                id="campaign-restart-banner-btn"
-                onClick={handleRestartAll}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] shadow-sm transition-all whitespace-nowrap active:scale-[0.98]"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Start Automation One More Time</span>
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+            <button
+              id="campaign-restart-banner-btn"
+              onClick={handleRestartAll}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] shadow-sm transition-all whitespace-nowrap active:scale-[0.98]"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Start Automation One More Time</span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-        {/* Progress Bar & Status Line */}
-        <div className="mt-5 pt-4 border-t border-[#F4F4F5]">
-          <div className="flex items-center justify-between text-xs text-[#71717A] mb-1.5">
-            <span className="font-medium">
-              Campaign Progress: {totalLeadsCount - pendingLeads.length} of {totalLeadsCount} Leads Contacted
-            </span>
-            <span className="font-semibold text-[#18181B]">{progressPercent}%</span>
-          </div>
-          <div className="w-full bg-[#E4E4E7] h-2.5 rounded-full overflow-hidden">
-            <div
-              className="bg-gradient-to-r from-[#128C7E] via-[#25D366] to-[#4285F4] h-full transition-all duration-300 rounded-full"
-              style={{ width: `${progressPercent}%` }}
-            ></div>
-          </div>
+      {/* Progress Bar & Status Line */}
+      <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+        <div className="flex items-center justify-between text-xs text-ink-muted mb-1.5">
+          <span className="font-medium">
+            Campaign Progress: {totalLeadsCount - pendingLeads.length} of {totalLeadsCount} Leads Contacted
+          </span>
+          <span className="font-semibold text-ink">{progressPercent}%</span>
         </div>
-      </div>
-
-      {/* Metrics Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
-        <div className="bg-white rounded-xl border border-[#E4E4E7] p-4 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#71717A] font-medium">Total Ingested</span>
-            <FileSpreadsheet className="w-4 h-4 text-[#71717A]" />
-          </div>
-          <div className="text-2xl font-bold text-[#18181B] mt-1">{totalLeadsCount}</div>
-          <div className="text-[11px] text-[#71717A] mt-0.5">{validLeads.length} Valid contacts</div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#E4E4E7] p-4 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#128C7E] font-medium">WhatsApp Dispatched</span>
-            <MessageSquare className="w-4 h-4 text-[#25D366]" />
-          </div>
-          <div className="text-2xl font-bold text-[#128C7E] mt-1">{completedWhatsAppCount}</div>
-          <div className="text-[11px] text-[#71717A] mt-0.5">High direct open rate</div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#E4E4E7] p-4 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#1967D2] font-medium">Emails Sent</span>
-            <Mail className="w-4 h-4 text-[#4285F4]" />
-          </div>
-          <div className="text-2xl font-bold text-[#1967D2] mt-1">{completedEmailCount}</div>
-          <div className="text-[11px] text-[#71717A] mt-0.5">Synced with Google Calendar</div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#E4E4E7] p-4 shadow-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#D97706] font-medium">Meetings Booked</span>
-            <CheckCircle2 className="w-4 h-4 text-[#D97706]" />
-          </div>
-          <div className="text-2xl font-bold text-[#D97706] mt-1">{bookedCount}</div>
-          <div className="text-[11px] text-[#71717A] mt-0.5">Google Meet invites sent</div>
+        <div className="w-full bg-border-strong h-2.5 rounded-full overflow-hidden">
+          <div
+            className="bg-gradient-to-r from-[#128C7E] via-[#25D366] to-[#4285F4] h-full transition-all duration-300 rounded-full"
+            style={{ width: `${progressPercent}%` }}
+          ></div>
         </div>
       </div>
 
@@ -1103,11 +1032,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Live Active Lead & Message Personalization Stream */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card">
-            <div className="flex items-center justify-between pb-4 border-b border-[#F4F4F5]">
+          <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+            <div className="flex items-center justify-between pb-4 border-b border-border">
               <div className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-full bg-[#25D366] animate-pulse"></div>
-                <h2 className="text-sm font-bold text-[#18181B]">Live Outreach Personalization Stream</h2>
+                <h2 className="text-sm font-bold text-ink">Live Outreach Personalization Stream</h2>
               </div>
               {isRunning && (
                 <span className="text-[11px] font-semibold text-[#128C7E] bg-[#128C7E]/10 px-2 py-0.5 rounded-md border border-[#128C7E]/30">
@@ -1119,10 +1048,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             {currentLead ? (
               <div className="mt-4 space-y-4">
                 {/* Active Lead Header */}
-                <div className="p-3.5 bg-[#FAFAFA] rounded-xl border border-[#E4E4E7] flex items-center justify-between">
+                <div className="p-3.5 bg-canvas rounded-xl border border-border flex items-center justify-between">
                   <div>
-                    <div className="font-semibold text-sm text-[#18181B]">{currentLead.name}</div>
-                    <div className="text-xs text-[#71717A]">
+                    <div className="font-semibold text-sm text-ink">{currentLead.name}</div>
+                    <div className="text-xs text-ink-muted">
                       {currentLead.company} • {currentLead.phone} • {currentLead.email}
                     </div>
                   </div>
@@ -1153,7 +1082,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     </div>
-                    <div className="p-3.5 bg-[#128C7E]/10 text-[#1E3A24] rounded-xl text-xs whitespace-pre-line border border-[#128C7E]/30 font-sans">
+                    <div className="p-3.5 bg-[#128C7E]/10 text-ink-secondary rounded-xl text-xs whitespace-pre-line border border-[#128C7E]/30 font-sans">
                       {currentWhatsAppText || 'Generating personalized WhatsApp hook...'}
                     </div>
                   </div>
@@ -1179,11 +1108,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     </div>
-                    <div className="p-3.5 bg-[#4285F4]/10 text-[#1F2937] rounded-xl text-xs space-y-2 border border-[#4285F4]/10">
-                      <div className="font-semibold text-xs text-[#0F172A] pb-1.5 border-b border-[#4285F4]/10">
+                    <div className="p-3.5 bg-[#4285F4]/10 text-ink-secondary rounded-xl text-xs space-y-2 border border-[#4285F4]/10">
+                      <div className="font-semibold text-xs text-ink pb-1.5 border-b border-[#4285F4]/10">
                         Subject: {currentEmailSubject || 'Generating subject...'}
                       </div>
-                      <div className="whitespace-pre-line text-xs font-sans text-[#334155]">
+                      <div className="whitespace-pre-line text-xs font-sans text-ink-secondary">
                         {currentEmailBody || 'Generating personalized email body with Google Calendar booking link...'}
                       </div>
                     </div>
@@ -1194,21 +1123,21 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <div className="text-center py-12 px-4">
                 {pendingLeads.length === 0 && totalLeadsCount > 0 ? (
                   <>
-                    <div className="w-12 h-12 rounded-full bg-[#128C7E]/10 border border-[#128C7E]/30 flex items-center justify-center mx-auto text-[#0F6D42] mb-3">
+                    <div className="w-12 h-12 rounded-full bg-[#128C7E]/10 border border-[#128C7E]/30 flex items-center justify-center mx-auto text-emerald-300 mb-3">
                       <CheckCircle2 className="w-6 h-6 text-[#25D366]" />
                     </div>
-                    <h3 className="text-sm font-bold text-[#18181B]">Campaign Complete</h3>
-                    <p className="text-xs text-[#71717A] max-w-md mx-auto mt-1">
+                    <h3 className="text-sm font-bold text-ink">Campaign Complete</h3>
+                    <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
                       All {totalLeadsCount} contacts in your spreadsheet have been engaged via {channelMode === 'omnichannel' ? 'WhatsApp & Email' : channelMode}. Use "Start Automation One More Time" above to run it again.
                     </p>
                   </>
                 ) : (
                   <>
-                    <div className="w-12 h-12 rounded-full bg-[#FAFAFA] border border-[#D4D4D8] flex items-center justify-center mx-auto text-[#71717A] mb-3">
-                      <Send className="w-5 h-5 text-[#71717A]" />
+                    <div className="w-12 h-12 rounded-full bg-canvas border border-border-strong flex items-center justify-center mx-auto text-ink-muted mb-3">
+                      <Send className="w-5 h-5 text-ink-muted" />
                     </div>
-                    <h3 className="text-sm font-semibold text-[#18181B]">Campaign Ready for Launch</h3>
-                    <p className="text-xs text-[#71717A] max-w-md mx-auto mt-1">
+                    <h3 className="text-sm font-semibold text-ink">Campaign Ready for Launch</h3>
+                    <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
                       Click "Launch Campaign" to automatically cycle through your spreadsheet contacts, generate AI personalized copy, and dispatch WhatsApp and Email messages.
                     </p>
                   </>
@@ -1220,16 +1149,16 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
         {/* Right Column: Live Dispatch Feed & Audit Logs */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-white rounded-2xl border border-[#E4E4E7] p-5 shadow-card">
-            <div className="flex items-center justify-between pb-4 border-b border-[#F4F4F5]">
-              <h2 className="text-sm font-bold text-[#18181B] flex items-center gap-2">
-                <Clock className="w-4 h-4 text-[#71717A]" />
+          <div className="bg-surface/70 backdrop-blur-2xl rounded-2xl border border-border p-5 shadow-card">
+            <div className="flex items-center justify-between pb-4 border-b border-border">
+              <h2 className="text-sm font-bold text-ink flex items-center gap-2">
+                <Clock className="w-4 h-4 text-ink-muted" />
                 Live Dispatch Activity
               </h2>
-              <span className="text-xs text-[#71717A]">{dispatchLogs.length} logs</span>
+              <span className="text-xs text-ink-muted">{dispatchLogs.length} logs</span>
             </div>
 
-            <div className="mt-3 divide-y divide-[#F4F4F5] max-h-[460px] overflow-y-auto no-scrollbar">
+            <div className="mt-3 divide-y divide-surface-hover max-h-[460px] overflow-y-auto no-scrollbar">
               {dispatchLogs.length > 0 ? (
                 dispatchLogs.map((log) => (
                   <div key={log.id} className="py-2.5 text-xs">
@@ -1249,11 +1178,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                           )}
                         </div>
                         <div>
-                          <div className="font-semibold text-[#18181B] flex items-center gap-1.5">
+                          <div className="font-semibold text-ink flex items-center gap-1.5">
                             <span>{log.leadName}</span>
-                            <span className="text-[10px] text-[#71717A] font-normal">({log.recipient})</span>
+                            <span className="text-[10px] text-ink-muted font-normal">({log.recipient})</span>
                           </div>
-                          <p className="text-[11px] text-[#71717A] line-clamp-1 mt-0.5">
+                          <p className="text-[11px] text-ink-muted line-clamp-1 mt-0.5">
                             {log.preview}
                           </p>
                         </div>
@@ -1261,28 +1190,28 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
                       <div className="text-right shrink-0">
                         {log.status === 'delivered' ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#0F6D42] bg-[#128C7E]/10 px-2 py-0.5 rounded-full">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300 bg-[#128C7E]/10 px-2 py-0.5 rounded-full">
                             <CheckCircle2 className="w-2.5 h-2.5" />
                             Delivered
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-                            <AlertCircle className="w-2.5 h-2.5 text-amber-600" />
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">
+                            <AlertCircle className="w-2.5 h-2.5 text-amber-400" />
                             Failed
                           </span>
                         )}
-                        <div className="text-[10px] text-[#A1A1AA] mt-0.5">{log.timestamp}</div>
+                        <div className="text-[10px] text-ink-muted mt-0.5">{log.timestamp}</div>
                       </div>
                     </div>
                     {log.errorDetail && log.status === 'failed' && (
-                      <div className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 mt-1.5 ml-[34px]">
+                      <div className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-md px-2 py-1 mt-1.5 ml-[34px]">
                         {log.errorDetail}
                       </div>
                     )}
                   </div>
                 ))
               ) : (
-                <div className="text-center py-8 text-xs text-[#71717A]">
+                <div className="text-center py-8 text-xs text-ink-muted">
                   No dispatches yet in this session. Start the campaign to see real-time delivery logs.
                 </div>
               )}
@@ -1307,18 +1236,18 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               exit={{ opacity: 0, scale: 0.96, y: 8 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white/90 backdrop-blur-2xl border border-white/60 ring-1 ring-black/5 rounded-3xl max-w-md w-full shadow-[0_20px_25px_-5px_rgb(0_0_0/0.1),0_8px_10px_-6px_rgb(0_0_0/0.1),inset_0_1px_0_0_rgba(255,255,255,0.8)] overflow-hidden p-6 space-y-4"
+              className="bg-surface/80 backdrop-blur-2xl border border-white/10 ring-1 ring-white/5 rounded-3xl max-w-md w-full shadow-modal overflow-hidden p-6 space-y-4"
             >
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 shrink-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center text-amber-400 shrink-0">
                   <AlertCircle className="w-4.5 h-4.5" />
                 </div>
-                <h3 className="font-bold text-sm text-[#18181B]">
+                <h3 className="font-bold text-sm text-ink">
                   Large WhatsApp batch — {bulkSendInfo.count} contacts
                 </h3>
               </div>
 
-              <div className="space-y-2.5 text-xs text-[#3F3F46]">
+              <div className="space-y-2.5 text-xs text-ink-secondary">
                 {(() => {
                   const remainingToday = Math.max(0, bulkSendInfo.safeDailyLimit - bulkSendInfo.usedToday);
                   if (bulkSendInfo.count <= remainingToday) return null;
@@ -1342,14 +1271,14 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   );
                 })()}
                 {!bulkSendInfo.isTemplateMode && (
-                  <p className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900">
+                  <p className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300">
                     You're in <strong>Free-form Text</strong> mode. Free-form messages only deliver to contacts who've
                     messaged you within the last 24h — most of a batch this size are likely first-time contacts, so
                     many of these will fail. Switch to <strong>Approved Template</strong> mode in Channel Setup for
                     reliable cold outreach.
                   </p>
                 )}
-                <p className="text-[11px] text-[#71717A]">
+                <p className="text-[11px] text-ink-muted">
                   Also make sure everyone in this list has actually opted in to receive messages from you — Meta can
                   suspend a number for unsolicited bulk messaging regardless of these safeguards.
                 </p>
@@ -1359,14 +1288,14 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowBulkSendConfirm(false)}
-                  className="px-3.5 py-2 text-xs font-medium text-[#71717A] hover:bg-[#F4F4F5] rounded-lg border border-[#D4D4D8]"
+                  className="px-3.5 py-2 text-xs font-medium text-ink-muted hover:bg-surface-hover rounded-lg border border-border-strong"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={executeStart}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg text-white bg-[#18181B] hover:bg-[#09090B] shadow-sm transition-all active:scale-[0.98]"
+                  className="px-4 py-2 text-xs font-semibold rounded-lg text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98]"
                 >
                   I understand, start sending
                 </button>

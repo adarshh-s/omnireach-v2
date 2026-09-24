@@ -1,22 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, XCircle, RefreshCw, MessageSquare, KeyRound, Calendar, Mail, Reply } from 'lucide-react';
-
-interface HealthStatus {
-  ok: boolean;
-  message: string;
-}
-
-interface HealthState {
-  whatsappToken: HealthStatus;
-  whatsapp: HealthStatus;
-  calendar: HealthStatus;
-  email: HealthStatus;
-  emailReplyTracking: HealthStatus;
-}
+import { HealthState } from '../hooks/useChannelHealth';
 
 interface ChannelHealthPanelProps {
   accessToken?: string | null;
+  health: HealthState | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
 }
 
 const ROWS: { key: keyof HealthState; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -33,51 +25,25 @@ const ROWS: { key: keyof HealthState; label: string; icon: React.ComponentType<{
  * a real lead's reply goes nowhere. Checked live against WhatsApp/Google/Resend, not just
  * "is a value present."
  */
-export const ChannelHealthPanel: React.FC<ChannelHealthPanelProps> = ({ accessToken }) => {
-  const [health, setHealth] = useState<HealthState | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = () => {
-    if (!accessToken) return;
-    setLoading(true);
-    setError(null);
-    fetch(`/api/whatsapp/subscribe-app?action=health&_=${Date.now()}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: 'no-store',
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.whatsapp) setHealth(data);
-        else setError('Could not run health checks.');
-      })
-      .catch(() => setError('Could not reach the server to run health checks.'))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken]);
-
+export const ChannelHealthPanel: React.FC<ChannelHealthPanelProps> = ({ accessToken, health, loading, error, onRefresh }) => {
   if (!accessToken) return null;
 
   return (
-    <div className="p-4 bg-white rounded-xl border border-[#E4E4E7] space-y-2.5 hover:shadow-card transition-shadow duration-200">
+    <div className="p-4 bg-surface/70 backdrop-blur-2xl rounded-xl border border-border space-y-2.5 hover:shadow-card transition-shadow duration-200">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-bold text-[#18181B]">Channel Health</span>
+        <span className="text-xs font-bold text-ink">Channel Health</span>
         <button
           type="button"
-          onClick={load}
+          onClick={onRefresh}
           disabled={loading}
-          className="p-1 rounded-md text-[#71717A] hover:text-[#18181B] hover:bg-[#F4F4F5] transition-colors disabled:opacity-50"
+          className="p-1 rounded-md text-ink-muted hover:text-ink hover:bg-surface-hover transition-colors disabled:opacity-50"
           title="Re-check now"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
-      {error && <p className="text-[11px] text-rose-600">{error}</p>}
+      {error && <p className="text-[11px] text-rose-400">{error}</p>}
 
       {!error && (
         <div className="space-y-1.5">
@@ -85,11 +51,11 @@ export const ChannelHealthPanel: React.FC<ChannelHealthPanelProps> = ({ accessTo
             const status = health?.[key];
             return (
               <div key={key} className="flex items-start gap-2 text-[11px]">
-                <Icon className="w-3.5 h-3.5 text-[#71717A] mt-0.5 shrink-0" />
+                <Icon className="w-3.5 h-3.5 text-ink-muted mt-0.5 shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <span className="font-medium text-[#3F3F46]">{label}</span>
-                  {status && <span className="text-[#71717A]"> — {status.message}</span>}
-                  {!status && loading && <span className="text-[#71717A]"> — checking...</span>}
+                  <span className="font-medium text-ink-secondary">{label}</span>
+                  {status && <span className="text-ink-muted"> — {status.message}</span>}
+                  {!status && loading && <span className="text-ink-muted"> — checking...</span>}
                 </div>
                 <AnimatePresence mode="wait">
                   {status && (
@@ -103,7 +69,7 @@ export const ChannelHealthPanel: React.FC<ChannelHealthPanelProps> = ({ accessTo
                       {status.ok ? (
                         <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
                       ) : (
-                        <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                        <XCircle className="w-3.5 h-3.5 text-rose-400" />
                       )}
                     </motion.span>
                   )}
