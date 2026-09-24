@@ -152,7 +152,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     setActiveTab(item.id);
                     onNavigate?.();
                   }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-all ${navButtonClass(item)}`}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${navButtonClass(item)}`}
                 >
                   <Icon
                     className={`w-3.5 h-3.5 shrink-0 ${
@@ -213,7 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col border-r border-border bg-surface/10 backdrop-blur-3xl backdrop-saturate-200 z-40">
+      <aside className="hidden lg:flex fixed inset-y-3 left-3 w-64 flex-col rounded-2xl border border-border bg-surface/10 backdrop-blur-3xl backdrop-saturate-200 shadow-elevated overflow-hidden z-40">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
           <Logo />
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} align="left" />

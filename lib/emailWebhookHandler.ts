@@ -150,6 +150,24 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   const nowIso = new Date().toISOString();
   history.push({ role: 'user', text: bodyText, timestamp: nowIso });
 
+  // A genuine inbound reply — record it on the client so the Dashboard's "Replied" stat
+  // and per-campaign channel breakdowns are accurate. Nothing else in this file writes
+  // email_status='Replied' anywhere, so this stayed permanently 0 for every org
+  // regardless of how many prospects actually replied.
+  const replyClientId = clientId || existing?.client_id;
+  if (replyClientId) {
+    await supabase
+      .from('clients')
+      .update({ email_status: 'Replied', updated_at: new Date().toISOString() })
+      .eq('id', replyClientId);
+  } else {
+    await supabase
+      .from('clients')
+      .update({ email_status: 'Replied', updated_at: new Date().toISOString() })
+      .eq('org_id', orgId)
+      .eq('email', fromEmail);
+  }
+
   const [orgProfile, orgChannelSettings, calendarToken] = await Promise.all([
     getOrgProfile(orgId),
     getOrgChannelSettings(orgId),

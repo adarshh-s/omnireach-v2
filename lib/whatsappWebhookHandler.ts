@@ -256,6 +256,23 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
   const nowIso = new Date().toISOString();
   history.push({ role: 'user', text: incomingText, timestamp: nowIso });
 
+  // A genuine inbound reply — record it on the client so the Dashboard's "Replied" stat
+  // and per-campaign channel breakdowns are accurate. Nothing else in this file writes
+  // whatsapp_status='Replied' anywhere, so this stayed permanently 0 for every org
+  // regardless of how many prospects actually replied.
+  if (existing?.client_id) {
+    await supabase
+      .from('clients')
+      .update({ whatsapp_status: 'Replied', updated_at: new Date().toISOString() })
+      .eq('id', existing.client_id);
+  } else {
+    await supabase
+      .from('clients')
+      .update({ whatsapp_status: 'Replied', updated_at: new Date().toISOString() })
+      .eq('org_id', orgId)
+      .in('phone', [fromPhone, `+${fromPhone}`]);
+  }
+
   if (OPT_OUT_PATTERN.test(incomingText.trim())) {
     history.push({ role: 'assistant', text: OPT_OUT_REPLY, timestamp: new Date().toISOString() });
 

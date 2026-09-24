@@ -356,7 +356,7 @@ function AppContent({ auth }: { auth: AuthState }) {
         onOpenChannelConfig={() => setIsChannelModalOpen(true)}
       />
 
-      <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
+      <div className="flex-1 flex flex-col lg:pl-72 min-w-0">
       <AnimatePresence>
         {channelSettingsStatus.saveError && (
           <motion.div
