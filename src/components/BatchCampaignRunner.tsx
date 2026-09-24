@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Play,
@@ -159,6 +159,20 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const totalLeadsCount = leads.length;
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
+
+  // A static, non-AI preview of the very next contact this run would reach — lets someone
+  // check what's about to go out before committing to "Launch Campaign", instead of only
+  // finding out once the run is already underway. Deliberately skips the AI rewrite (which
+  // costs a real API call) since this is just for a quick sanity check, not the final copy.
+  const previewLead = !isRunning ? pendingLeads[0] : undefined;
+  const previewContent = useMemo(() => {
+    if (!previewLead || !selectedTemplate) return null;
+    return {
+      whatsApp: interpolateTemplate(selectedTemplate.whatsAppContent || '', previewLead, campaignSettings, availableSlots),
+      emailSubject: interpolateTemplate(selectedTemplate.emailSubject || '', previewLead, campaignSettings, availableSlots),
+      emailBody: interpolateTemplate(selectedTemplate.emailBody || '', previewLead, campaignSettings, availableSlots),
+    };
+  }, [previewLead, selectedTemplate, campaignSettings, availableSlots]);
 
   // Campaign Execution Loop
   useEffect(() => {
@@ -791,6 +805,9 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 Email
               </button>
             </div>
+            <p className="text-[10px] text-ink-muted mt-1.5">
+              {pendingLeads.length} of {totalLeadsCount} contact{totalLeadsCount === 1 ? '' : 's'} will be reached this run
+            </p>
           </div>
 
           {/* Template Selector */}
@@ -1035,8 +1052,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
             <div className="flex items-center justify-between pb-4 border-b border-border">
               <div className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 rounded-full bg-[#25D366] animate-pulse"></div>
-                <h2 className="text-sm font-bold text-ink">Live Outreach Personalization Stream</h2>
+                <div className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-[#25D366] animate-pulse' : 'bg-ink-muted'}`}></div>
+                <h2 className="text-sm font-bold text-ink">
+                  {isRunning ? 'Live Outreach Personalization Stream' : 'Message Preview'}
+                </h2>
               </div>
               {isRunning && (
                 <span className="text-[11px] font-semibold text-[#128C7E] bg-[#128C7E]/10 px-2 py-0.5 rounded-md border border-[#128C7E]/30">
@@ -1119,6 +1138,60 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   </div>
                 )}
               </div>
+            ) : previewLead && previewContent ? (
+              <div className="mt-4 space-y-4">
+                <div className="p-3.5 bg-canvas rounded-xl border border-border flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Next up</span>
+                    <div className="font-semibold text-sm text-ink">{previewLead.name}</div>
+                    <div className="text-xs text-ink-muted">
+                      {previewLead.company} • {previewLead.phone} • {previewLead.email}
+                    </div>
+                  </div>
+                  {onSelectLeadForSimulator && (
+                    <button
+                      onClick={() => onSelectLeadForSimulator(previewLead.id)}
+                      className="text-xs font-medium text-[#128C7E] hover:underline flex items-center gap-1 shrink-0"
+                    >
+                      <span>View in Simulator</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {(channelMode === 'omnichannel' || channelMode === 'whatsapp') && (
+                  <div className="space-y-1.5">
+                    <span className="text-xs font-semibold text-[#128C7E] flex items-center gap-1.5">
+                      <MessageSquare className="w-3.5 h-3.5 text-[#25D366]" />
+                      WhatsApp Preview
+                    </span>
+                    <div className="p-3.5 bg-[#128C7E]/10 text-ink-secondary rounded-xl text-xs whitespace-pre-line border border-[#128C7E]/30 font-sans">
+                      {previewContent.whatsApp}
+                    </div>
+                  </div>
+                )}
+
+                {(channelMode === 'omnichannel' || channelMode === 'email') && (
+                  <div className="space-y-1.5">
+                    <span className="text-xs font-semibold text-[#1967D2] flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-[#4285F4]" />
+                      Email Preview
+                    </span>
+                    <div className="p-3.5 bg-[#4285F4]/10 text-ink-secondary rounded-xl text-xs space-y-2 border border-[#4285F4]/10">
+                      <div className="font-semibold text-xs text-ink pb-1.5 border-b border-[#4285F4]/10">
+                        Subject: {previewContent.emailSubject}
+                      </div>
+                      <div className="whitespace-pre-line text-xs font-sans text-ink-secondary">{previewContent.emailBody}</div>
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-ink-muted italic">
+                  {campaignSettings.useAiCopywriting
+                    ? "Shown with your template as written — the AI will personalize this further for each contact once the campaign runs."
+                    : `This is exactly what will send — ${pendingLeads.length} contact${pendingLeads.length === 1 ? '' : 's'} queued.`}
+                </p>
+              </div>
             ) : (
               <div className="text-center py-12 px-4">
                 {pendingLeads.length === 0 && totalLeadsCount > 0 ? (
@@ -1138,7 +1211,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     </div>
                     <h3 className="text-sm font-semibold text-ink">Campaign Ready for Launch</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
-                      Click "Launch Campaign" to automatically cycle through your spreadsheet contacts, generate AI personalized copy, and dispatch WhatsApp and Email messages.
+                      Import contacts and click "Launch Campaign" to automatically cycle through them, generate personalized copy, and dispatch WhatsApp and Email messages.
                     </p>
                   </>
                 )}
