@@ -213,7 +213,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col border-r border-border bg-surface/25 backdrop-blur-3xl backdrop-saturate-150 z-40">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col border-r border-border bg-surface/10 backdrop-blur-3xl backdrop-saturate-200 z-40">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
           <Logo />
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} align="left" />
@@ -223,7 +223,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </aside>
 
       {/* Mobile top bar */}
-      <header className="lg:hidden sticky top-0 z-40 h-14 flex items-center justify-between px-4 border-b border-white/5 bg-surface/25 backdrop-blur-3xl backdrop-saturate-150">
+      <header className="lg:hidden sticky top-0 z-40 h-14 flex items-center justify-between px-4 border-b border-white/5 bg-surface/10 backdrop-blur-3xl backdrop-saturate-200">
         <Logo compact />
         <div className="flex items-center gap-1">
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} />
@@ -253,7 +253,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-              className="h-full w-72 max-w-[80vw] bg-surface/50 backdrop-blur-3xl border-r border-white/10 shadow-modal flex flex-col"
+              className="h-full w-72 max-w-[80vw] bg-surface/30 backdrop-blur-3xl backdrop-saturate-200 border-r border-white/10 shadow-modal flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
