@@ -70,6 +70,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
   const failedCount = leads.filter((l) => l.whatsAppStatus === 'Failed' || l.emailStatus === 'Failed').length;
   const todayStr = new Date().toISOString().slice(0, 10);
   const followUpsDueCount = leads.filter((l) => l.followUpDate && l.followUpDate <= todayStr).length;
+  const meetingConversionRate = contactedCount > 0 ? Math.round((meetingsBookedLocal / contactedCount) * 100) : 0;
 
   const activeCampaigns = cloud ? cloud.activeCampaigns : null;
   const activeConversations = cloud ? cloud.activeConversations : null;
@@ -231,6 +232,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
             <div className="flex items-center justify-between">
               <span className="text-ink-secondary">Meetings booked</span>
               <span className="font-semibold text-[#128C7E]">{meetingsBookedLocal}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-secondary">Conversion rate</span>
+              <span className="font-semibold text-ink">{meetingConversionRate}%</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-ink-secondary">Failed dispatches</span>

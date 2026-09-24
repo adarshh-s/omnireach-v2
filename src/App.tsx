@@ -5,7 +5,6 @@ import { BatchCampaignRunner } from './components/BatchCampaignRunner';
 import { MessageSimulator } from './components/MessageSimulator';
 import { SheetsView } from './components/SheetsView';
 import { CalendarView } from './components/CalendarView';
-import { CampaignAnalytics } from './components/CampaignAnalytics';
 import { ConversationsView } from './components/ConversationsView';
 import { DashboardView } from './components/DashboardView';
 import { TemplateManagerView } from './components/TemplateManagerView';
@@ -493,8 +492,6 @@ function AppContent({ auth }: { auth: AuthState }) {
         {activeTab === 'inbox' && (
           <ConversationsView leads={leads} onUpdateLead={handleUpdateLead} accessToken={auth.accessToken} />
         )}
-
-        {activeTab === 'analytics' && <CampaignAnalytics leads={leads} userId={auth.user?.id} />}
       </motion.div>
       </AnimatePresence>
       </main>

@@ -24,7 +24,7 @@ const SEEN_KEY = 'omnireach_notifications_last_seen_v1';
 
 /**
  * Polls whatsapp_conversations/email_conversations for confirmed (booked) meetings only —
- * same 15s-poll pattern already used in DashboardView/CampaignAnalytics. "Unseen" is tracked
+ * same 15s-poll pattern already used in DashboardView. "Unseen" is tracked
  * via a localStorage marker rather than a new table, since this is inherently per-browser,
  * per-viewer state.
  */

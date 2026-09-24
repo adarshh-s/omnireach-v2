@@ -5,7 +5,6 @@ import {
   Table,
   Calendar,
   Settings2,
-  BarChart3,
   Upload,
   MessageSquare,
   Zap,
@@ -24,8 +23,7 @@ export type ActiveTab =
   | 'simulator'
   | 'templates'
   | 'calendar'
-  | 'inbox'
-  | 'analytics';
+  | 'inbox';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -70,10 +68,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const groups: NavGroup[] = [
     {
       label: 'Overview',
-      items: [
-        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-      ],
+      items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }],
     },
     {
       label: 'Outreach',
@@ -235,7 +230,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex fixed inset-y-3 left-3 w-64 flex-col rounded-2xl border border-border bg-surface/10 backdrop-blur-3xl backdrop-saturate-200 shadow-elevated overflow-hidden z-40">
+      <aside className="hidden lg:flex fixed inset-y-3 left-3 w-64 flex-col rounded-2xl border border-border bg-surface/10 backdrop-blur-3xl backdrop-saturate-200 shadow-elevated z-40">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border shrink-0">
           <Logo />
           <NotificationBell userId={userId} onOpenInbox={() => setActiveTab('inbox')} align="left" />
