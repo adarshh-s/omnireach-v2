@@ -39,6 +39,7 @@ import { DEFAULT_TEMPLATES } from '../data/sampleTemplates';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { computeNextPeakSendTime } from '../../lib/countryTiming';
 import { AdvancedSection } from './AdvancedSection';
+import { VoiceDemoWidget } from './VoiceDemoWidget';
 
 /**
  * Counts WhatsApp sends already used up today across every campaign for this org — not
@@ -851,6 +852,8 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           )}
         </div>
       </div>
+
+      <VoiceDemoWidget />
 
       <AnimatePresence>
         {persistenceWarning && (
