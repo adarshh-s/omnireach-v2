@@ -6,6 +6,7 @@ import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { ChannelHealthPanel } from './ChannelHealthPanel';
 import { ChannelCard } from './ChannelCard';
 import { StatTile } from './StatTile';
+import { VoiceDemoWidget } from './VoiceDemoWidget';
 import { useLiveHistory } from '../hooks/useLiveHistory';
 import { useChannelHealth } from '../hooks/useChannelHealth';
 import { getWhatsAppStats, getEmailStats, getCalendarStats } from '../utils/channelStats';
@@ -149,6 +150,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
           </button>
         )}
       </div>
+
+      <VoiceDemoWidget />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {tiles.map((tile, i) => (

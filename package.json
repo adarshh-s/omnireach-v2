@@ -17,6 +17,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@types/busboy": "^1.5.4",
     "@types/papaparse": "^5.5.2",
+    "@vapi-ai/web": "^2.7.1",
     "@vitejs/plugin-react": "^5.0.4",
     "busboy": "^1.6.0",
     "dotenv": "^17.2.3",
