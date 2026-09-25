@@ -16,6 +16,8 @@ import {
   ChevronRight,
   AlertCircle,
   Zap,
+  Phone,
+  Loader2,
 } from 'lucide-react';
 import {
   Lead,
@@ -173,6 +175,35 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       emailBody: interpolateTemplate(selectedTemplate.emailBody || '', previewLead, campaignSettings, availableSlots),
     };
   }, [previewLead, selectedTemplate, campaignSettings, availableSlots]);
+
+  // One-off AI voice call to whichever lead is currently shown in the preview panel
+  // (the live one mid-run, or the "next up" one when idle) — mirrors the same button in
+  // MessageSimulator.tsx so a batch operator can jump straight to calling without leaving this page.
+  const [isCalling, setIsCalling] = useState(false);
+  const [callResult, setCallResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleCallLead = async (lead: Lead) => {
+    if (!lead?.phone) return;
+    setIsCalling(true);
+    setCallResult(null);
+    try {
+      const res = await fetch('/api/voice/vapi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+        body: JSON.stringify({ phone: lead.phone, name: lead.name, variables: { company: lead.company || '' } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setCallResult({ ok: true, message: `Calling ${lead.name} now — call ID ${data.callId || ''}.` });
+      } else {
+        setCallResult({ ok: false, message: data.error || 'Could not start the call.' });
+      }
+    } catch (err: any) {
+      setCallResult({ ok: false, message: err?.message || 'Failed to reach the server.' });
+    } finally {
+      setIsCalling(false);
+    }
+  };
 
   // Campaign Execution Loop
   useEffect(() => {
@@ -1074,14 +1105,28 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                       {currentLead.company} • {currentLead.phone} • {currentLead.email}
                     </div>
                   </div>
-                  <button
-                    onClick={() => onSelectLeadForSimulator(currentLead.id)}
-                    className="text-xs font-medium text-[#128C7E] hover:underline flex items-center gap-1"
-                  >
-                    <span>View in Simulator</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button
+                      onClick={() => handleCallLead(currentLead)}
+                      disabled={isCalling || !currentLead.phone}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-[#4285F4] to-[#128C7E] text-white font-semibold text-[11px] shadow-sm hover:opacity-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isCalling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                      <span>{isCalling ? 'Calling…' : 'Call via AI Voice Agent'}</span>
+                    </button>
+                    <button
+                      onClick={() => onSelectLeadForSimulator(currentLead.id)}
+                      className="text-xs font-medium text-[#128C7E] hover:underline flex items-center gap-1"
+                    >
+                      <span>View in Simulator</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
+
+                {callResult && (
+                  <p className={`text-[11px] -mt-2 ${callResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{callResult.message}</p>
+                )}
 
                 {/* WhatsApp Message Preview Bubble */}
                 {(channelMode === 'omnichannel' || channelMode === 'whatsapp') && (
@@ -1148,16 +1193,30 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                       {previewLead.company} • {previewLead.phone} • {previewLead.email}
                     </div>
                   </div>
-                  {onSelectLeadForSimulator && (
+                  <div className="flex items-center gap-3 shrink-0">
                     <button
-                      onClick={() => onSelectLeadForSimulator(previewLead.id)}
-                      className="text-xs font-medium text-[#128C7E] hover:underline flex items-center gap-1 shrink-0"
+                      onClick={() => handleCallLead(previewLead)}
+                      disabled={isCalling || !previewLead.phone}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-[#4285F4] to-[#128C7E] text-white font-semibold text-[11px] shadow-sm hover:opacity-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <span>View in Simulator</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
+                      {isCalling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                      <span>{isCalling ? 'Calling…' : 'Call via AI Voice Agent'}</span>
                     </button>
-                  )}
+                    {onSelectLeadForSimulator && (
+                      <button
+                        onClick={() => onSelectLeadForSimulator(previewLead.id)}
+                        className="text-xs font-medium text-[#128C7E] hover:underline flex items-center gap-1"
+                      >
+                        <span>View in Simulator</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {callResult && (
+                  <p className={`text-[11px] -mt-2 ${callResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{callResult.message}</p>
+                )}
 
                 {(channelMode === 'omnichannel' || channelMode === 'whatsapp') && (
                   <div className="space-y-1.5">
