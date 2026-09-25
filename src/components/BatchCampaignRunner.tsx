@@ -884,18 +884,18 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <button
                 id="mode-omnichannel"
                 onClick={() => setChannelMode('omnichannel')}
-                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
+                className={`py-1.5 px-1 rounded-md text-[10px] leading-tight font-medium transition-all flex items-center justify-center text-center ${
                   channelMode === 'omnichannel'
                     ? 'bg-surface text-ink shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
                 }`}
               >
-                Both
+                WhatsApp &amp; Email
               </button>
               <button
                 id="mode-whatsapp"
                 onClick={() => setChannelMode('whatsapp')}
-                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
+                className={`py-1.5 px-1 rounded-md text-[10px] leading-tight font-medium transition-all flex items-center justify-center text-center ${
                   channelMode === 'whatsapp'
                     ? 'bg-[#25D366] text-white shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
@@ -906,7 +906,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <button
                 id="mode-email"
                 onClick={() => setChannelMode('email')}
-                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
+                className={`py-1.5 px-1 rounded-md text-[10px] leading-tight font-medium transition-all flex items-center justify-center text-center ${
                   channelMode === 'email'
                     ? 'bg-[#4285F4] text-white shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
@@ -917,13 +917,13 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <button
                 id="mode-voice"
                 onClick={() => setChannelMode('voice')}
-                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all flex items-center justify-center gap-1 ${
+                className={`py-1.5 px-1 rounded-md text-[10px] leading-tight font-medium transition-all flex items-center justify-center text-center gap-1 ${
                   channelMode === 'voice'
                     ? 'bg-gradient-to-r from-[#4285F4] to-[#128C7E] text-white shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
                 }`}
               >
-                <Phone className="w-3 h-3" />
+                <Phone className="w-3 h-3 shrink-0" />
                 <span>Voice</span>
               </button>
             </div>
