@@ -80,8 +80,8 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
         const [waRes, emRes] = await Promise.all([
-          fetch('/api/whatsapp/conversations', { headers }),
-          fetch('/api/email/conversations', { headers }),
+          fetch('/api/conversations?channel=whatsapp', { headers }),
+          fetch('/api/conversations?channel=email', { headers }),
         ]);
         const [waData, emData] = await Promise.all([waRes.json(), emRes.json()]);
         if (cancelled) return;

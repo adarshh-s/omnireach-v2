@@ -1,8 +1,9 @@
-import { getSupabaseAdmin } from '../../lib/supabaseAdmin.js';
-import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { getSupabaseAdmin } from '../lib/supabaseAdmin.js';
+import { getOrgIdFromAuthHeader } from '../lib/supabaseServerAuth.js';
 
 interface ApiRequest {
   method?: string;
+  query?: Record<string, unknown>;
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -11,10 +12,16 @@ interface ApiResponse {
   json: (data: unknown) => void;
 }
 
+// Merges what used to be two near-identical routes (api/whatsapp/conversations.ts,
+// api/email/conversations.ts — same query, different table) into one, freeing a slot
+// under Vercel's Hobby-plan 12-serverless-function cap for the Vapi voice routes below.
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const channel = req.query?.channel === 'email' ? 'email' : 'whatsapp';
+  const table = channel === 'email' ? 'email_conversations' : 'whatsapp_conversations';
 
   const supabase = getSupabaseAdmin();
   if (!supabase) {
@@ -27,7 +34,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   }
 
   const { data, error } = await supabase
-    .from('whatsapp_conversations')
+    .from(table)
     .select('*')
     .eq('org_id', orgId)
     .order('last_message_at', { ascending: false })

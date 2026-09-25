@@ -29,6 +29,7 @@ import { getOrgChannelSettings } from './lib/orgSettings';
 import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
+import { startVapiCall, isVapiConfigured } from './lib/vapiClient';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -595,8 +596,9 @@ app.get('/api/cron/dispatch-scheduled', async (req, res) => {
   res.json({ processed: (due || []).length, sent, failed, skipped });
 });
 
-// API Route: List live AI bot conversations for the signed-in org (for the "AI Inbox" UI panel)
-app.get('/api/whatsapp/conversations', async (req, res) => {
+// API Route: List live AI bot conversations for the signed-in org (for the "AI Inbox" UI
+// panel) — one route for both channels (?channel=whatsapp|email), mirroring api/conversations.ts.
+app.get('/api/conversations', async (req, res) => {
   const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.json({ configured: false, conversations: [] });
@@ -605,30 +607,9 @@ app.get('/api/whatsapp/conversations', async (req, res) => {
   if (!orgId) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
+  const table = req.query.channel === 'email' ? 'email_conversations' : 'whatsapp_conversations';
   const { data, error } = await supabase
-    .from('whatsapp_conversations')
-    .select('*')
-    .eq('org_id', orgId)
-    .order('last_message_at', { ascending: false })
-    .limit(200);
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-  res.json({ configured: true, conversations: data });
-});
-
-// API Route: List live AI email bot conversations for the signed-in org
-app.get('/api/email/conversations', async (req, res) => {
-  const supabase = getSupabaseAdmin();
-  if (!supabase) {
-    return res.json({ configured: false, conversations: [] });
-  }
-  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
-  if (!orgId) {
-    return res.status(401).json({ error: 'Sign in required.' });
-  }
-  const { data, error } = await supabase
-    .from('email_conversations')
+    .from(table)
     .select('*')
     .eq('org_id', orgId)
     .order('last_message_at', { ascending: false })
@@ -662,6 +643,45 @@ app.get('/api/auth/google/callback', async (req, res) => {
     ? `/?google_calendar=connected`
     : `/?google_calendar=error&message=${encodeURIComponent(result.error || 'Connection failed')}`;
   res.redirect(302, redirectTo);
+});
+
+// Vapi voice calling — trigger an outbound AI call, and receive Vapi's webhook events.
+// Mirrors api/voice/vapi.ts (one route, ?action=webhook picks the inbound-events branch)
+// since server.ts is Express-only local dev, not auto-discovered by Vercel.
+app.post('/api/voice/vapi', async (req, res) => {
+  if (req.query.action === 'webhook') {
+    const expected = process.env.VAPI_WEBHOOK_SECRET;
+    if (!expected || req.query.token !== expected) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+    const message = req.body?.message;
+    const type = message?.type;
+    const callId = message?.call?.id;
+    if (type === 'end-of-call-report') {
+      console.log('[Vapi] Call ended', callId, '— reason:', message?.endedReason, '— summary:', message?.summary || message?.analysis?.summary);
+    } else if (type === 'status-update') {
+      console.log('[Vapi] Call status update', callId, '—', message?.status);
+    } else if (type === 'transcript') {
+      console.log('[Vapi] Transcript', callId, `[${message?.role}]`, message?.transcript);
+    } else if (type) {
+      console.log('[Vapi] Event', type, callId || '');
+    }
+    return res.status(200).json({ received: true });
+  }
+
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+  if (!isVapiConfigured()) {
+    return res.status(400).json({ error: 'Voice calling is not configured on the server yet (VAPI_API_KEY / VAPI_ASSISTANT_ID / VAPI_PHONE_NUMBER_ID).' });
+  }
+  const { phone, name, variables } = req.body || {};
+  if (!phone) {
+    return res.status(400).json({ error: 'phone is required.' });
+  }
+  const result = await startVapiCall({ phone, name, variables });
+  return res.status(result.ok ? 200 : 400).json(result);
 });
 
 // Health Endpoint

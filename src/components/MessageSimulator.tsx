@@ -63,6 +63,8 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
   const [isSendingLiveEmail, setIsSendingLiveEmail] = useState(false);
   const [sendResultStatus, setSendResultStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [sendResultMessage, setSendResultMessage] = useState('');
+  const [isCalling, setIsCalling] = useState(false);
+  const [callResult, setCallResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Active Lead
   const lead = leads.find((l) => l.id === selectedLeadId) || leads[0];
@@ -238,6 +240,32 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
     navigator.clipboard.writeText(textToCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCallLead = async () => {
+    if (!lead?.phone) return;
+    setIsCalling(true);
+    setCallResult(null);
+    try {
+      const res = await fetch('/api/voice/vapi', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ phone: lead.phone, name: lead.name, variables: { company: lead.company || '' } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setCallResult({ ok: true, message: `Calling ${lead.name} now — call ID ${data.callId || ''}.` });
+      } else {
+        setCallResult({ ok: false, message: data.error || 'Could not start the call.' });
+      }
+    } catch (err: any) {
+      setCallResult({ ok: false, message: err?.message || 'Failed to reach the server.' });
+    } finally {
+      setIsCalling(false);
+    }
   };
 
   const nextSlot = availableSlots.find((s) => s.available) || availableSlots[0];
@@ -558,6 +586,18 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
                   {copied ? <Check className="w-3.5 h-3.5 text-[#25D366]" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copied ? 'Copied to Clipboard!' : 'Copy WhatsApp Text'}</span>
                 </button>
+
+                <button
+                  onClick={handleCallLead}
+                  disabled={isCalling || !lead?.phone}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#4285F4] to-[#128C7E] text-white font-semibold text-xs shadow-sm hover:opacity-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCalling ? <Loader2 className="w-4 h-4 animate-spin" /> : <Phone className="w-4 h-4" />}
+                  <span>{isCalling ? 'Calling…' : 'Call via AI Voice Agent'}</span>
+                </button>
+                {callResult && (
+                  <p className={`text-[11px] ${callResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{callResult.message}</p>
+                )}
               </div>
             </div>
           </div>
