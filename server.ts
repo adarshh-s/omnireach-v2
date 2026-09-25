@@ -651,7 +651,9 @@ app.get('/api/auth/google/callback', async (req, res) => {
 app.post('/api/voice/vapi', async (req, res) => {
   if (req.query.action === 'webhook') {
     const expected = process.env.VAPI_WEBHOOK_SECRET;
-    if (!expected || req.query.token !== expected) {
+    const headerSecret = req.headers['x-vapi-secret'];
+    const authorized = !!expected && (headerSecret === expected || req.query.token === expected);
+    if (!authorized) {
       return res.status(403).json({ error: 'Invalid token' });
     }
     const message = req.body?.message;

@@ -20,7 +20,10 @@ interface ApiResponse {
  * near-identical routes to free the slot this file uses.
  *
  * Vapi dashboard setup: point the assistant's (or phone number's) Server URL at
- *   https://<your-domain>/api/voice/vapi?action=webhook&token=<VAPI_WEBHOOK_SECRET>
+ *   https://<your-domain>/api/voice/vapi?action=webhook
+ * with a custom header `x-vapi-secret: <VAPI_WEBHOOK_SECRET>` (Vapi's own auth
+ * convention) — or append `&token=<VAPI_WEBHOOK_SECRET>` to the URL instead if you'd
+ * rather not set a custom header. Either one verifies.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'POST') {
@@ -53,15 +56,21 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
   return res.status(result.ok ? 200 : 400).json(result);
 }
 
-/** Verifies the shared secret appended to the Vapi Server URL, the same pattern used for
- * the email inbound webhook (lib/emailWebhookHandler.ts's verifyEmailWebhookToken). */
-function verifyVapiWebhookToken(token: unknown): boolean {
+/** Vapi supports two ways to authenticate its outgoing webhook: a custom header configured
+ * on the assistant/phone number (`x-vapi-secret`, Vapi's own convention), or a `?token=`
+ * query string on the Server URL (this app's other webhooks — e.g. the email inbound one —
+ * all use that pattern). Accepting either means this works regardless of which way a given
+ * assistant was set up. */
+function verifyVapiWebhookRequest(req: ApiRequest): boolean {
   const expected = process.env.VAPI_WEBHOOK_SECRET;
-  return !!expected && token === expected;
+  if (!expected) return false;
+  const headerSecret = req.headers?.['x-vapi-secret'];
+  if (typeof headerSecret === 'string' && headerSecret === expected) return true;
+  return req.query?.token === expected;
 }
 
 async function handleWebhook(req: ApiRequest, res: ApiResponse) {
-  if (!verifyVapiWebhookToken(req.query?.token)) {
+  if (!verifyVapiWebhookRequest(req)) {
     return res.status(403).json({ error: 'Invalid token' });
   }
 
