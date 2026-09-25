@@ -167,6 +167,19 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const channelModeLabel =
     channelMode === 'omnichannel' ? 'WhatsApp & Email' : channelMode === 'voice' ? 'AI Voice Agent' : channelMode === 'whatsapp' ? 'WhatsApp' : 'Email';
 
+  // How many contacts actually failed on the channel(s) this run used — "no longer Pending"
+  // doesn't mean "succeeded" (a Failed status also drops a lead out of pendingLeads), so the
+  // "Campaign Complete" banner needs this to avoid calling a run a success when every send
+  // or call actually failed.
+  const failedForChannelCount = leads.filter((l) => {
+    if (channelMode === 'whatsapp') return l.whatsAppStatus === 'Failed';
+    if (channelMode === 'email') return l.emailStatus === 'Failed';
+    if (channelMode === 'voice') return l.voiceCallStatus === 'Failed';
+    if (channelMode === 'omnichannel') return l.whatsAppStatus === 'Failed' || l.emailStatus === 'Failed';
+    return false;
+  }).length;
+  const engagedCount = totalLeadsCount - failedForChannelCount;
+
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
 
   // A static, non-AI preview of the very next contact this run would reach — lets someone
@@ -1126,18 +1139,26 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="p-4 rounded-xl bg-gradient-to-r from-[#128C7E]/10 to-sky-500/10 border border-[#128C7E]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+            className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+              failedForChannelCount > 0
+                ? 'bg-amber-500/10 border-amber-500/30'
+                : 'bg-gradient-to-r from-[#128C7E]/10 to-sky-500/10 border-[#128C7E]/30'
+            }`}
           >
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-full bg-[#25D366] text-white flex items-center justify-center font-bold text-sm shrink-0">
-                ✓
+              <div className={`w-8 h-8 rounded-full text-white flex items-center justify-center font-bold text-sm shrink-0 ${failedForChannelCount > 0 ? 'bg-amber-500' : 'bg-[#25D366]'}`}>
+                {failedForChannelCount > 0 ? '!' : '✓'}
               </div>
               <div>
-                <div className="text-xs font-bold text-emerald-300">
-                  Campaign Cycle Complete ({totalLeadsCount} of {totalLeadsCount} Leads Engaged)
+                <div className={`text-xs font-bold ${failedForChannelCount > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  {failedForChannelCount > 0
+                    ? `Campaign Cycle Finished — ${engagedCount} of ${totalLeadsCount} Succeeded, ${failedForChannelCount} Failed`
+                    : `Campaign Cycle Complete (${totalLeadsCount} of ${totalLeadsCount} Leads Engaged)`}
                 </div>
-                <div className="text-[11px] text-emerald-300">
-                  All contacts in your spreadsheet have been processed. You can start the automated sequence again or send another follow-up round anytime.
+                <div className={`text-[11px] ${failedForChannelCount > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                  {failedForChannelCount > 0
+                    ? `${failedForChannelCount} contact${failedForChannelCount === 1 ? '' : 's'} could not be reached via ${channelModeLabel} — see Live Dispatch Activity below for the reason. You can retry after fixing the issue.`
+                    : "All contacts in your spreadsheet have been processed. You can start the automated sequence again or send another follow-up round anytime."}
                 </div>
               </div>
             </div>
@@ -1373,12 +1394,18 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <div className="text-center py-12 px-4">
                 {pendingLeads.length === 0 && totalLeadsCount > 0 ? (
                   <>
-                    <div className="w-12 h-12 rounded-full bg-[#128C7E]/10 border border-[#128C7E]/30 flex items-center justify-center mx-auto text-emerald-300 mb-3">
-                      <CheckCircle2 className="w-6 h-6 text-[#25D366]" />
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 ${failedForChannelCount > 0 ? 'bg-amber-500/10 border border-amber-500/30 text-amber-300' : 'bg-[#128C7E]/10 border border-[#128C7E]/30 text-emerald-300'}`}>
+                      {failedForChannelCount > 0 ? (
+                        <AlertCircle className="w-6 h-6 text-amber-400" />
+                      ) : (
+                        <CheckCircle2 className="w-6 h-6 text-[#25D366]" />
+                      )}
                     </div>
-                    <h3 className="text-sm font-bold text-ink">Campaign Complete</h3>
+                    <h3 className="text-sm font-bold text-ink">{failedForChannelCount > 0 ? 'Campaign Finished — Some Failed' : 'Campaign Complete'}</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
-                      All {totalLeadsCount} contacts in your spreadsheet have been engaged via {channelModeLabel}. Use "Start Automation One More Time" above to run it again.
+                      {failedForChannelCount > 0
+                        ? `${engagedCount} of ${totalLeadsCount} contacts were successfully reached via ${channelModeLabel}; ${failedForChannelCount} failed — check Live Dispatch Activity for the reason before retrying.`
+                        : `All ${totalLeadsCount} contacts in your spreadsheet have been engaged via ${channelModeLabel}. Use "Start Automation One More Time" above to run it again.`}
                     </p>
                   </>
                 ) : (
