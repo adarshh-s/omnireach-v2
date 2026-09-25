@@ -32,6 +32,8 @@ export interface Lead {
   status: LeadStatus;
   whatsAppStatus: ChannelDeliveryStatus;
   emailStatus: ChannelDeliveryStatus;
+  /** Undefined is treated the same as 'Pending' — not backfilled on existing leads/DB rows. */
+  voiceCallStatus?: ChannelDeliveryStatus;
   whatsAppMessage?: string;
   emailSubject?: string;
   emailBody?: string;
@@ -42,7 +44,7 @@ export interface Lead {
   /** YYYY-MM-DD — a manual reminder date, unrelated to AI-booked meetings. */
   followUpDate?: string;
   lastContacted?: string;
-  channelUsed?: 'omnichannel' | 'whatsapp' | 'email' | 'none';
+  channelUsed?: 'omnichannel' | 'whatsapp' | 'email' | 'voice' | 'none';
   isValidPhone: boolean;
   isValidEmail: boolean;
   customFields?: Record<string, string>;
@@ -76,7 +78,7 @@ export interface MessageTemplate {
 }
 
 export interface CampaignSettings {
-  channelMode: 'omnichannel' | 'whatsapp' | 'email';
+  channelMode: 'omnichannel' | 'whatsapp' | 'email' | 'voice';
   selectedTemplateId: string;
   delayBetweenMessagesSeconds: number;
   autoAdvance: boolean;
@@ -177,7 +179,7 @@ export interface OutreachDispatchLog {
   leadId: string;
   leadName: string;
   recipient: string;
-  channel: 'whatsapp' | 'email';
+  channel: 'whatsapp' | 'email' | 'voice';
   status: 'sent' | 'delivered' | 'failed';
   timestamp: string;
   subject?: string;

@@ -221,6 +221,7 @@ function AppContent({ auth }: { auth: AuthState }) {
         status: 'Pending',
         whatsAppStatus: 'Pending',
         emailStatus: 'Pending',
+        voiceCallStatus: 'Pending',
       }))
     );
   };

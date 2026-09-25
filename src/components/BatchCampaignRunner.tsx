@@ -106,7 +106,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [channelMode, setChannelMode] = useState<'omnichannel' | 'whatsapp' | 'email'>(
+  const [channelMode, setChannelMode] = useState<'omnichannel' | 'whatsapp' | 'email' | 'voice'>(
     campaignSettings.channelMode || 'omnichannel'
   );
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
@@ -152,13 +152,20 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const todaysWhatsAppVolumeUsedRef = useRef(0);
 
   const pendingLeads = leads.filter(
-    (l) => l.status === 'Pending' || (channelMode === 'whatsapp' && l.whatsAppStatus === 'Pending') || (channelMode === 'email' && l.emailStatus === 'Pending')
+    (l) =>
+      l.status === 'Pending' ||
+      (channelMode === 'whatsapp' && l.whatsAppStatus === 'Pending') ||
+      (channelMode === 'email' && l.emailStatus === 'Pending') ||
+      (channelMode === 'voice' && (l.voiceCallStatus || 'Pending') === 'Pending')
   );
 
   const completedWhatsAppCount = leads.filter((l) => l.whatsAppStatus !== 'Pending').length;
   const completedEmailCount = leads.filter((l) => l.emailStatus !== 'Pending').length;
   const bookedCount = leads.filter((l) => l.status === 'Meeting Scheduled').length;
   const totalLeadsCount = leads.length;
+
+  const channelModeLabel =
+    channelMode === 'omnichannel' ? 'WhatsApp & Email' : channelMode === 'voice' ? 'AI Voice Agent' : channelMode === 'whatsapp' ? 'WhatsApp' : 'Email';
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
 
@@ -219,6 +226,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
           (l.status === 'Pending' ||
             (channelMode === 'whatsapp' && l.whatsAppStatus === 'Pending') ||
             (channelMode === 'email' && l.emailStatus === 'Pending') ||
+            (channelMode === 'voice' && (l.voiceCallStatus || 'Pending') === 'Pending') ||
             (channelMode === 'omnichannel' && (l.whatsAppStatus === 'Pending' || l.emailStatus === 'Pending')))
       );
 
@@ -235,13 +243,17 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       setIsProcessingStep(true);
 
       // 1. Build the outbound message: either AI-personalized, or the template exactly as typed
-      const personalized = campaignSettings.useAiCopywriting
-        ? await generateAIPersonalizedMessage(lead, campaignSettings, selectedTemplate, availableSlots, accessToken)
-        : {
-            whatsApp: interpolateTemplate(selectedTemplate?.whatsAppContent || '', lead, campaignSettings, availableSlots),
-            emailSubject: interpolateTemplate(selectedTemplate?.emailSubject || '', lead, campaignSettings, availableSlots),
-            emailBody: interpolateTemplate(selectedTemplate?.emailBody || '', lead, campaignSettings, availableSlots),
-          };
+      // (skipped entirely for voice — the Vapi assistant speaks its own script, no template
+      // text to generate, and skipping avoids burning an AI call for nothing).
+      const personalized = channelMode === 'voice'
+        ? { whatsApp: '', emailSubject: '', emailBody: '' }
+        : campaignSettings.useAiCopywriting
+          ? await generateAIPersonalizedMessage(lead, campaignSettings, selectedTemplate, availableSlots, accessToken)
+          : {
+              whatsApp: interpolateTemplate(selectedTemplate?.whatsAppContent || '', lead, campaignSettings, availableSlots),
+              emailSubject: interpolateTemplate(selectedTemplate?.emailSubject || '', lead, campaignSettings, availableSlots),
+              emailBody: interpolateTemplate(selectedTemplate?.emailBody || '', lead, campaignSettings, availableSlots),
+            };
 
       setCurrentWhatsAppText(personalized.whatsApp);
       setCurrentEmailSubject(personalized.emailSubject);
@@ -296,8 +308,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       // already-generated message content) for the headless dispatcher
       // (api/cron/dispatch-scheduled.ts) to send later, and move straight to the next lead.
       // Composes with the volume cap above: a lead pushed to day+2 by volume still gets its
-      // exact send time within that day picked by peak-time, if both are active.
-      if (usePeakScheduling || needsVolumeDefer) {
+      // exact send time within that day picked by peak-time, if both are active. Voice is
+      // excluded — there's no headless dispatcher yet that can place a deferred call later
+      // (api/cron/dispatch-scheduled.ts only knows how to send WhatsApp/email), so a queued
+      // voice call would just sit stuck forever. Voice always dials immediately for now.
+      if ((usePeakScheduling && channelMode !== 'voice') || needsVolumeDefer) {
         const notBefore = needsVolumeDefer ? new Date(Date.now() + volumeDayOffset * 24 * 60 * 60 * 1000) : new Date();
         const scheduleFor = usePeakScheduling ? computeNextPeakSendTime(lead.country, notBefore) : notBefore;
         if (scheduleFor.getTime() - Date.now() > 60000) {
@@ -491,6 +506,53 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
         }
       }
 
+      // Voice dispatch — places an outbound AI voice call via Vapi for each pending lead,
+      // same trigger endpoint as the manual "Call via AI Voice Agent" button above.
+      if (channelMode === 'voice') {
+        if (lead.isValidPhone && lead.phone) {
+          let callDeliveryStatus = 'delivered';
+          let callErrorDetail = '';
+          let placedCallId: string | null = null;
+          try {
+            const callRes = await fetch('/api/voice/vapi', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+              },
+              body: JSON.stringify({ phone: lead.phone, name: lead.name, variables: { company: lead.company || '' } }),
+            });
+            const callData = await callRes.json().catch(() => ({}));
+            if (callRes.ok && callData.ok) {
+              updatedLead.voiceCallStatus = 'Sent';
+              placedCallId = callData.callId || null;
+            } else {
+              callDeliveryStatus = 'failed';
+              callErrorDetail = callData.error || 'Could not start the call.';
+              updatedLead.voiceCallStatus = 'Failed';
+            }
+          } catch (err: any) {
+            callDeliveryStatus = 'failed';
+            callErrorDetail = err?.message || 'Network error';
+            updatedLead.voiceCallStatus = 'Failed';
+          }
+
+          newLogs.push({
+            id: `log-voice-${Date.now()}`,
+            leadId: lead.id,
+            leadName: lead.name,
+            recipient: lead.phone,
+            channel: 'voice',
+            status: callDeliveryStatus as 'delivered' | 'failed',
+            timestamp: nowFormatted,
+            preview: placedCallId ? `AI Voice Agent call placed — call ID ${placedCallId}` : 'AI Voice Agent call placed',
+            errorDetail: callErrorDetail,
+          });
+        } else {
+          updatedLead.voiceCallStatus = 'Failed';
+        }
+      }
+
       onUpdateLead(updatedLead);
       if (newLogs.length > 0) {
         setDispatchLogs((prev) => [...newLogs, ...prev].slice(0, 50));
@@ -567,6 +629,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             l.status === 'Pending' ||
             (channelMode === 'whatsapp' && l.whatsAppStatus === 'Pending') ||
             (channelMode === 'email' && l.emailStatus === 'Pending') ||
+            (channelMode === 'voice' && (l.voiceCallStatus || 'Pending') === 'Pending') ||
             (channelMode === 'omnichannel' && (l.whatsAppStatus === 'Pending' || l.emailStatus === 'Pending'))
         );
 
@@ -709,7 +772,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             </span>
           </div>
           <p className="text-xs sm:text-sm text-ink-muted mt-1 max-w-2xl">
-            Ingest contacts from Excel spreadsheets and automatically dispatch personalized WhatsApp messages & emails with Google Calendar booking links.
+            Ingest contacts from Excel spreadsheets and automatically dispatch personalized WhatsApp messages, emails, or AI voice calls with Google Calendar booking links.
           </p>
         </div>
 
@@ -801,11 +864,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
               Outreach Channel
             </label>
-            <div className="grid grid-cols-3 gap-1 p-1 bg-surface-hover rounded-lg border border-border">
+            <div className="grid grid-cols-4 gap-1 p-1 bg-surface-hover rounded-lg border border-border">
               <button
                 id="mode-omnichannel"
                 onClick={() => setChannelMode('omnichannel')}
-                className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
+                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
                   channelMode === 'omnichannel'
                     ? 'bg-surface text-ink shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
@@ -816,7 +879,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <button
                 id="mode-whatsapp"
                 onClick={() => setChannelMode('whatsapp')}
-                className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
+                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
                   channelMode === 'whatsapp'
                     ? 'bg-[#25D366] text-white shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
@@ -827,13 +890,25 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <button
                 id="mode-email"
                 onClick={() => setChannelMode('email')}
-                className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
+                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all ${
                   channelMode === 'email'
                     ? 'bg-[#4285F4] text-white shadow-xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
                 }`}
               >
                 Email
+              </button>
+              <button
+                id="mode-voice"
+                onClick={() => setChannelMode('voice')}
+                className={`py-1.5 px-1.5 rounded-md text-[11px] font-medium transition-all flex items-center justify-center gap-1 ${
+                  channelMode === 'voice'
+                    ? 'bg-gradient-to-r from-[#4285F4] to-[#128C7E] text-white shadow-xs font-semibold'
+                    : 'text-ink-muted hover:text-ink'
+                }`}
+              >
+                <Phone className="w-3 h-3" />
+                <span>Voice</span>
               </button>
             </div>
             <p className="text-[10px] text-ink-muted mt-1.5">
@@ -843,40 +918,53 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
           {/* Template Selector */}
           <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
-              Sequence Template
-            </label>
-            <select
-              id="campaign-template-select"
-              value={selectedTemplateId}
-              onChange={(e) => setSelectedTemplateId(e.target.value)}
-              className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366] font-medium"
-            >
-              {templates.map((tpl) => (
-                <option key={tpl.id} value={tpl.id}>
-                  {tpl.name}
-                </option>
-              ))}
-            </select>
-            <button
-              id="campaign-toggle-ai-copywriting"
-              type="button"
-              onClick={() =>
-                onUpdateSettings?.({
-                  ...campaignSettings,
-                  useAiCopywriting: !campaignSettings.useAiCopywriting,
-                })
-              }
-              className={`mt-1.5 w-full inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold border transition-colors ${
-                campaignSettings.useAiCopywriting
-                  ? 'bg-[#128C7E]/10 border-[#128C7E]/30 text-emerald-300'
-                  : 'bg-canvas border-border-strong text-ink-secondary'
-              }`}
-              title="When off, your template text is sent exactly as written (with {{variables}} filled in) — no AI rewrite."
-            >
-              <Sparkles className="w-3 h-3" />
-              <span>{campaignSettings.useAiCopywriting ? 'AI Copywriting: On' : 'AI Copywriting: Off (send my text as-is)'}</span>
-            </button>
+            {channelMode === 'voice' ? (
+              <>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
+                  Voice Script
+                </label>
+                <div className="p-3 bg-canvas border border-border-strong rounded-lg text-[11px] text-ink-secondary leading-relaxed">
+                  The AI Voice Agent speaks from its own conversational script (configured in your Vapi assistant) — no template needed here. Each contact's company name is passed in automatically.
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">
+                  Sequence Template
+                </label>
+                <select
+                  id="campaign-template-select"
+                  value={selectedTemplateId}
+                  onChange={(e) => setSelectedTemplateId(e.target.value)}
+                  className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink focus:ring-1 focus:ring-[#25D366] focus:border-[#25D366] font-medium"
+                >
+                  {templates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  id="campaign-toggle-ai-copywriting"
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings?.({
+                      ...campaignSettings,
+                      useAiCopywriting: !campaignSettings.useAiCopywriting,
+                    })
+                  }
+                  className={`mt-1.5 w-full inline-flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold border transition-colors ${
+                    campaignSettings.useAiCopywriting
+                      ? 'bg-[#128C7E]/10 border-[#128C7E]/30 text-emerald-300'
+                      : 'bg-canvas border-border-strong text-ink-secondary'
+                  }`}
+                  title="When off, your template text is sent exactly as written (with {{variables}} filled in) — no AI rewrite."
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>{campaignSettings.useAiCopywriting ? 'AI Copywriting: On' : 'AI Copywriting: Off (send my text as-is)'}</span>
+                </button>
+              </>
+            )}
           </div>
 
           {/* Dispatch Interval Slider */}
@@ -913,16 +1001,19 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             <div>
               <div className="text-xs font-semibold text-ink">Country Peak-Time Scheduling</div>
               <div className="text-[11px] text-ink-muted">
-                {usePeakScheduling
-                  ? "Messages send during each client's local business hours (needs a Country column on the lead)."
-                  : 'Off — every message sends immediately regardless of the client\'s country.'}
+                {channelMode === 'voice'
+                  ? 'Not available for Voice Agent calls yet — calls always dial immediately.'
+                  : usePeakScheduling
+                    ? "Messages send during each client's local business hours (needs a Country column on the lead)."
+                    : 'Off — every message sends immediately regardless of the client\'s country.'}
               </div>
             </div>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer shrink-0">
+          <label className={`relative inline-flex items-center shrink-0 ${channelMode === 'voice' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
             <input
               type="checkbox"
-              checked={usePeakScheduling}
+              checked={usePeakScheduling && channelMode !== 'voice'}
+              disabled={channelMode === 'voice'}
               onChange={(e) => setUsePeakScheduling(e.target.checked)}
               className="sr-only peer"
             />
@@ -931,6 +1022,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
         </div>
 
         {/* Live Channel Status & Automation Diagnostics */}
+        {channelMode !== 'voice' && (
         <div className="p-3 bg-canvas rounded-xl border border-border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1.5">
@@ -1003,9 +1095,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             </button>
           )}
         </div>
+        )}
 
         {/* Resend Testing & Inbox Delivery Guidance Banner */}
-        {channelSettings.emailProvider === 'resend' && (
+        {channelMode !== 'voice' && channelSettings.emailProvider === 'resend' && (
           <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300 flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
@@ -1128,6 +1221,18 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   <p className={`text-[11px] -mt-2 ${callResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{callResult.message}</p>
                 )}
 
+                {/* Voice Call Dispatch Status */}
+                {channelMode === 'voice' && (
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-[#4285F4]/10 to-[#128C7E]/10 border border-[#128C7E]/20 flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-r from-[#4285F4] to-[#128C7E] flex items-center justify-center text-white shrink-0 animate-pulse">
+                      <Phone className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs text-ink-secondary">
+                      Placing an AI voice call to <strong className="text-ink">{currentLead.name}</strong> ({currentLead.phone}) via your Vapi assistant — status updates once the call connects or ends.
+                    </p>
+                  </div>
+                )}
+
                 {/* WhatsApp Message Preview Bubble */}
                 {(channelMode === 'omnichannel' || channelMode === 'whatsapp') && (
                   <div className="space-y-1.5">
@@ -1218,6 +1323,17 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   <p className={`text-[11px] -mt-2 ${callResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{callResult.message}</p>
                 )}
 
+                {channelMode === 'voice' && (
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-[#4285F4]/10 to-[#128C7E]/10 border border-[#128C7E]/20 flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-r from-[#4285F4] to-[#128C7E] flex items-center justify-center text-white shrink-0">
+                      <Phone className="w-4 h-4" />
+                    </div>
+                    <p className="text-xs text-ink-secondary">
+                      This contact will be called automatically by your AI Voice Agent when you launch this campaign — {pendingLeads.length} contact{pendingLeads.length === 1 ? '' : 's'} queued.
+                    </p>
+                  </div>
+                )}
+
                 {(channelMode === 'omnichannel' || channelMode === 'whatsapp') && (
                   <div className="space-y-1.5">
                     <span className="text-xs font-semibold text-[#128C7E] flex items-center gap-1.5">
@@ -1245,11 +1361,13 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   </div>
                 )}
 
-                <p className="text-[11px] text-ink-muted italic">
-                  {campaignSettings.useAiCopywriting
-                    ? "Shown with your template as written — the AI will personalize this further for each contact once the campaign runs."
-                    : `This is exactly what will send — ${pendingLeads.length} contact${pendingLeads.length === 1 ? '' : 's'} queued.`}
-                </p>
+                {channelMode !== 'voice' && (
+                  <p className="text-[11px] text-ink-muted italic">
+                    {campaignSettings.useAiCopywriting
+                      ? "Shown with your template as written — the AI will personalize this further for each contact once the campaign runs."
+                      : `This is exactly what will send — ${pendingLeads.length} contact${pendingLeads.length === 1 ? '' : 's'} queued.`}
+                  </p>
+                )}
               </div>
             ) : (
               <div className="text-center py-12 px-4">
@@ -1260,7 +1378,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     </div>
                     <h3 className="text-sm font-bold text-ink">Campaign Complete</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
-                      All {totalLeadsCount} contacts in your spreadsheet have been engaged via {channelMode === 'omnichannel' ? 'WhatsApp & Email' : channelMode}. Use "Start Automation One More Time" above to run it again.
+                      All {totalLeadsCount} contacts in your spreadsheet have been engaged via {channelModeLabel}. Use "Start Automation One More Time" above to run it again.
                     </p>
                   </>
                 ) : (
@@ -1270,7 +1388,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     </div>
                     <h3 className="text-sm font-semibold text-ink">Campaign Ready for Launch</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
-                      Import contacts and click "Launch Campaign" to automatically cycle through them, generate personalized copy, and dispatch WhatsApp and Email messages.
+                      Import contacts and click "Launch Campaign" to automatically cycle through them{channelMode === 'voice' ? ' and place personalized AI voice calls' : ', generate personalized copy, and dispatch WhatsApp and Email messages'}.
                     </p>
                   </>
                 )}
@@ -1300,11 +1418,15 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                           className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
                             log.channel === 'whatsapp'
                               ? 'bg-[#128C7E]/10 text-[#25D366]'
-                              : 'bg-[#4285F4]/10 text-[#4285F4]'
+                              : log.channel === 'voice'
+                                ? 'bg-gradient-to-r from-[#4285F4]/20 to-[#128C7E]/20 text-[#4285F4]'
+                                : 'bg-[#4285F4]/10 text-[#4285F4]'
                           }`}
                         >
                           {log.channel === 'whatsapp' ? (
                             <MessageSquare className="w-3.5 h-3.5" />
+                          ) : log.channel === 'voice' ? (
+                            <Phone className="w-3.5 h-3.5" />
                           ) : (
                             <Mail className="w-3.5 h-3.5" />
                           )}
