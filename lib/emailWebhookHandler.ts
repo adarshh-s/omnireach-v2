@@ -253,9 +253,11 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
           refreshToken: calendarToken.refreshToken,
           calendarId: calendarToken.calendarId,
           summary: `Discovery Call with ${existing?.lead_name || context.clientName || fromEmail}`,
-          description: `Booked automatically via OmniReach AI Email bot.\n\nConversation:\n${history
-            .map((h) => `${h.role}: ${h.text}`)
-            .join('\n')}`,
+          // Deliberately no conversation transcript here — Google emails this description
+          // verbatim to the attendee (sendUpdates: 'all' in googleCalendar.ts), so anything
+          // internal put here leaks straight to the client's inbox. The full conversation is
+          // already viewable org-side in the AI Inbox (email_conversations.history below).
+          description: `Booked automatically via OmniReach AI.`,
           startIso,
           durationMinutes: result.meeting.durationMinutes,
           attendeeEmail: fromEmail,
@@ -328,6 +330,26 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
           updated_at: new Date().toISOString(),
         })
         .eq('id', recipientId);
+    }
+  }
+
+  // Mirrors the 'Replied' update above — without this, a real AI-confirmed booking never
+  // shows up as "Meeting Scheduled" in the Dashboard's Client Pipeline or Spreadsheet & Leads
+  // (those read clients.status, not email_conversations.status, which is what got updated
+  // above). Also reverts a client back off "Meeting Scheduled" if they walk the booking back.
+  if (finalStatus === 'confirmed' || retractedMeeting) {
+    const clientUpdate = finalStatus === 'confirmed'
+      ? {
+          status: 'Meeting Scheduled',
+          meeting_date: meetingDateTimeIso ? meetingDateTimeIso.slice(0, 10) : undefined,
+          meeting_time: result.meeting?.time,
+          updated_at: new Date().toISOString(),
+        }
+      : { status: 'Replied', updated_at: new Date().toISOString() };
+    if (replyClientId) {
+      await supabase.from('clients').update(clientUpdate).eq('id', replyClientId);
+    } else {
+      await supabase.from('clients').update(clientUpdate).eq('org_id', orgId).eq('email', fromEmail);
     }
   }
 
