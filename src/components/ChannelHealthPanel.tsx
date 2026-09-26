@@ -1,6 +1,6 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle2, XCircle, RefreshCw, MessageSquare, KeyRound, Calendar, Mail, Reply } from 'lucide-react';
+import { CheckCircle2, XCircle, RefreshCw, MessageSquare, KeyRound, Calendar, Mail, Reply, Phone } from 'lucide-react';
 import { HealthState } from '../hooks/useChannelHealth';
 
 interface ChannelHealthPanelProps {
@@ -17,6 +17,7 @@ const ROWS: { key: keyof HealthState; label: string; icon: React.ComponentType<{
   { key: 'calendar', label: 'Google Calendar', icon: Calendar },
   { key: 'email', label: 'Email', icon: Mail },
   { key: 'emailReplyTracking', label: 'Email Reply Tracking', icon: Reply },
+  { key: 'voice', label: 'AI Voice Agent (Vapi)', icon: Phone },
 ];
 
 /**

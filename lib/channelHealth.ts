@@ -14,6 +14,7 @@ export interface ChannelHealthResult {
   calendar: HealthStatus;
   email: HealthStatus;
   emailReplyTracking: HealthStatus;
+  voice: HealthStatus;
 }
 
 /**
@@ -175,6 +176,33 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
     return { ok: true, message: `Replies route back via reply+...@${domain}.` };
   })();
 
-  const [whatsappToken, whatsapp, calendar, email] = await Promise.all([whatsappTokenCheck, whatsappCheck, calendarCheck, emailCheck]);
-  return { whatsappToken, whatsapp, calendar, email, emailReplyTracking: emailReplyTrackingCheck };
+  // Same bring-your-own-account fallback as startVapiCall (lib/vapiClient.ts): the org's own
+  // keys win field-by-field, the platform's shared VAPI_* env vars fill in the rest.
+  const voiceCheck = (async (): Promise<HealthStatus> => {
+    const apiKey = settings?.vapiApiKey?.trim() || process.env.VAPI_API_KEY;
+    const assistantId = settings?.vapiAssistantId?.trim() || process.env.VAPI_ASSISTANT_ID;
+    const phoneNumberId = settings?.vapiPhoneNumberId?.trim() || process.env.VAPI_PHONE_NUMBER_ID;
+
+    if (!apiKey || !assistantId) {
+      return { ok: false, message: 'Not configured — add your Vapi API Key and Assistant ID in Channel Setup.' };
+    }
+    try {
+      const res = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, message: data?.message || `Vapi rejected this Assistant ID or API Key (${res.status}).` };
+      }
+      if (!phoneNumberId) {
+        return { ok: true, message: `Assistant "${data?.name || assistantId}" is reachable. Add a Phone Number ID to place real outbound calls (the in-browser Live Voice Demo works either way).` };
+      }
+      return { ok: true, message: `Assistant "${data?.name || assistantId}" is reachable and ready for outbound calls.` };
+    } catch (err: any) {
+      return { ok: false, message: err.message || 'Failed to reach Vapi.' };
+    }
+  })();
+
+  const [whatsappToken, whatsapp, calendar, email, voice] = await Promise.all([whatsappTokenCheck, whatsappCheck, calendarCheck, emailCheck, voiceCheck]);
+  return { whatsappToken, whatsapp, calendar, email, emailReplyTracking: emailReplyTrackingCheck, voice };
 }

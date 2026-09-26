@@ -11,6 +11,7 @@ export interface HealthState {
   calendar: HealthStatus;
   email: HealthStatus;
   emailReplyTracking: HealthStatus;
+  voice: HealthStatus;
 }
 
 /** Shared by the Dashboard's channel cards and the diagnostics panel so both read off one
