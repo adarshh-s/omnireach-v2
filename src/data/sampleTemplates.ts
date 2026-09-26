@@ -102,6 +102,31 @@ Best,
 {{sender_name}}
 {{company_name}}`,
   },
+  {
+    id: 'tpl-5',
+    name: 'SA Consultancy — UAE Setup Enquiry Follow-up',
+    category: 'custom',
+    channel: 'omnichannel',
+    whatsAppContent: `Hi {{first_name}} 👋 It's {{sender_name}} from *{{company_name}}* — we got your enquiry about setting up a business here in the UAE!
+
+Quick one — what kind of business are you thinking of for {{company}}?
+
+Once I know a bit more I can point you toward freezone or mainland, and get you on a quick 15-min call with one of our consultants who'll walk through the exact numbers. Just reply with a day/time that works 🙌`,
+    emailSubject: `Re: your UAE business setup enquiry`,
+    emailBody: `Hi {{first_name}},
+
+Thanks for reaching out to {{company_name}} about setting up your business here in the UAE — we got your enquiry and wanted to follow up personally.
+
+To point you in the right direction (freezone vs. mainland), it'd help to know a bit more about what you're setting up at {{company}}.
+
+The easiest next step is a quick 15-minute call with one of our consultants — they'll walk you through exactly which licence fits, what it costs, and how visas work for your case.
+
+Just reply with a day or time that suits you this week and I'll get it booked in.
+
+Best,
+{{sender_name}}
+{{company_name}}`,
+  },
 ];
 
 export const DEFAULT_CAMPAIGN_SETTINGS: CampaignSettings = {
