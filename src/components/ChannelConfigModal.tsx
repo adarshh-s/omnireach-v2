@@ -20,6 +20,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Phone,
 } from 'lucide-react';
 import { ChannelApiSettings, CampaignSettings, CalendarSlot } from '../types';
 import { sendEmailDirectOrBackend } from '../services/emailService';
@@ -51,7 +52,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   accessToken = null,
 }) => {
   const [formData, setFormData] = useState<ChannelApiSettings>(settings);
-  const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n'>('email');
+  const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n' | 'voice'>('email');
   const [savedSuccess, setSavedSuccess] = useState(false);
   // 'resend' with no org-supplied API key is the automatic platform default (see the
   // "Email sending is automatic" banner) — only a provider that actually needs the org's
@@ -98,6 +99,61 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       .then((data) => setVerifyToken(data.verifyToken || ''))
       .catch(() => setVerifyToken(''));
   }, [activeSubTab, accessToken, verifyToken]);
+
+  // AI Voice Agent (Vapi) — prompt/first-message editor synced live to the org's own
+  // assistant, plus a one-time load of whatever's currently live on Vapi so the editor
+  // doesn't start blank and risk overwriting an existing prompt.
+  const [vapiPromptLoaded, setVapiPromptLoaded] = useState(false);
+  const [isLoadingVapiPrompt, setIsLoadingVapiPrompt] = useState(false);
+  const [isSyncingVapi, setIsSyncingVapi] = useState(false);
+  const [vapiSyncResult, setVapiSyncResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    if (activeSubTab !== 'voice' || !accessToken || vapiPromptLoaded) return;
+    if (!formData.vapiApiKey || !formData.vapiAssistantId) return;
+    setVapiPromptLoaded(true);
+    setIsLoadingVapiPrompt(true);
+    fetch('/api/voice/vapi?action=get-assistant', { headers: { Authorization: `Bearer ${accessToken}` } })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ok) {
+          setFormData((prev) => ({
+            ...prev,
+            vapiSystemPrompt: prev.vapiSystemPrompt || data.systemPrompt || '',
+            vapiFirstMessage: prev.vapiFirstMessage || data.firstMessage || '',
+          }));
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingVapiPrompt(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSubTab, accessToken, vapiPromptLoaded, formData.vapiApiKey, formData.vapiAssistantId]);
+
+  const handleSyncVapiAssistant = async () => {
+    if (!accessToken) return;
+    setIsSyncingVapi(true);
+    setVapiSyncResult(null);
+    try {
+      const res = await fetch('/api/voice/vapi?action=sync-assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          systemPrompt: formData.vapiSystemPrompt || '',
+          firstMessage: formData.vapiFirstMessage || '',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setVapiSyncResult({ ok: true, message: 'Synced — your Vapi assistant now uses this prompt live.' });
+      } else {
+        setVapiSyncResult({ ok: false, message: data.error || 'Could not sync to Vapi.' });
+      }
+    } catch (err: any) {
+      setVapiSyncResult({ ok: false, message: err?.message || 'Failed to reach the server.' });
+    } finally {
+      setIsSyncingVapi(false);
+    }
+  };
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard?.writeText(text).then(() => {
@@ -561,6 +617,19 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           >
             <Network className="w-3.5 h-3.5" />
             <span>n8n / Webhook</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('voice')}
+            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
+              activeSubTab === 'voice'
+                ? 'border-[#4285F4] text-[#1967D2]'
+                : 'border-transparent text-ink-muted hover:text-ink'
+            }`}
+          >
+            <Phone className="w-3.5 h-3.5" />
+            <span>AI Voice Agent</span>
           </button>
         </div>
 
@@ -1497,6 +1566,132 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                 <p className="text-[11px] text-ink-muted mt-1.5 leading-relaxed">
                   When configured, every automated batch message, calendar booking, and lead interaction will automatically post an HTTP payload to your n8n workflow or Zapier webhook.
                 </p>
+              </div>
+            </div>
+          )}
+
+          {activeSubTab === 'voice' && (
+            <div className="space-y-4">
+              <p className="text-[11px] text-ink-muted leading-relaxed">
+                Bring your own Vapi (vapi.ai) account to place real AI voice calls and power the
+                Live Voice Demo. Without these, voice calling falls back to the platform's shared
+                account, if one is configured.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    Vapi Private API Key
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Dashboard -> API Keys -> Private key"
+                    value={formData.vapiApiKey || ''}
+                    onChange={(e) => {
+                      setVapiPromptLoaded(false);
+                      setFormData({ ...formData, vapiApiKey: e.target.value });
+                    }}
+                    className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                  />
+                  <p className="text-[10px] text-ink-muted mt-1">Used server-side to trigger calls and sync your prompt — never sent to the browser.</p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    Vapi Public Key
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Dashboard -> API Keys -> Public key"
+                    value={formData.vapiPublicKey || ''}
+                    onChange={(e) => setFormData({ ...formData, vapiPublicKey: e.target.value })}
+                    className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                  />
+                  <p className="text-[10px] text-ink-muted mt-1">Safe to expose in the browser — powers the in-browser Live Voice Demo.</p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    Assistant ID
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. c75e06e1-5770-440d-a4c9-4be6ea3b6181"
+                    value={formData.vapiAssistantId || ''}
+                    onChange={(e) => {
+                      setVapiPromptLoaded(false);
+                      setFormData({ ...formData, vapiAssistantId: e.target.value });
+                    }}
+                    className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    Phone Number ID <span className="font-normal text-ink-muted">(for real outbound calls)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Vapi phone number's internal id, not the number itself"
+                    value={formData.vapiPhoneNumberId || ''}
+                    onChange={(e) => setFormData({ ...formData, vapiPhoneNumberId: e.target.value })}
+                    className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-border space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-semibold text-ink">Assistant Prompt</h4>
+                  {isLoadingVapiPrompt && (
+                    <span className="text-[11px] text-ink-muted flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Loading current prompt from Vapi…
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    First Message
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Hey! This is ... calling on behalf of ..."
+                    value={formData.vapiFirstMessage || ''}
+                    onChange={(e) => setFormData({ ...formData, vapiFirstMessage: e.target.value })}
+                    className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                    System Prompt
+                  </label>
+                  <textarea
+                    rows={10}
+                    placeholder="You are ... an AI sales development rep for ..."
+                    value={formData.vapiSystemPrompt || ''}
+                    onChange={(e) => setFormData({ ...formData, vapiSystemPrompt: e.target.value })}
+                    className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-xs text-ink font-mono resize-y"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSyncVapiAssistant}
+                  disabled={isSyncingVapi || !formData.vapiApiKey || !formData.vapiAssistantId}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-gradient-to-r from-[#4285F4] to-[#128C7E] hover:opacity-95 shadow-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSyncingVapi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                  <span>{isSyncingVapi ? 'Syncing…' : 'Save & Sync to Vapi'}</span>
+                </button>
+                <p className="text-[10px] text-ink-muted">
+                  This pushes the prompt above directly to your Vapi assistant via their API — no need to open Vapi's own dashboard. The credential fields above are saved when you click "Save Channel Settings" below.
+                </p>
+                {vapiSyncResult && (
+                  <p className={`text-[11px] ${vapiSyncResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{vapiSyncResult.message}</p>
+                )}
               </div>
             </div>
           )}

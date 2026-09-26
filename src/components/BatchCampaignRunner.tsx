@@ -853,7 +853,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
         </div>
       </div>
 
-      <VoiceDemoWidget />
+      <VoiceDemoWidget publicKey={channelSettings.vapiPublicKey} assistantId={channelSettings.vapiAssistantId} />
 
       <AnimatePresence>
         {persistenceWarning && (

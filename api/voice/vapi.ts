@@ -1,10 +1,11 @@
 import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
-import { startVapiCall, isVapiConfigured } from '../../lib/vapiClient.js';
+import { getOrgChannelSettings } from '../../lib/orgSettings.js';
+import { startVapiCall, isVapiConfigured, getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
 
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
-  body?: { phone?: string; name?: string; variables?: Record<string, string> };
+  body?: { phone?: string; name?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -14,8 +15,8 @@ interface ApiResponse {
 }
 
 /**
- * Combines "trigger an outbound Vapi call" and "receive Vapi's webhook events" into one
- * route (?action=webhook picks the second) to stay under Vercel's Hobby-plan
+ * Combines "trigger an outbound Vapi call", "receive Vapi's webhook events", and "read/sync
+ * an org's assistant prompt" into one route (?action=...) to stay under Vercel's Hobby-plan
  * 12-serverless-function cap — see api/conversations.ts, which was merged from two
  * near-identical routes to free the slot this file uses.
  *
@@ -26,15 +27,36 @@ interface ApiResponse {
  * rather not set a custom header. Either one verifies.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   if (req.query?.action === 'webhook') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     return handleWebhook(req, res);
   }
 
+  if (req.query?.action === 'get-assistant') {
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    return handleGetAssistant(req, res);
+  }
+
+  if (req.query?.action === 'sync-assistant') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    return handleSyncAssistant(req, res);
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
   return handleTriggerCall(req, res);
+}
+
+/** An org's own Vapi credentials (Channel Setup) always win; startVapiCall/isVapiConfigured
+ * fall back to the platform's shared VAPI_* env vars field-by-field when a field is unset. */
+async function resolveOrgVapiCredentials(orgId: string): Promise<VapiCredentials> {
+  const settings = await getOrgChannelSettings(orgId);
+  return {
+    apiKey: settings?.vapiApiKey,
+    assistantId: settings?.vapiAssistantId,
+    phoneNumberId: settings?.vapiPhoneNumberId,
+  };
 }
 
 async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
@@ -43,8 +65,9 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  if (!isVapiConfigured()) {
-    return res.status(400).json({ error: 'Voice calling is not configured on the server yet (VAPI_API_KEY / VAPI_ASSISTANT_ID / VAPI_PHONE_NUMBER_ID).' });
+  const org = await resolveOrgVapiCredentials(orgId);
+  if (!isVapiConfigured(org)) {
+    return res.status(400).json({ error: 'Voice calling is not configured yet — add your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' });
   }
 
   const { phone, name, variables } = req.body || {};
@@ -52,7 +75,39 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
     return res.status(400).json({ error: 'phone is required.' });
   }
 
-  const result = await startVapiCall({ phone, name, variables });
+  const result = await startVapiCall({ phone, name, variables, org });
+  return res.status(result.ok ? 200 : 400).json(result);
+}
+
+/** Lets the Channel Setup UI prefill its prompt editor with whatever's actually live on the
+ * org's Vapi assistant right now, instead of starting blank every time the modal opens. */
+async function handleGetAssistant(req: ApiRequest, res: ApiResponse) {
+  const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+
+  const org = await resolveOrgVapiCredentials(orgId);
+  const result = await getAssistantConfig(org);
+  return res.status(result.ok ? 200 : 400).json(result);
+}
+
+/** Pushes the prompt/first-message an org edited in our dashboard straight to their Vapi
+ * assistant — so they never have to open Vapi's own dashboard to change how their AI Voice
+ * Agent talks. */
+async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
+  const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+
+  const { systemPrompt, firstMessage } = req.body || {};
+  if (!systemPrompt || !firstMessage) {
+    return res.status(400).json({ error: 'systemPrompt and firstMessage are required.' });
+  }
+
+  const org = await resolveOrgVapiCredentials(orgId);
+  const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage });
   return res.status(result.ok ? 200 : 400).json(result);
 }
 

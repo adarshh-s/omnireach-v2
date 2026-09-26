@@ -10,13 +10,19 @@ interface TranscriptLine {
   text: string;
 }
 
-// Public key + assistant id are safe to expose client-side (Vapi's own design — the public
-// key can only start calls with assistants you own, never trigger outbound PSTN calls or
-// touch your account). This is a real WebRTC voice session straight from the browser to the
-// assistant, not a phone call — no phone number, carrier, or international-calling plan
-// involved, so it works regardless of Vapi plan tier or the lead's country.
-const VAPI_PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_KEY as string | undefined;
-const VAPI_ASSISTANT_ID = import.meta.env.VITE_VAPI_ASSISTANT_ID as string | undefined;
+// Fallback to the platform's shared account when an org hasn't brought its own (Channel
+// Setup -> AI Voice Agent). Public key + assistant id are safe to expose client-side either
+// way (Vapi's own design — the public key can only start calls with assistants you own,
+// never trigger outbound PSTN calls or touch your account). This is a real WebRTC voice
+// session straight from the browser to the assistant, not a phone call — no phone number,
+// carrier, or international-calling plan involved, so it works regardless of Vapi plan tier.
+const PLATFORM_VAPI_PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_KEY as string | undefined;
+const PLATFORM_VAPI_ASSISTANT_ID = import.meta.env.VITE_VAPI_ASSISTANT_ID as string | undefined;
+
+interface VoiceDemoWidgetProps {
+  publicKey?: string;
+  assistantId?: string;
+}
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -24,7 +30,7 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export const VoiceDemoWidget: React.FC = () => {
+export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, assistantId }) => {
   const [callState, setCallState] = useState<CallState>('idle');
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
@@ -34,6 +40,8 @@ export const VoiceDemoWidget: React.FC = () => {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
+  const VAPI_PUBLIC_KEY = publicKey || PLATFORM_VAPI_PUBLIC_KEY;
+  const VAPI_ASSISTANT_ID = assistantId || PLATFORM_VAPI_ASSISTANT_ID;
   const isConfigured = Boolean(VAPI_PUBLIC_KEY && VAPI_ASSISTANT_ID);
 
   useEffect(() => {

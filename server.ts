@@ -29,7 +29,7 @@ import { getOrgChannelSettings } from './lib/orgSettings';
 import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
-import { startVapiCall, isVapiConfigured } from './lib/vapiClient';
+import { startVapiCall, isVapiConfigured, getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -645,9 +645,19 @@ app.get('/api/auth/google/callback', async (req, res) => {
   res.redirect(302, redirectTo);
 });
 
-// Vapi voice calling — trigger an outbound AI call, and receive Vapi's webhook events.
-// Mirrors api/voice/vapi.ts (one route, ?action=webhook picks the inbound-events branch)
-// since server.ts is Express-only local dev, not auto-discovered by Vercel.
+// Vapi voice calling — trigger an outbound AI call, receive Vapi's webhook events, and
+// read/sync an org's own assistant prompt. Mirrors api/voice/vapi.ts (one route,
+// ?action=... picks the branch) since server.ts is Express-only local dev, not
+// auto-discovered by Vercel.
+async function resolveOrgVapiCredentials(orgId: string): Promise<VapiCredentials> {
+  const settings = await getOrgChannelSettings(orgId);
+  return {
+    apiKey: settings?.vapiApiKey,
+    assistantId: settings?.vapiAssistantId,
+    phoneNumberId: settings?.vapiPhoneNumberId,
+  };
+}
+
 app.post('/api/voice/vapi', async (req, res) => {
   if (req.query.action === 'webhook') {
     const expected = process.env.VAPI_WEBHOOK_SECRET;
@@ -671,18 +681,46 @@ app.post('/api/voice/vapi', async (req, res) => {
     return res.status(200).json({ received: true });
   }
 
+  if (req.query.action === 'sync-assistant') {
+    const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+    if (!orgId) {
+      return res.status(401).json({ error: 'Sign in required.' });
+    }
+    const { systemPrompt, firstMessage } = req.body || {};
+    if (!systemPrompt || !firstMessage) {
+      return res.status(400).json({ error: 'systemPrompt and firstMessage are required.' });
+    }
+    const org = await resolveOrgVapiCredentials(orgId);
+    const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage });
+    return res.status(result.ok ? 200 : 400).json(result);
+  }
+
   const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
   if (!orgId) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
-  if (!isVapiConfigured()) {
-    return res.status(400).json({ error: 'Voice calling is not configured on the server yet (VAPI_API_KEY / VAPI_ASSISTANT_ID / VAPI_PHONE_NUMBER_ID).' });
+  const org = await resolveOrgVapiCredentials(orgId);
+  if (!isVapiConfigured(org)) {
+    return res.status(400).json({ error: 'Voice calling is not configured yet — add your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' });
   }
   const { phone, name, variables } = req.body || {};
   if (!phone) {
     return res.status(400).json({ error: 'phone is required.' });
   }
-  const result = await startVapiCall({ phone, name, variables });
+  const result = await startVapiCall({ phone, name, variables, org });
+  return res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.get('/api/voice/vapi', async (req, res) => {
+  if (req.query.action !== 'get-assistant') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+  const org = await resolveOrgVapiCredentials(orgId);
+  const result = await getAssistantConfig(org);
   return res.status(result.ok ? 200 : 400).json(result);
 });
 

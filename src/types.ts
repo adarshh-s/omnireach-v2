@@ -148,6 +148,19 @@ export interface ChannelApiSettings {
   mailgunRegion?: 'us' | 'eu';
 
   n8nWebhookUrl?: string;
+
+  // AI Voice Agent (Vapi) — bring-your-own account, same graceful-degradation pattern as
+  // email/WhatsApp: an org that sets its own keys here always wins over the platform's
+  // shared VAPI_* env vars. vapiPublicKey/vapiAssistantId are also read client-side (safe
+  // to expose — see VoiceDemoWidget) for the in-browser Live Voice Demo.
+  vapiApiKey?: string;
+  vapiPublicKey?: string;
+  vapiAssistantId?: string;
+  vapiPhoneNumberId?: string;
+  // Mirrors what's live on the org's Vapi assistant — edited here, pushed to Vapi via
+  // ?action=sync-assistant rather than requiring the org to touch Vapi's own dashboard.
+  vapiSystemPrompt?: string;
+  vapiFirstMessage?: string;
 }
 
 export interface CampaignState {
