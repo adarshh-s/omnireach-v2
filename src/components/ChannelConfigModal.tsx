@@ -26,6 +26,7 @@ import { sendEmailDirectOrBackend } from '../services/emailService';
 import { sendWhatsAppDirectOrBackend } from '../services/whatsappService';
 import { resolveTemplateVariables } from '../utils/outreachEngine';
 import { useGoogleCalendarConnection } from '../hooks/useGoogleCalendarConnection';
+import { useChannelHealth } from '../hooks/useChannelHealth';
 import { ChannelHealthPanel } from './ChannelHealthPanel';
 
 interface ChannelConfigModalProps {
@@ -64,7 +65,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     settings.whatsAppProvider === 'twilio' || settings.whatsAppProvider === 'webhook'
   );
   const googleCalendar = useGoogleCalendarConnection(userId, accessToken);
-  
+  const { health, loading: healthLoading, error: healthError, reload: reloadHealth } = useChannelHealth(accessToken);
+
   // Test email state
   const [testEmailTo, setTestEmailTo] = useState('');
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
@@ -564,7 +566,13 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
 
         {accessToken && (
           <div className="px-6 pt-4 shrink-0">
-            <ChannelHealthPanel accessToken={accessToken} />
+            <ChannelHealthPanel
+              accessToken={accessToken}
+              health={health}
+              loading={healthLoading}
+              error={healthError}
+              onRefresh={reloadHealth}
+            />
           </div>
         )}
 
