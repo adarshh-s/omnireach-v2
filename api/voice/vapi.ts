@@ -1,5 +1,5 @@
 import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
-import { getOrgChannelSettings } from '../../lib/orgSettings.js';
+import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile } from '../../lib/orgSettings.js';
 import { startVapiCall, isVapiConfigured, getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
 
 interface ApiRequest {
@@ -93,8 +93,12 @@ async function handleGetAssistant(req: ApiRequest, res: ApiResponse) {
 }
 
 /** Pushes the prompt/first-message an org edited in our dashboard straight to their Vapi
- * assistant — so they never have to open Vapi's own dashboard to change how their AI Voice
- * Agent talks. */
+ * assistant — so they never have to open Vapi's own dashboard, hold their own Vapi account,
+ * or know an API key exists. The first time an org saves a prompt, syncAssistantPrompt
+ * auto-creates a dedicated assistant for them (under their own key if they brought one,
+ * otherwise the platform's shared account) — that new assistantId gets persisted onto their
+ * settings here so every later edit reuses (PATCHes) the same assistant instead of creating
+ * a new one each time. */
 async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
   const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
   if (!orgId) {
@@ -106,8 +110,21 @@ async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
     return res.status(400).json({ error: 'systemPrompt and firstMessage are required.' });
   }
 
-  const org = await resolveOrgVapiCredentials(orgId);
-  const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage });
+  const [org, existingSettings, profile] = await Promise.all([
+    resolveOrgVapiCredentials(orgId),
+    getOrgChannelSettings(orgId),
+    getOrgProfile(orgId),
+  ]);
+  const assistantName = profile?.companyName ? `${profile.companyName} — AI Voice Agent` : undefined;
+  const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage, assistantName });
+
+  if (result.ok && result.assistantId) {
+    await saveOrgChannelSettings(orgId, {
+      ...(existingSettings || ({} as any)),
+      vapiAssistantId: result.assistantId,
+    });
+  }
+
   return res.status(result.ok ? 200 : 400).json(result);
 }
 

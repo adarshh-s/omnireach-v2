@@ -25,7 +25,7 @@ import { parseMultipartFields } from './lib/parseMultipart';
 import { verifyEmailWebhookToken, processInboundEmail, seedEmailConversationFromLead, buildEmailReplyToAddress } from './lib/emailWebhookHandler';
 import { sendCampaignWhatsAppMessage } from './lib/whatsappCampaignSender';
 import { sendEmailViaOrgProvider } from './lib/emailSender';
-import { getOrgChannelSettings, adminListOrgs, adminSetOrgAccess } from './lib/orgSettings';
+import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile, adminListOrgs, adminSetOrgAccess } from './lib/orgSettings';
 import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
@@ -710,8 +710,16 @@ app.post('/api/voice/vapi', async (req, res) => {
     if (!systemPrompt || !firstMessage) {
       return res.status(400).json({ error: 'systemPrompt and firstMessage are required.' });
     }
-    const org = await resolveOrgVapiCredentials(orgId);
-    const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage });
+    const [org, existingSettings, profile] = await Promise.all([
+      resolveOrgVapiCredentials(orgId),
+      getOrgChannelSettings(orgId),
+      getOrgProfile(orgId),
+    ]);
+    const assistantName = profile?.companyName ? `${profile.companyName} — AI Voice Agent` : undefined;
+    const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage, assistantName });
+    if (result.ok && result.assistantId) {
+      await saveOrgChannelSettings(orgId, { ...(existingSettings || ({} as any)), vapiAssistantId: result.assistantId });
+    }
     return res.status(result.ok ? 200 : 400).json(result);
   }
 

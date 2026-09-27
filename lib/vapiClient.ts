@@ -1,9 +1,11 @@
 /**
  * Vapi (vapi.ai) integration — triggers outbound AI voice calls and manages an org's
- * assistant prompt. Each org can bring its own Vapi account (see ChannelApiSettings.vapi*
- * in src/types.ts); when an org hasn't configured its own keys, this falls back to the
- * platform's shared VAPI_* env vars — same graceful-degradation pattern already used for
- * Gemini/Resend elsewhere in this app. Docs: https://docs.vapi.ai/api-reference/calls/create
+ * assistant prompt. Default model: one Vapi account (the platform's), one bill, a separate
+ * assistant auto-provisioned per org the first time they save a prompt — a client never
+ * sees an API key, just a prompt editor (see syncAssistantPrompt). An org can still bring
+ * its own Vapi account instead (see ChannelApiSettings.vapi* in src/types.ts) if it wants
+ * its own separate billing; that's an opt-in override, not the expected path. Docs:
+ * https://docs.vapi.ai/api-reference/calls/create
  */
 
 const VAPI_BASE_URL = 'https://api.vapi.ai';
@@ -26,6 +28,10 @@ export interface AssistantConfigResult {
   systemPrompt?: string;
   firstMessage?: string;
   error?: string;
+  /** Only set when syncAssistantPrompt auto-provisioned a brand-new assistant — the caller
+   * must persist this onto the org's own settings so future calls/edits reuse it instead of
+   * creating a new one every time. */
+  assistantId?: string;
 }
 
 /** Org's own credentials win; falls back to the platform's shared account field by field,
@@ -124,17 +130,53 @@ export async function getAssistantConfig(org: VapiCredentials): Promise<Assistan
   }
 }
 
-/** Pushes a new system prompt + first message to an org's Vapi assistant. Fetches the
- * assistant's current `model` object first and only replaces the system message within it —
- * Vapi's PATCH replaces `model.messages` wholesale, so blindly sending just the system
- * message would silently drop the model/provider/other message config already set there. */
+/** Pushes a new system prompt + first message to an org's Vapi assistant — auto-provisioning
+ * a brand-new one first if this org doesn't have an assistantId yet (its own or the
+ * platform's shared default hasn't been assigned to it specifically). This is what lets a
+ * client just type a prompt and save, with no Vapi account, API key, or assistant ID of
+ * their own — the assistant gets created under whichever key resolveCredentials lands on
+ * (their own, if they brought one; the platform's shared account otherwise), and the
+ * returned assistantId must be persisted onto that org's settings by the caller so it's
+ * reused (PATCHed) on every future edit instead of creating a new assistant each time.
+ *
+ * When an assistantId already exists, this instead fetches the assistant's current `model`
+ * object and only replaces the system message within it — Vapi's PATCH replaces
+ * `model.messages` wholesale, so blindly sending just the system message would silently
+ * drop the model/provider/other message config already set there. */
 export async function syncAssistantPrompt(
   org: VapiCredentials,
-  params: { systemPrompt: string; firstMessage: string }
+  params: { systemPrompt: string; firstMessage: string; assistantName?: string }
 ): Promise<AssistantConfigResult> {
   const { apiKey, assistantId } = resolveCredentials(org);
-  if (!apiKey || !assistantId) {
-    return { ok: false, error: 'Vapi API Key and Assistant ID are required.' };
+  if (!apiKey) {
+    return { ok: false, error: 'Voice calling isn\'t set up on the platform yet — contact support.' };
+  }
+
+  if (!assistantId) {
+    try {
+      const res = await fetch(`${VAPI_BASE_URL}/assistant`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: params.assistantName || 'OmniReach AI Voice Agent',
+          firstMessage: params.firstMessage,
+          model: {
+            provider: 'openai',
+            model: 'gpt-4o',
+            messages: [{ role: 'system', content: params.systemPrompt }],
+          },
+          voice: { provider: 'vapi', voiceId: 'Elliot' },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, error: data?.message || `Vapi rejected the assistant creation (${res.status}).` };
+      }
+      const systemPrompt = (data?.model?.messages || []).find((m: any) => m.role === 'system')?.content || '';
+      return { ok: true, systemPrompt, firstMessage: data?.firstMessage || '', assistantId: data?.id };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'Failed to reach Vapi.' };
+    }
   }
 
   try {
