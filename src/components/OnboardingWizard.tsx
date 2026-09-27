@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Zap, ArrowRight, MessageSquare, Mail, Calendar, Upload, CheckCircle2, X } from 'lucide-react';
+import { Zap, ArrowRight, MessageSquare, Mail, Calendar, Upload, CheckCircle2, X, Phone } from 'lucide-react';
 import { CampaignSettings } from '../types';
 
 interface OnboardingWizardProps {
@@ -130,8 +130,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                 <div className="space-y-3">
                   <h2 className="text-base font-bold text-ink">Connect your channels</h2>
                   <p className="text-xs text-ink-muted">
-                    WhatsApp, Email, and Google Calendar credentials live in Channel Setup — open it now, or skip and
-                    do it later.
+                    WhatsApp, Email, Google Calendar, and AI Voice Agent credentials all live in Channel Setup — open
+                    it now, or skip and do it later.
                   </p>
                   <div className="space-y-2">
                     <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
@@ -145,6 +145,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                     <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
                       <Calendar className="w-4 h-4 text-[#4285F4] shrink-0" />
                       <span>Google Calendar — so booked meetings show up automatically</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-canvas border border-border text-xs text-ink-secondary">
+                      <Phone className="w-4 h-4 text-[#128C7E] shrink-0" />
+                      <span>AI Voice Agent (Vapi) — optional, for automated voice calls</span>
                     </div>
                   </div>
                   <button

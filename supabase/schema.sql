@@ -330,3 +330,50 @@ alter table email_conversations add column if not exists locked_at timestamptz;
 -- ---------------------------------------------------------------------------
 alter table whatsapp_conversations add column if not exists lead_country text;
 alter table email_conversations add column if not exists lead_country text;
+
+-- ---------------------------------------------------------------------------
+-- Org access control — no self-serve subscription checkout. A prospect contacts
+-- the platform owner directly, a tier is agreed, payment happens outside the app,
+-- and the owner manually flips this row from an admin-only dashboard
+-- (src/components/AdminDashboard.tsx, api/whatsapp/subscribe-app.ts's
+-- ?action=admin-* routes). Deliberately NOT a jsonb field on org_profile —
+-- keeping it a separate table means the org's own RLS policy can grant read-only
+-- access to its own row without any write path, so a client can never unlock
+-- itself no matter what the client-side code does.
+--
+-- A missing row means "active" (see App.tsx / api/whatsapp/subscribe-app.ts) so
+-- every org that existed before this table was added keeps working exactly as
+-- it did — only brand-new signups from here on start locked.
+-- ---------------------------------------------------------------------------
+create table if not exists org_access (
+  org_id uuid primary key references auth.users(id) on delete cascade,
+  status text not null default 'active' check (status in ('active', 'locked')),
+  updated_at timestamptz not null default now()
+);
+alter table org_access enable row level security;
+drop policy if exists "org can read own access status" on org_access;
+create policy "org can read own access status" on org_access
+  for select using (auth.uid() = org_id);
+-- No insert/update/delete policy for the authenticated role on purpose — only the
+-- service role (which bypasses RLS entirely, used server-side only) can write here.
+
+-- IMPORTANT: replace 'YOUR_ADMIN_EMAIL_HERE' below with your real email address
+-- before running this migration, so you're never locked out of your own account.
+create or replace function handle_new_org_access()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into org_access (org_id, status)
+  values (new.id, case when new.email = 'YOUR_ADMIN_EMAIL_HERE' then 'active' else 'locked' end)
+  on conflict (org_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created_access on auth.users;
+create trigger on_auth_user_created_access
+  after insert on auth.users
+  for each row execute function handle_new_org_access();

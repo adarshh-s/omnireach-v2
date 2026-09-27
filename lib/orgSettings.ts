@@ -1,6 +1,54 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import type { CampaignSettings, ChannelApiSettings } from '../src/types.js';
 
+export interface OrgSummary {
+  orgId: string;
+  email: string | null;
+  companyName: string | null;
+  createdAt: string;
+  status: 'active' | 'locked';
+}
+
+/** Every signed-up org, for the admin dashboard's org list. Combines Supabase Auth's user
+ * list (email, signup date) with org_profile (company name) and org_access (active/locked) —
+ * a missing org_access row means 'active', matching every org that existed before that table
+ * was introduced (see supabase/schema.sql). Admin-only: callers must check isAdminEmail
+ * themselves before calling this — it deliberately bypasses RLS via the service role. */
+export async function adminListOrgs(): Promise<OrgSummary[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+
+  const [{ data: usersData }, { data: accessRows }, { data: profileRows }] = await Promise.all([
+    supabase.auth.admin.listUsers({ perPage: 1000 }),
+    supabase.from('org_access').select('org_id, status'),
+    supabase.from('org_profile').select('org_id, settings'),
+  ]);
+
+  const statusByOrg = new Map((accessRows || []).map((r: any) => [r.org_id, r.status]));
+  const profileByOrg = new Map((profileRows || []).map((r: any) => [r.org_id, r.settings]));
+
+  return (usersData?.users || [])
+    .map((u) => ({
+      orgId: u.id,
+      email: u.email || null,
+      companyName: (profileByOrg.get(u.id) as CampaignSettings | undefined)?.companyName || null,
+      createdAt: u.created_at,
+      status: (statusByOrg.get(u.id) as 'active' | 'locked' | undefined) || 'active',
+    }))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+/** Manually flips an org's access on/off — the "unlock after payment" step in the admin
+ * dashboard. Admin-only: callers must check isAdminEmail themselves before calling this. */
+export async function adminSetOrgAccess(orgId: string, status: 'active' | 'locked'): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  await supabase.from('org_access').upsert(
+    { org_id: orgId, status, updated_at: new Date().toISOString() },
+    { onConflict: 'org_id' }
+  );
+}
+
 export async function getOrgProfile(orgId: string): Promise<CampaignSettings | null> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;

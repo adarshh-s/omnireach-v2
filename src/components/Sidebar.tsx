@@ -13,6 +13,7 @@ import {
   Menu,
   X,
   LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 import { NotificationBell } from './NotificationBell';
 
@@ -23,7 +24,8 @@ export type ActiveTab =
   | 'simulator'
   | 'templates'
   | 'calendar'
-  | 'inbox';
+  | 'inbox'
+  | 'admin';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -33,6 +35,7 @@ interface SidebarProps {
   inboxCount?: number;
   userId?: string | null;
   userEmail?: string | null;
+  isAdmin?: boolean;
   onSignOut?: () => void | Promise<void>;
   onOpenExcelUpload: () => void;
   onOpenChannelConfig: () => void;
@@ -59,6 +62,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   inboxCount,
   userId,
   userEmail,
+  isAdmin,
   onSignOut,
   onOpenExcelUpload,
   onOpenChannelConfig,
@@ -102,6 +106,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
       ],
     },
+    ...(isAdmin
+      ? [
+          {
+            label: 'Platform',
+            items: [{ id: 'admin' as const, label: 'Admin', icon: ShieldCheck }],
+          },
+        ]
+      : []),
   ];
 
   const navButtonClass = (item: NavItem) => {

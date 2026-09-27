@@ -12,9 +12,12 @@ import { ExcelUploadModal } from './components/ExcelUploadModal';
 import { ChannelConfigModal } from './components/ChannelConfigModal';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { AuthGate } from './components/AuthGate';
+import { AccessLockedScreen } from './components/AccessLockedScreen';
+import { AdminDashboard } from './components/AdminDashboard';
 import { AuthState } from './hooks/useAuth';
 import { useCloudSettings } from './hooks/useCloudSettings';
 import { useCloudClients } from './hooks/useCloudClients';
+import { supabase, isSupabaseBrowserConfigured } from './lib/supabaseClient';
 import {
   Lead,
   CalendarSlot,
@@ -41,6 +44,37 @@ export default function App() {
 
 function AppContent({ auth }: { auth: AuthState }) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+
+  const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.trim().toLowerCase();
+  const isAdmin = Boolean(ADMIN_EMAIL && auth.user?.email && auth.user.email.trim().toLowerCase() === ADMIN_EMAIL);
+
+  // No self-serve subscription checkout — every new signup starts 'locked' (see the
+  // on_auth_user_created_access trigger in supabase/schema.sql) until the platform owner
+  // manually activates them from the Admin dashboard after a direct conversation and
+  // payment outside the app. A missing org_access row (every org that existed before this
+  // was added) or standalone/no-Supabase mode both mean 'active' — nobody who already had
+  // access loses it because of this rollout.
+  const [orgAccessStatus, setOrgAccessStatus] = useState<'active' | 'locked' | 'loading'>('active');
+  useEffect(() => {
+    if (!auth.configured || !auth.user?.id || !isSupabaseBrowserConfigured || !supabase) {
+      setOrgAccessStatus('active');
+      return;
+    }
+    let cancelled = false;
+    setOrgAccessStatus('loading');
+    (async () => {
+      try {
+        const { data } = await supabase!.from('org_access').select('status').eq('org_id', auth.user!.id).maybeSingle();
+        if (cancelled) return;
+        setOrgAccessStatus((data?.status as 'active' | 'locked') || 'active');
+      } catch {
+        if (!cancelled) setOrgAccessStatus('active');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.configured, auth.user?.id]);
 
   // Leads State with LocalStorage Persistence
   const [leads, setLeads] = useState<Lead[]>(() => {
@@ -314,6 +348,18 @@ function AppContent({ auth }: { auth: AuthState }) {
   const pendingCount = leads.filter((l) => l.status === 'Pending').length;
   const scheduledCount = leads.filter((l) => l.status === 'Meeting Scheduled').length;
 
+  if (orgAccessStatus === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-border-strong border-t-brand-strong rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (orgAccessStatus === 'locked' && !isAdmin) {
+    return <AccessLockedScreen userEmail={auth.user?.email} onSignOut={auth.configured ? auth.signOut : undefined} />;
+  }
+
   return (
     <div className="relative min-h-screen text-ink-secondary flex font-sans">
       {/* Global Modals */}
@@ -353,6 +399,7 @@ function AppContent({ auth }: { auth: AuthState }) {
         scheduledCount={scheduledCount}
         userId={auth.user?.id}
         userEmail={auth.configured ? auth.user?.email ?? null : null}
+        isAdmin={isAdmin}
         onSignOut={auth.configured ? auth.signOut : undefined}
         onOpenExcelUpload={() => setIsExcelModalOpen(true)}
         onOpenChannelConfig={() => setIsChannelModalOpen(true)}
@@ -493,6 +540,8 @@ function AppContent({ auth }: { auth: AuthState }) {
         {activeTab === 'inbox' && (
           <ConversationsView leads={leads} onUpdateLead={handleUpdateLead} accessToken={auth.accessToken} />
         )}
+
+        {activeTab === 'admin' && isAdmin && <AdminDashboard accessToken={auth.accessToken} />}
       </motion.div>
       </AnimatePresence>
       </main>

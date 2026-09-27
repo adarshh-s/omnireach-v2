@@ -19,13 +19,13 @@ import {
   processWhatsAppWebhookPayload,
 } from './lib/whatsappWebhookHandler';
 import { getSupabaseAdmin } from './lib/supabaseAdmin';
-import { getOrgIdFromAuthHeader } from './lib/supabaseServerAuth';
+import { getOrgIdFromAuthHeader, getUserFromAuthHeader, isAdminEmail } from './lib/supabaseServerAuth';
 import { buildGoogleAuthUrl, handleGoogleOAuthCallback, isGoogleOAuthConfigured } from './lib/googleOAuthFlow';
 import { parseMultipartFields } from './lib/parseMultipart';
 import { verifyEmailWebhookToken, processInboundEmail, seedEmailConversationFromLead, buildEmailReplyToAddress } from './lib/emailWebhookHandler';
 import { sendCampaignWhatsAppMessage } from './lib/whatsappCampaignSender';
 import { sendEmailViaOrgProvider } from './lib/emailSender';
-import { getOrgChannelSettings } from './lib/orgSettings';
+import { getOrgChannelSettings, adminListOrgs, adminSetOrgAccess } from './lib/orgSettings';
 import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
@@ -392,6 +392,14 @@ app.get('/api/outreach/logs', (req, res) => {
 // handshake echo string, not a credential) so orgs can copy it straight into their own
 // Meta App's webhook config, instead of just seeing the env var's name.
 app.get('/api/whatsapp/subscribe-app', async (req, res) => {
+  if (req.query.action === 'admin-list-orgs') {
+    const user = await getUserFromAuthHeader(req.headers.authorization);
+    if (!user) return res.status(401).json({ error: 'Sign in required.' });
+    if (!isAdminEmail(user.email)) return res.status(403).json({ error: 'Not authorized.' });
+    const orgs = await adminListOrgs();
+    return res.json({ orgs });
+  }
+
   const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
   if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
 
@@ -406,6 +414,18 @@ app.get('/api/whatsapp/subscribe-app', async (req, res) => {
 // Subscribes this app to an org's WhatsApp Business Account so inbound webhooks actually
 // deliver — a step Meta requires but doesn't surface in its dashboard UI.
 app.post('/api/whatsapp/subscribe-app', async (req, res) => {
+  if (req.query.action === 'admin-set-org-access') {
+    const user = await getUserFromAuthHeader(req.headers.authorization);
+    if (!user) return res.status(401).json({ error: 'Sign in required.' });
+    if (!isAdminEmail(user.email)) return res.status(403).json({ error: 'Not authorized.' });
+    const { orgId: targetOrgId, status } = req.body || {};
+    if (!targetOrgId || (status !== 'active' && status !== 'locked')) {
+      return res.status(400).json({ error: 'orgId and a status of "active" or "locked" are required.' });
+    }
+    await adminSetOrgAccess(targetOrgId, status);
+    return res.json({ ok: true });
+  }
+
   const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
   if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
 
