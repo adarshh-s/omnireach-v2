@@ -357,8 +357,6 @@ create policy "org can read own access status" on org_access
 -- No insert/update/delete policy for the authenticated role on purpose — only the
 -- service role (which bypasses RLS entirely, used server-side only) can write here.
 
--- IMPORTANT: replace 'YOUR_ADMIN_EMAIL_HERE' below with your real email address
--- before running this migration, so you're never locked out of your own account.
 create or replace function handle_new_org_access()
 returns trigger
 language plpgsql
@@ -367,7 +365,7 @@ set search_path = public
 as $$
 begin
   insert into org_access (org_id, status)
-  values (new.id, case when new.email = 'YOUR_ADMIN_EMAIL_HERE' then 'active' else 'locked' end)
+  values (new.id, case when new.email = 'adarshs8400@gmail.com' then 'active' else 'locked' end)
   on conflict (org_id) do nothing;
   return new;
 end;
