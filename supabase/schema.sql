@@ -365,7 +365,7 @@ set search_path = public
 as $$
 begin
   insert into org_access (org_id, status)
-  values (new.id, case when new.email = 'adarshs8400@gmail.com' then 'active' else 'locked' end)
+  values (new.id, case when new.email = 'admin@test.com' then 'active' else 'locked' end)
   on conflict (org_id) do nothing;
   return new;
 end;
