@@ -4,12 +4,11 @@ import {
   getContextFromClientId,
   getOrgProfile,
   getOrgChannelSettings,
-  getOrgGoogleCalendarToken,
   markClientOptedOut,
 } from './orgSettings.js';
 import { sendEmailViaOrgProvider } from './emailSender.js';
 import { runConversationTurn, ConversationTurn } from './conversationEngine.js';
-import { createMeetingEvent, cancelMeetingEvent } from './googleCalendar.js';
+import { getConnectedCalendar, bookMeeting, cancelMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
 import { toMeetingStartIso } from './countryTiming.js';
@@ -169,10 +168,10 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       .eq('email', fromEmail);
   }
 
-  const [orgProfile, orgChannelSettings, calendarToken] = await Promise.all([
+  const [orgProfile, orgChannelSettings, calendar] = await Promise.all([
     getOrgProfile(orgId),
     getOrgChannelSettings(orgId),
-    getOrgGoogleCalendarToken(orgId),
+    getConnectedCalendar(orgId),
   ]);
   const fromName = orgProfile?.senderName || orgProfile?.companyName || 'Team';
 
@@ -247,17 +246,16 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   let replyText = result.reply;
 
   if (result.status === 'confirmed' && result.meeting) {
-    if (calendarToken) {
+    if (calendar) {
       try {
         const startIso = toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone);
-        const event = await createMeetingEvent({
-          refreshToken: calendarToken.refreshToken,
-          calendarId: calendarToken.calendarId,
+        const event = await bookMeeting({
+          calendar,
           summary: `Discovery Call with ${existing?.lead_name || context.clientName || fromEmail}`,
-          // Deliberately no conversation transcript here — Google emails this description
-          // verbatim to the attendee (sendUpdates: 'all' in googleCalendar.ts), so anything
-          // internal put here leaks straight to the client's inbox. The full conversation is
-          // already viewable org-side in the AI Inbox (email_conversations.history below).
+          // Deliberately no conversation transcript here — both providers email this
+          // description verbatim to the attendee, so anything internal put here leaks
+          // straight to the client's inbox. The full conversation is already viewable
+          // org-side in the AI Inbox (email_conversations.history below).
           description: `Booked automatically via OmniReach AI.`,
           startIso,
           durationMinutes: result.meeting.durationMinutes,
@@ -272,7 +270,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
           finalStatus = 'active';
         }
       } catch (err: any) {
-        console.error('[Email Bot] Google Calendar booking failed:', err);
+        console.error(`[Email Bot] ${calendar.provider} Calendar booking failed:`, err);
         finalStatus = 'active';
         replyText =
           err?.message === 'SLOT_ALREADY_BOOKED'
@@ -284,16 +282,16 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     }
   }
 
-  if (meetLink) {
-    replyText = `${replyText}\n\nMeeting confirmed! Google Meet link: ${meetLink}`;
+  if (meetLink && calendar) {
+    replyText = `${replyText}\n\nMeeting confirmed! ${meetingLinkLabel(calendar.provider)} link: ${meetLink}`;
   }
 
   // See lib/whatsappWebhookHandler.ts for the full rationale — the prospect's latest
   // message walked back an earlier confirmation, so cancel the real event instead of
   // leaving a stale booking on the org's calendar.
   const retractedMeeting = existing?.status === 'confirmed' && !!existing?.calendar_event_id && finalStatus !== 'confirmed';
-  if (retractedMeeting && calendarToken) {
-    await cancelMeetingEvent(calendarToken.refreshToken, calendarToken.calendarId, existing!.calendar_event_id);
+  if (retractedMeeting && calendar) {
+    await cancelMeeting(calendar, existing!.calendar_event_id);
   }
 
   history.push({ role: 'assistant', text: replyText, timestamp: new Date().toISOString() });

@@ -1,6 +1,8 @@
 import nodemailer from 'nodemailer';
-import { getOrgChannelSettings, getOrgGoogleCalendarToken } from './orgSettings.js';
-import { checkCalendarAccess } from './googleCalendar.js';
+import { getOrgChannelSettings } from './orgSettings.js';
+import { getConnectedCalendar } from './calendarProvider.js';
+import { checkCalendarAccess as checkGoogleCalendarAccess } from './googleCalendar.js';
+import { checkCalendarAccess as checkMicrosoftCalendarAccess } from './microsoftCalendar.js';
 import { sanitizeInboundDomain } from './emailWebhookHandler.js';
 
 export interface HealthStatus {
@@ -26,7 +28,7 @@ export interface ChannelHealthResult {
  * Express dev server (server.ts) so the two never drift out of sync again.
  */
 export async function checkChannelHealth(orgId: string): Promise<ChannelHealthResult> {
-  const [settings, calendarToken] = await Promise.all([getOrgChannelSettings(orgId), getOrgGoogleCalendarToken(orgId)]);
+  const [settings, calendarConnection] = await Promise.all([getOrgChannelSettings(orgId), getConnectedCalendar(orgId)]);
 
   const apiKey = settings?.whatsappCloudApiKey?.trim();
 
@@ -83,10 +85,12 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
   })();
 
   const calendarCheck = (async (): Promise<HealthStatus> => {
-    if (!calendarToken) {
-      return { ok: false, message: 'Not connected — connect Google Calendar in Settings.' };
+    if (!calendarConnection) {
+      return { ok: false, message: 'Not connected — connect Google or Outlook Calendar in Settings.' };
     }
-    return checkCalendarAccess(calendarToken.refreshToken, calendarToken.calendarId);
+    return calendarConnection.provider === 'google'
+      ? checkGoogleCalendarAccess(calendarConnection.refreshToken, calendarConnection.calendarId)
+      : checkMicrosoftCalendarAccess(calendarConnection.refreshToken);
   })();
 
   const emailCheck = (async (): Promise<HealthStatus> => {

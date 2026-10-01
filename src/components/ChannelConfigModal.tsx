@@ -28,6 +28,7 @@ import { sendEmailDirectOrBackend } from '../services/emailService';
 import { sendWhatsAppDirectOrBackend } from '../services/whatsappService';
 import { resolveTemplateVariables } from '../utils/outreachEngine';
 import { useGoogleCalendarConnection } from '../hooks/useGoogleCalendarConnection';
+import { useMicrosoftCalendarConnection } from '../hooks/useMicrosoftCalendarConnection';
 import { useChannelHealth } from '../hooks/useChannelHealth';
 import { ChannelHealthPanel } from './ChannelHealthPanel';
 import { AdvancedSection } from './AdvancedSection';
@@ -68,6 +69,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     settings.whatsAppProvider === 'twilio' || settings.whatsAppProvider === 'webhook'
   );
   const googleCalendar = useGoogleCalendarConnection(userId, accessToken);
+  const microsoftCalendar = useMicrosoftCalendarConnection(userId, accessToken);
   const { health, loading: healthLoading, error: healthError, reload: reloadHealth } = useChannelHealth(accessToken);
 
   // Test email state
@@ -1505,6 +1507,13 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   the same phone number).
                 </p>
 
+                {microsoftCalendar.status.connected && !googleCalendar.status.connected && (
+                  <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                    Outlook Calendar is currently connected and in use. Connecting Google here will switch the booking bot
+                    over to Google instead.
+                  </p>
+                )}
+
                 {!userId ? (
                   <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
                     Sign in to a workspace to connect Google Calendar for the AI booking bot.
@@ -1539,6 +1548,59 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   </p>
                 )}
               </div>
+
+              {!googleCalendar.status.connected && (
+                <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-ink">Outlook / Microsoft 365 Calendar</span>
+                    {microsoftCalendar.status.connected && (
+                      <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Connected
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-ink-muted leading-relaxed">
+                    Same as Google Calendar above, but books onto Outlook/Microsoft 365 with a Microsoft Teams link instead
+                    of Google Meet. Connect one or the other, not both — whichever's connected is what the booking bot uses.
+                  </p>
+
+                  {!userId ? (
+                    <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                      Sign in to a workspace to connect Outlook Calendar for the AI booking bot.
+                    </p>
+                  ) : microsoftCalendar.status.connected ? (
+                    <div className="flex items-center justify-between p-2.5 bg-surface rounded-lg border border-border">
+                      <span className="text-xs text-ink-secondary">{microsoftCalendar.status.connectedEmail || 'Connected'}</span>
+                      <button
+                        type="button"
+                        onClick={microsoftCalendar.connect}
+                        className="text-[11px] text-ink-muted hover:text-ink underline"
+                      >
+                        Reconnect
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={microsoftCalendar.connect}
+                      disabled={microsoftCalendar.connecting}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl text-white bg-[#0078D4] hover:bg-[#006abc] shadow-sm transition-all disabled:opacity-60"
+                    >
+                      <Calendar className="w-3.5 h-3.5" />
+                      {microsoftCalendar.connecting ? 'Redirecting to Microsoft…' : 'Connect Outlook Calendar'}
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  )}
+
+                  {microsoftCalendar.error && (
+                    <p className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+                      {microsoftCalendar.error}
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
                 <span className="text-xs font-bold text-ink">WhatsApp Webhook (one-time Meta setup)</span>

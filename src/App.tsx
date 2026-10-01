@@ -195,18 +195,22 @@ function AppContent({ auth }: { auth: AuthState }) {
   // Selected Lead for Simulator
   const [selectedLeadId, setSelectedLeadId] = useState<string>(leads[0]?.id || 'lead-1');
 
-  // Google Calendar OAuth redirect banner
+  // Google/Outlook Calendar OAuth redirect banner
   const [calendarBanner, setCalendarBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const status = params.get('google_calendar');
+    const googleStatus = params.get('google_calendar');
+    const outlookStatus = params.get('outlook_calendar');
+    const status = googleStatus || outlookStatus;
+    const providerLabel = outlookStatus ? 'Outlook Calendar' : 'Google Calendar';
     if (status === 'connected') {
-      setCalendarBanner({ type: 'success', message: 'Google Calendar connected — the AI booking bot can now schedule real meetings.' });
+      setCalendarBanner({ type: 'success', message: `${providerLabel} connected — the AI booking bot can now schedule real meetings.` });
     } else if (status === 'error') {
-      setCalendarBanner({ type: 'error', message: params.get('message') || 'Failed to connect Google Calendar.' });
+      setCalendarBanner({ type: 'error', message: params.get('message') || `Failed to connect ${providerLabel}.` });
     }
     if (status) {
       params.delete('google_calendar');
+      params.delete('outlook_calendar');
       params.delete('message');
       const newSearch = params.toString();
       window.history.replaceState({}, '', window.location.pathname + (newSearch ? `?${newSearch}` : ''));

@@ -4,6 +4,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/auth/microsoft/connect",
+      "destination": "/api/auth/google/connect?provider=microsoft"
+    },
+    {
+      "source": "/api/auth/microsoft/callback",
+      "destination": "/api/auth/google/callback?provider=microsoft"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

@@ -21,6 +21,7 @@ import {
 import { getSupabaseAdmin } from './lib/supabaseAdmin';
 import { getOrgIdFromAuthHeader, getUserFromAuthHeader, isAdminEmail } from './lib/supabaseServerAuth';
 import { buildGoogleAuthUrl, handleGoogleOAuthCallback, isGoogleOAuthConfigured } from './lib/googleOAuthFlow';
+import { buildMicrosoftAuthUrl, handleMicrosoftOAuthCallback, isMicrosoftOAuthConfigured } from './lib/microsoftOAuthFlow';
 import { parseMultipartFields } from './lib/parseMultipart';
 import { verifyEmailWebhookToken, processInboundEmail, seedEmailConversationFromLead, buildEmailReplyToAddress } from './lib/emailWebhookHandler';
 import { sendCampaignWhatsAppMessage } from './lib/whatsappCampaignSender';
@@ -662,6 +663,31 @@ app.get('/api/auth/google/callback', async (req, res) => {
   const redirectTo = result.ok
     ? `/?google_calendar=connected`
     : `/?google_calendar=error&message=${encodeURIComponent(result.error || 'Connection failed')}`;
+  res.redirect(302, redirectTo);
+});
+
+// Mirrors api/auth/google/connect.ts's ?provider=microsoft branch — a dedicated Express
+// route here since local dev has no Vercel rewrite mechanism to reuse the Google path.
+app.post('/api/auth/microsoft/connect', async (req, res) => {
+  if (!isMicrosoftOAuthConfigured()) {
+    return res.status(500).json({ error: 'Outlook Calendar OAuth is not configured on the server yet.' });
+  }
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) {
+    return res.status(401).json({ error: 'Sign in required.' });
+  }
+  const authUrl = buildMicrosoftAuthUrl(orgId);
+  if (!authUrl) {
+    return res.status(500).json({ error: 'Failed to build Microsoft authorization URL.' });
+  }
+  res.json({ authUrl });
+});
+
+app.get('/api/auth/microsoft/callback', async (req, res) => {
+  const result = await handleMicrosoftOAuthCallback(req.query.code as string | undefined, req.query.state as string | undefined);
+  const redirectTo = result.ok
+    ? `/?outlook_calendar=connected`
+    : `/?outlook_calendar=error&message=${encodeURIComponent(result.error || 'Connection failed')}`;
   res.redirect(302, redirectTo);
 });
 

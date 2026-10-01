@@ -138,6 +138,43 @@ export async function saveOrgGoogleCalendarToken(
   );
 }
 
+export interface OrgMicrosoftCalendarToken {
+  refreshToken: string;
+  connectedEmail?: string;
+}
+
+/** Deliberately a separate table from org_google_calendar rather than one table with a
+ * provider column — an org picks one or the other, and keeping them separate means neither
+ * provider's code has to know the other exists. See supabase/schema.sql for org_microsoft_calendar. */
+export async function getOrgMicrosoftCalendarToken(orgId: string): Promise<OrgMicrosoftCalendarToken | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data } = await supabase
+    .from('org_microsoft_calendar')
+    .select('refresh_token, connected_email')
+    .eq('org_id', orgId)
+    .maybeSingle();
+  if (!data) return null;
+  return { refreshToken: data.refresh_token, connectedEmail: data.connected_email };
+}
+
+export async function saveOrgMicrosoftCalendarToken(
+  orgId: string,
+  token: { refreshToken: string; connectedEmail?: string }
+): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  await supabase.from('org_microsoft_calendar').upsert(
+    {
+      org_id: orgId,
+      refresh_token: token.refreshToken,
+      connected_email: token.connectedEmail,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'org_id' }
+  );
+}
+
 export interface RecipientContext {
   orgId: string;
   clientId: string | null;

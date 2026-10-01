@@ -85,6 +85,33 @@ $$;
 grant execute on function get_google_calendar_status() to authenticated;
 
 -- ---------------------------------------------------------------------------
+-- Per-org Outlook/Microsoft 365 Calendar connection — same shape and same
+-- shared-platform-app-registration pattern as org_google_calendar above, kept
+-- as its own table rather than adding a provider column to that one so an org
+-- can connect either provider without either one's code needing to know the
+-- other exists.
+-- ---------------------------------------------------------------------------
+create table if not exists org_microsoft_calendar (
+  org_id uuid primary key references auth.users(id) on delete cascade,
+  refresh_token text not null,
+  connected_email text,
+  updated_at timestamptz not null default now()
+);
+alter table org_microsoft_calendar enable row level security;
+
+create or replace function get_microsoft_calendar_status()
+returns table(connected boolean, connected_email text)
+language sql
+security definer
+set search_path = public
+as $$
+  select true, o.connected_email
+  from org_microsoft_calendar o
+  where o.org_id = auth.uid();
+$$;
+grant execute on function get_microsoft_calendar_status() to authenticated;
+
+-- ---------------------------------------------------------------------------
 -- WhatsApp AI booking bot — conversation state, now scoped per org
 -- ---------------------------------------------------------------------------
 create table if not exists whatsapp_conversations (
