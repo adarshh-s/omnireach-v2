@@ -161,6 +161,12 @@ export interface ChannelApiSettings {
   // ?action=sync-assistant rather than requiring the org to touch Vapi's own dashboard.
   vapiSystemPrompt?: string;
   vapiFirstMessage?: string;
+
+  // Slack — an Incoming Webhook URL (api.slack.com/apps -> your app -> Incoming Webhooks),
+  // posted to whenever the AI bot confirms a meeting. No OAuth, no new serverless function:
+  // Slack's webhook endpoint is called directly, server-side for real notifications and
+  // client-side for the "Send Test" button in Channel Setup.
+  slackWebhookUrl?: string;
 }
 
 export interface CampaignState {

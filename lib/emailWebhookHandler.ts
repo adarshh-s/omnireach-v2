@@ -13,6 +13,7 @@ import { createMeetingEvent, cancelMeetingEvent } from './googleCalendar.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
 import { toMeetingStartIso } from './countryTiming.js';
+import { sendSlackNotification } from './slackNotifier.js';
 
 /** Verifies the shared secret appended to the Inbound Parse Destination URL, so this
  * endpoint can't be spammed by anyone who finds the URL. */
@@ -351,6 +352,17 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     } else {
       await supabase.from('clients').update(clientUpdate).eq('org_id', orgId).eq('email', fromEmail);
     }
+  }
+
+  // Only on the turn that actually just confirmed it — not every subsequent reply in an
+  // already-confirmed conversation. Fire-and-forget: never block the reply on a Slack hiccup.
+  if (finalStatus === 'confirmed' && existing?.status !== 'confirmed') {
+    const leadName = existing?.lead_name || context.clientName || fromEmail;
+    const whenStr = meetingDateTimeIso ? new Date(meetingDateTimeIso).toLocaleString() : 'a confirmed time';
+    sendSlackNotification(
+      orgChannelSettings?.slackWebhookUrl,
+      `📅 *Meeting booked* via Email — ${leadName} (${fromEmail}) confirmed for ${whenStr}.${meetLink ? ` <${meetLink}|Join on Google Meet>` : ''}`
+    );
   }
 
   const sendResult = await sendEmailViaOrgProvider(orgChannelSettings, {

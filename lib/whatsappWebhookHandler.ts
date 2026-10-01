@@ -12,6 +12,7 @@ import { runConversationTurn, ConversationTurn } from './conversationEngine.js';
 import { createMeetingEvent, cancelMeetingEvent } from './googleCalendar.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
+import { sendSlackNotification } from './slackNotifier.js';
 import { toMeetingStartIso } from './countryTiming.js';
 
 /**
@@ -451,6 +452,17 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     } else {
       await supabase.from('clients').update(clientUpdate).eq('org_id', orgId).in('phone', [fromPhone, `+${fromPhone}`]);
     }
+  }
+
+  // Only on the turn that actually just confirmed it — not every subsequent reply in an
+  // already-confirmed conversation. Fire-and-forget: never block the reply on a Slack hiccup.
+  if (finalStatus === 'confirmed' && existing?.status !== 'confirmed') {
+    const leadName = existing?.lead_name || contactName || fromPhone;
+    const whenStr = meetingDateTimeIso ? new Date(meetingDateTimeIso).toLocaleString() : 'a confirmed time';
+    sendSlackNotification(
+      orgChannelSettings?.slackWebhookUrl,
+      `📅 *Meeting booked* via WhatsApp — ${leadName} (${fromPhone}) confirmed for ${whenStr}.${meetLink ? ` <${meetLink}|Join on Google Meet>` : ''}`
+    );
   }
 
   const sendResult = await sendWhatsAppText(

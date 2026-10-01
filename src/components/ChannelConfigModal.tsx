@@ -21,6 +21,7 @@ import {
   ChevronDown,
   ChevronRight,
   Phone,
+  Slack,
 } from 'lucide-react';
 import { ChannelApiSettings, CampaignSettings, CalendarSlot } from '../types';
 import { sendEmailDirectOrBackend } from '../services/emailService';
@@ -53,7 +54,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   accessToken = null,
 }) => {
   const [formData, setFormData] = useState<ChannelApiSettings>(settings);
-  const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n' | 'voice'>('email');
+  const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n' | 'voice' | 'slack'>('email');
   const [savedSuccess, setSavedSuccess] = useState(false);
   // 'resend' with no org-supplied API key is the automatic platform default (see the
   // "Email sending is automatic" banner) — only a provider that actually needs the org's
@@ -82,6 +83,38 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   // Collapsed by default — real testing value, but shouldn't clutter the default settings view.
   const [showEmailTest, setShowEmailTest] = useState(false);
   const [showWaTest, setShowWaTest] = useState(false);
+
+  // Test Slack notification state — posts directly to the webhook URL from the browser
+  // (text/plain avoids a CORS preflight; Slack parses the JSON body regardless).
+  const [testSlackStatus, setTestSlackStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
+  const [testSlackResultMsg, setTestSlackResultMsg] = useState('');
+
+  const handleTestSlack = async () => {
+    if (!formData.slackWebhookUrl) {
+      setTestSlackStatus('error');
+      setTestSlackResultMsg('Paste a Slack Incoming Webhook URL first.');
+      return;
+    }
+    setTestSlackStatus('sending');
+    setTestSlackResultMsg('');
+    try {
+      const res = await fetch(formData.slackWebhookUrl.trim(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ text: '👋 Test notification from OmniReach AI — Slack notifications are wired up correctly.' }),
+      });
+      if (res.ok) {
+        setTestSlackStatus('success');
+        setTestSlackResultMsg('Sent — check your Slack channel.');
+      } else {
+        setTestSlackStatus('error');
+        setTestSlackResultMsg(`Slack rejected the request (${res.status}). Double-check the webhook URL.`);
+      }
+    } catch (err: any) {
+      setTestSlackStatus('error');
+      setTestSlackResultMsg(err?.message || 'Could not reach Slack — check the webhook URL.');
+    }
+  };
 
   // WABA app-subscription state — a required Meta step with no dashboard UI of its own,
   // without which inbound replies never reach the webhook.
@@ -634,6 +667,19 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           >
             <Phone className="w-3.5 h-3.5" />
             <span>AI Voice Agent</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('slack')}
+            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
+              activeSubTab === 'slack'
+                ? 'border-[#4285F4] text-[#1967D2]'
+                : 'border-transparent text-ink-muted hover:text-ink'
+            }`}
+          >
+            <Slack className="w-3.5 h-3.5" />
+            <span>Slack</span>
           </button>
         </div>
 
@@ -1703,6 +1749,55 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   </div>
                 </div>
               </AdvancedSection>
+            </div>
+          )}
+
+          {activeSubTab === 'slack' && (
+            <div className="space-y-4">
+              <p className="text-[11px] text-ink-muted leading-relaxed">
+                Get a Slack message the moment the AI books a meeting via WhatsApp or Email — no
+                need to keep checking the dashboard.
+              </p>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+                  Slack Incoming Webhook URL
+                </label>
+                <input
+                  type="password"
+                  placeholder="https://hooks.slack.com/services/..."
+                  value={formData.slackWebhookUrl || ''}
+                  onChange={(e) => setFormData({ ...formData, slackWebhookUrl: e.target.value })}
+                  className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                />
+                <p className="text-[11px] text-ink-muted mt-1.5 leading-relaxed">
+                  Create one at{' '}
+                  <a
+                    href="https://api.slack.com/apps"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[#128C7E] hover:underline inline-flex items-center gap-0.5"
+                  >
+                    api.slack.com/apps
+                    <ExternalLink className="w-3 h-3" />
+                  </a>{' '}
+                  → your app → Incoming Webhooks → Add New Webhook to Workspace, then paste the
+                  URL it gives you here. No Slack app review needed.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleTestSlack}
+                disabled={testSlackStatus === 'sending'}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-[#4A154B] hover:opacity-90 shadow-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {testSlackStatus === 'sending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Slack className="w-3.5 h-3.5" />}
+                <span>{testSlackStatus === 'sending' ? 'Sending…' : 'Send Test Notification'}</span>
+              </button>
+              {testSlackResultMsg && (
+                <p className={`text-[11px] ${testSlackStatus === 'success' ? 'text-emerald-300' : 'text-rose-400'}`}>{testSlackResultMsg}</p>
+              )}
             </div>
           )}
 

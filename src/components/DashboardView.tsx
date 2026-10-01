@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Users, Send, MessageCircle, CalendarCheck2, Clock, TrendingUp, Mail, Calendar } from 'lucide-react';
+import { Users, Send, MessageCircle, CalendarCheck2, Clock, TrendingUp, Mail, Calendar, Download } from 'lucide-react';
 import { Lead } from '../types';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { ChannelHealthPanel } from './ChannelHealthPanel';
@@ -9,6 +9,7 @@ import { StatTile } from './StatTile';
 import { useLiveHistory } from '../hooks/useLiveHistory';
 import { useChannelHealth } from '../hooks/useChannelHealth';
 import { getWhatsAppStats, getEmailStats, getCalendarStats } from '../utils/channelStats';
+import { downloadAnalyticsCsv } from '../utils/exportAnalytics';
 
 interface DashboardViewProps {
   leads: Lead[];
@@ -92,6 +93,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
     return ok ? 'ok' : 'attention';
   };
 
+  const handleDownloadReport = () => {
+    downloadAnalyticsCsv(leads, {
+      totalClients,
+      activeCampaigns,
+      activeConversations,
+      meetingsBooked,
+      contactedCount,
+      conversionRate: meetingConversionRate,
+      failedCount,
+      whatsAppSent: waStats.sent,
+      whatsAppReplied: waStats.replied,
+      whatsAppFailed: waStats.failed,
+      emailSent: emailStats.sent,
+      emailReplied: emailStats.replied,
+      emailFailed: emailStats.failed,
+      calendarBooked: calendarStats.booked,
+      calendarInProgress: calendarStats.inProgress,
+      calendarDeclined: calendarStats.declined,
+    });
+  };
+
   const tiles = [
     {
       label: 'Total Clients',
@@ -140,14 +162,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
             How many clients need attention, how campaigns are performing, and how many meetings are booked.
           </p>
         </div>
-        {totalClients === 0 && (
-          <button
-            onClick={onOpenExcelUpload}
-            className="px-4 py-2 rounded-full bg-brand-strong hover:bg-[#0d6e62] text-white text-xs font-semibold shadow-sm transition-all"
-          >
-            Import your first clients
-          </button>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {totalClients > 0 && (
+            <button
+              onClick={handleDownloadReport}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-surface-hover hover:bg-border-strong border border-border-strong text-ink text-xs font-semibold shadow-sm transition-all"
+              title="Download a CSV of current stats and every lead"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Report</span>
+            </button>
+          )}
+          {totalClients === 0 && (
+            <button
+              onClick={onOpenExcelUpload}
+              className="px-4 py-2 rounded-full bg-brand-strong hover:bg-[#0d6e62] text-white text-xs font-semibold shadow-sm transition-all"
+            >
+              Import your first clients
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
