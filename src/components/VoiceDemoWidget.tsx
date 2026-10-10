@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Phone, PhoneOff, Mic, Loader2, AlertCircle } from 'lucide-react';
 
 /** The SDK's error payloads nest the human-readable text at different depths depending on
@@ -85,6 +85,9 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
   const [durationSec, setDurationSec] = useState(0);
   const vapiRef = useRef<any>(null);
   const endedByUserRef = useRef(false);
+  // The previous call's transcript stays on screen until the new call's first line arrives —
+  // clearing it on start collapsed the transcript box and jolted the whole page's layout.
+  const clearTranscriptOnNextLineRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -110,7 +113,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
   const handleStart = async () => {
     if (!isConfigured || callState === 'connecting' || callState === 'active') return;
     setErrorMessage(null);
-    setTranscript([]);
+    clearTranscriptOnNextLineRef.current = true;
     setDurationSec(0);
     setCallState('connecting');
     endedByUserRef.current = false;
@@ -146,8 +149,10 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
       });
       vapi.on('message', (message: any) => {
         if (message?.type === 'transcript' && message.transcriptType === 'final' && message.transcript) {
+          const reset = clearTranscriptOnNextLineRef.current;
+          clearTranscriptOnNextLineRef.current = false;
           setTranscript((prev) => [
-            ...prev,
+            ...(reset ? [] : prev),
             { id: `${Date.now()}-${prev.length}`, role: message.role === 'user' ? 'user' : 'assistant', text: String(message.transcript) },
           ]);
         }
@@ -209,7 +214,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
           <button
             onClick={callState === 'active' ? handleStop : handleStart}
             disabled={callState === 'connecting'}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-semibold shadow-sm transition-all active:scale-[0.98] shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${
+            className={`inline-flex items-center justify-center gap-2 min-w-[11rem] px-4 py-2.5 rounded-full text-sm font-semibold shadow-sm transition-colors active:scale-[0.98] shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${
               callState === 'active'
                 ? 'bg-rose-500 hover:bg-rose-600 text-white'
                 : 'bg-gradient-to-r from-[#4285F4] to-[#128C7E] hover:opacity-95 text-white'
@@ -253,35 +258,38 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
         </div>
       )}
 
-      <AnimatePresence>
-        {isLive && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="mt-4 flex items-center justify-center gap-2 py-3">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <span
-                  key={i}
-                  className={`w-1.5 rounded-full bg-gradient-to-t from-[#4285F4] to-[#128C7E] transition-all duration-300 ${
-                    assistantSpeaking ? 'animate-pulse' : ''
-                  }`}
-                  style={{
-                    height: assistantSpeaking ? `${12 + (i % 3) * 8}px` : '6px',
-                    animationDelay: `${i * 0.1}s`,
-                  }}
-                />
-              ))}
-              <span className="text-[11px] text-ink-muted ml-2">
-                {callState === 'connecting' ? 'Connecting to your assistant…' : assistantSpeaking ? 'AI is speaking…' : 'Listening…'}
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Fixed height, always rendered: starting/ending a call only changes what's inside it.
+          It used to animate open/closed (height 0 → auto), which reflowed everything below on
+          every frame and made the page's many backdrop-blur panels repaint — a visible flicker
+          across the whole UI. */}
+      {isConfigured && (
+        <div className="mt-4 h-10 flex items-center justify-center gap-2" aria-live="polite">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <span
+              key={i}
+              className={`w-1.5 rounded-full bg-gradient-to-t from-[#4285F4] to-[#128C7E] transition-[height,opacity] duration-300 ${
+                assistantSpeaking ? 'animate-pulse' : ''
+              }`}
+              style={{
+                height: isLive && assistantSpeaking ? `${12 + (i % 3) * 8}px` : '6px',
+                opacity: isLive ? 1 : 0.35,
+                animationDelay: `${i * 0.1}s`,
+              }}
+            />
+          ))}
+          <span className="text-[11px] text-ink-muted ml-2 transition-opacity duration-200">
+            {callState === 'connecting'
+              ? 'Connecting to your assistant…'
+              : callState === 'active'
+                ? assistantSpeaking
+                  ? 'AI is speaking…'
+                  : 'Listening…'
+                : callState === 'ended'
+                  ? 'Call ended'
+                  : 'Ready'}
+          </span>
+        </div>
+      )}
 
       {transcript.length > 0 && (
         <div className="mt-4 pt-4 border-t border-border space-y-2 max-h-64 overflow-y-auto no-scrollbar">
