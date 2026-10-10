@@ -82,6 +82,20 @@ async function buildCallOverrides(
   // The booking tool and call context ride on the model, so the assistant's current model
   // config has to be read first — overriding `model` replaces it wholesale.
   const assistant = await fetchAssistant(org);
+
+  // Response-latency tuning (measured ~1.6s/turn before this): start replying 0.2s after the
+  // person stops rather than the 0.4s default, and don't sit 1.5s on a transcript with no
+  // final punctuation. Tighter than this starts cutting people off mid-thought.
+  overrides.startSpeakingPlan = {
+    waitSeconds: 0.2,
+    transcriptionEndpointingPlan: { onPunctuationSeconds: 0.1, onNoPunctuationSeconds: 0.8, onNumberSeconds: 0.5 },
+  };
+  // Same ElevenLabs voice, on its low-latency Flash model instead of Turbo (~half the
+  // time-to-first-audio).
+  if (assistant?.voice?.provider === '11labs' && assistant.voice.model !== 'eleven_flash_v2_5') {
+    overrides.voice = { ...assistant.voice, model: 'eleven_flash_v2_5' };
+  }
+
   if (assistant?.model) {
     const timeZone = getTimezoneForCountry(lead.country);
     const { label: todayLabel } = getLocalTodayInfo(new Date(), timeZone);
