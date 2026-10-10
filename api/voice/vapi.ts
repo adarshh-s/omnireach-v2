@@ -6,7 +6,7 @@ import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPubli
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
-  body?: { phone?: string; name?: string; clientId?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
+  body?: { phone?: string; name?: string; clientId?: string; country?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -65,8 +65,8 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const { phone, name, clientId, variables } = req.body || {};
-  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, variables, baseUrl: getPublicBaseUrl(req.headers) });
+  const { phone, name, clientId, country, variables } = req.body || {};
+  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, country, variables, baseUrl: getPublicBaseUrl(req.headers) });
   return res.status(result.httpStatus).json(result.body);
 }
 

@@ -31,7 +31,7 @@ import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
 import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
-import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl } from './lib/voiceCalls';
+import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl, reconcileStaleVoiceCalls } from './lib/voiceCalls';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -631,14 +631,15 @@ app.get('/api/conversations', async (req, res) => {
   }
   const table =
     req.query.channel === 'email' ? 'email_conversations' : req.query.channel === 'voice' ? 'voice_calls' : 'whatsapp_conversations';
-  const { data, error } = await supabase
-    .from(table)
-    .select('*')
-    .eq('org_id', orgId)
-    .order('last_message_at', { ascending: false })
-    .limit(200);
+  const query = () =>
+    supabase.from(table).select('*').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(200);
+  let { data, error } = await query();
   if (error) {
     return res.status(500).json({ error: error.message });
+  }
+  if (table === 'voice_calls' && (await reconcileStaleVoiceCalls(orgId, data || []))) {
+    ({ data, error } = await query());
+    if (error) return res.status(500).json({ error: error.message });
   }
   res.json({ configured: true, conversations: data });
 });
@@ -745,8 +746,8 @@ app.post('/api/voice/vapi', async (req, res) => {
   if (!orgId) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
-  const { phone, name, clientId, variables } = req.body || {};
-  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, variables, baseUrl: getPublicBaseUrl(req.headers) });
+  const { phone, name, clientId, country, variables } = req.body || {};
+  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, country, variables, baseUrl: getPublicBaseUrl(req.headers) });
   return res.status(result.httpStatus).json(result.body);
 });
 

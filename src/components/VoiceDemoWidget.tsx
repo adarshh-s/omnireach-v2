@@ -95,6 +95,15 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
       vapi.on('speech-start', () => setAssistantSpeaking(true));
       vapi.on('speech-end', () => setAssistantSpeaking(false));
       vapi.on('error', (err: any) => {
+        // The SDK reports a normal assistant-side hangup ("Meeting has ended", ejection) as an
+        // error event — that's the call ending, not failing.
+        const raw = JSON.stringify(err?.error ?? err ?? '');
+        if (/meeting has ended|ejected|meeting ended/i.test(raw)) {
+          setCallState('ended');
+          setAssistantSpeaking(false);
+          if (timerRef.current) clearInterval(timerRef.current);
+          return;
+        }
         setErrorMessage(friendlyCallError(err, 'Something went wrong with the call.'));
         setCallState('error');
         if (timerRef.current) clearInterval(timerRef.current);

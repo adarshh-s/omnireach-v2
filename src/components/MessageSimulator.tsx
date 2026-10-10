@@ -253,7 +253,7 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
           'Content-Type': 'application/json',
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
-        body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, variables: { company: lead.company || '' } }),
+        body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, country: lead.country, variables: { company: lead.company || '' } }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {

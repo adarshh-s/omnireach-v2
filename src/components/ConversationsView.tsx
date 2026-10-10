@@ -164,11 +164,14 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
       const matchedLead =
         conv.channel !== 'email'
           ? leads.find((l) => {
-              const convDigits = conv.contact.replace(/\D/g, '');
-              const leadDigits = l.phone.replace(/\D/g, '');
+              const convDigits = (conv.contact || '').replace(/\D/g, '');
+              const leadDigits = (l.phone || '').replace(/\D/g, '');
+              // An empty/too-short number "endsWith" matches everything — without this guard a
+              // lead with no phone got another lead's booked meeting written onto it.
+              if (convDigits.length < 7 || leadDigits.length < 7) return false;
               return leadDigits.endsWith(convDigits) || convDigits.endsWith(leadDigits);
             })
-          : leads.find((l) => l.email.toLowerCase() === conv.contact.toLowerCase());
+          : leads.find((l) => !!l.email && !!conv.contact && l.email.toLowerCase() === conv.contact.toLowerCase());
 
       // No match yet doesn't necessarily mean "no such lead" — on first load this effect
       // can run before the `leads` prop has finished loading from the cloud, and marking

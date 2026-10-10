@@ -107,6 +107,9 @@ export async function placeOrgVoiceCall(params: {
   phone?: string;
   name?: string;
   clientId?: string;
+  /** The browser's copy of the lead's country — only a fallback for leads not saved to the
+   * database yet, so the calling-hours check still applies to them. */
+  country?: string;
   variables?: Record<string, string>;
   baseUrl: string | null;
 }): Promise<ApiResult> {
@@ -141,7 +144,8 @@ export async function placeOrgVoiceCall(params: {
     return { httpStatus: 400, body: { error: `${client.name || name || 'This lead'} has opted out of contact — not calling.` } };
   }
 
-  const hours = checkCallingHours(client?.country);
+  const country = client?.country || params.country || undefined;
+  const hours = checkCallingHours(country);
   if (!hours.allowed) {
     return {
       httpStatus: 400,
@@ -155,7 +159,7 @@ export async function placeOrgVoiceCall(params: {
     name: client?.name || name,
     company: client?.company || variables?.company,
     email: client?.email || undefined,
-    country: client?.country || undefined,
+    country,
   };
   const overrides = await buildCallOverrides(org, baseUrl, lead);
   const result = await startVapiCall({ phone, name: lead.name, variables, org, overrides });
@@ -187,6 +191,8 @@ function classifyOutcome(endedReason: string | undefined, userTurns: number): st
   return 'answered';
 }
 
+/** Vapi's end-of-call report (webhook) and its GET /call/:id object share the fields used
+ * here, so the same function finalizes a call from either source. */
 async function handleEndOfCallReport(message: any, callId: string): Promise<void> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return;
@@ -329,6 +335,41 @@ async function bookMeetingFromCall(callId: string, args: { date?: string; time?:
   return email
     ? `Booked for ${whenLabel}. A calendar invite with the meeting link was sent to ${email}.`
     : `Booked for ${whenLabel}. There's no email on file, so tell the prospect the team will send the meeting link.`;
+}
+
+/**
+ * Finalizes calls still showing as in flight when Vapi's end-of-call webhook never arrived —
+ * it isn't sent at all for calls that fail before connecting (e.g. a carrier rejecting the
+ * call), which otherwise sit at "Calling…" in the AI Inbox forever. Called when the inbox
+ * loads; checks Vapi directly for anything older than a couple of minutes.
+ */
+export async function reconcileStaleVoiceCalls(orgId: string, rows: any[]): Promise<boolean> {
+  const cutoff = Date.now() - 2 * 60 * 1000;
+  const stale = rows
+    .filter((r) => r.call_status !== 'ended' && new Date(r.created_at).getTime() < cutoff)
+    .slice(0, 10);
+  if (stale.length === 0) return false;
+
+  const settings = await getOrgChannelSettings(orgId);
+  const apiKey = settings?.vapiApiKey?.trim() || process.env.VAPI_API_KEY;
+  if (!apiKey) return false;
+
+  let changed = false;
+  await Promise.all(
+    stale.map(async (row) => {
+      try {
+        const res = await fetch(`https://api.vapi.ai/call/${row.vapi_call_id}`, { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (!res.ok) return;
+        const call = await res.json();
+        if (call?.status !== 'ended') return;
+        await handleEndOfCallReport(call, row.vapi_call_id);
+        changed = true;
+      } catch {
+        // Best effort — retried on the next inbox load.
+      }
+    })
+  );
+  return changed;
 }
 
 /** Handles one Vapi server message. The return value is the JSON response body — only

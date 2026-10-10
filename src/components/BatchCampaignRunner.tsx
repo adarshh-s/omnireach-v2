@@ -211,7 +211,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       const res = await fetch('/api/voice/vapi', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-        body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, variables: { company: lead.company || '' } }),
+        body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, country: lead.country, variables: { company: lead.company || '' } }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {
@@ -534,7 +534,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 'Content-Type': 'application/json',
                 ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
               },
-              body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, variables: { company: lead.company || '' } }),
+              body: JSON.stringify({ phone: lead.phone, name: lead.name, clientId: lead.id, country: lead.country, variables: { company: lead.company || '' } }),
             });
             const callData = await callRes.json().catch(() => ({}));
             if (callRes.ok && callData.ok) {

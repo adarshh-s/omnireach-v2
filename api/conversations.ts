@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from '../lib/supabaseAdmin.js';
 import { getOrgIdFromAuthHeader } from '../lib/supabaseServerAuth.js';
+import { reconcileStaleVoiceCalls } from '../lib/voiceCalls.js';
 
 interface ApiRequest {
   method?: string;
@@ -33,15 +34,19 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const { data, error } = await supabase
-    .from(table)
-    .select('*')
-    .eq('org_id', orgId)
-    .order('last_message_at', { ascending: false })
-    .limit(200);
+  const query = () =>
+    supabase.from(table).select('*').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(200);
+  let { data, error } = await query();
 
   if (error) {
     return res.status(500).json({ error: error.message });
+  }
+
+  // Calls whose end-of-call webhook never arrived (e.g. failed before connecting) — finalize
+  // them from Vapi directly so they don't sit at "Calling…" forever.
+  if (channel === 'voice' && (await reconcileStaleVoiceCalls(orgId, data || []))) {
+    ({ data, error } = await query());
+    if (error) return res.status(500).json({ error: error.message });
   }
 
   return res.status(200).json({ configured: true, conversations: data });
