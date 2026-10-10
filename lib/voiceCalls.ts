@@ -72,29 +72,11 @@ async function buildCallOverrides(
   const overrides: Record<string, unknown> = {
     server: { url: `${baseUrl}/api/voice/vapi?action=webhook`, headers: { 'x-vapi-secret': secret } },
     serverMessages: ['status-update', 'end-of-call-report', 'tool-calls'],
-    // On a phone line (especially international, with a second or so of delay) the person
-    // naturally says "hello?" again while the agent's intro is still reaching them — with the
-    // default any-sound-interrupts behavior, every such "hello" cut the intro off and made the
-    // agent restart it, looping. Require 2+ words of real speech to interrupt instead.
-    stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
   };
 
   // The booking tool and call context ride on the model, so the assistant's current model
   // config has to be read first — overriding `model` replaces it wholesale.
   const assistant = await fetchAssistant(org);
-
-  // Response-latency tuning (measured ~1.6s/turn before this): start replying 0.2s after the
-  // person stops rather than the 0.4s default, and don't sit 1.5s on a transcript with no
-  // final punctuation. Tighter than this starts cutting people off mid-thought.
-  overrides.startSpeakingPlan = {
-    waitSeconds: 0.2,
-    transcriptionEndpointingPlan: { onPunctuationSeconds: 0.1, onNoPunctuationSeconds: 0.8, onNumberSeconds: 0.5 },
-  };
-  // Same ElevenLabs voice, on its low-latency Flash model instead of Turbo (~half the
-  // time-to-first-audio).
-  if (assistant?.voice?.provider === '11labs' && assistant.voice.model !== 'eleven_flash_v2_5') {
-    overrides.voice = { ...assistant.voice, model: 'eleven_flash_v2_5' };
-  }
 
   if (assistant?.model) {
     const timeZone = getTimezoneForCountry(lead.country);
