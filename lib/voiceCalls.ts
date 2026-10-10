@@ -72,6 +72,11 @@ async function buildCallOverrides(
   const overrides: Record<string, unknown> = {
     server: { url: `${baseUrl}/api/voice/vapi?action=webhook`, headers: { 'x-vapi-secret': secret } },
     serverMessages: ['status-update', 'end-of-call-report', 'tool-calls'],
+    // On a phone line (especially international, with a second or so of delay) the person
+    // naturally says "hello?" again while the agent's intro is still reaching them — with the
+    // default any-sound-interrupts behavior, every such "hello" cut the intro off and made the
+    // agent restart it, looping. Require 2+ words of real speech to interrupt instead.
+    stopSpeakingPlan: { numWords: 2, voiceSeconds: 0.3, backoffSeconds: 1 },
   };
 
   // The booking tool and call context ride on the model, so the assistant's current model
