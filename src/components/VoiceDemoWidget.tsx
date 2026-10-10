@@ -2,11 +2,41 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Phone, PhoneOff, Mic, Loader2, AlertCircle } from 'lucide-react';
 
+/** The SDK's error payloads nest the human-readable text at different depths depending on
+ * the source — and for Daily errors (e.g. the "ejected" event on hang-up) `error.message` is
+ * itself an object. Rendering that object as a React child crashed the whole app to a black
+ * screen, so everything here is reduced to a plain string first. */
+function errorText(err: any): string {
+  const candidates = [
+    err?.error?.message,
+    err?.error?.errorMsg,
+    err?.error?.msg,
+    err?.error?.message?.msg,
+    err?.error?.message?.errorMsg,
+    err?.errorMsg,
+    err?.message,
+    err?.msg,
+  ];
+  const text = candidates.find((c) => typeof c === 'string' && c.trim());
+  return (text as string | undefined)?.trim() || '';
+}
+
+/** A normal assistant-side hangup arrives as an error event — that's the call ending. */
+function isCallEndedError(err: any): boolean {
+  let raw = '';
+  try {
+    raw = JSON.stringify(err ?? '');
+  } catch {
+    raw = errorText(err);
+  }
+  return /meeting has ended|ejected|meeting ended|call has ended/i.test(raw);
+}
+
 // Browser mic errors arrive as raw DOMException text ("The request is not allowed by the user
 // agent...") — translate the common ones into something a non-technical user can act on.
 function friendlyCallError(err: any, fallback: string): string {
   const name = err?.name || err?.error?.name;
-  const msg: string = err?.error?.message || err?.message || '';
+  const msg = errorText(err);
   if (name === 'NotAllowedError' || /not allowed|permission denied/i.test(msg)) {
     return 'Microphone access is blocked. Click the lock/site icon in the address bar and allow the microphone, and make sure your browser has microphone access in your system privacy settings (macOS: System Settings → Privacy & Security → Microphone). Then try again.';
   }
@@ -54,6 +84,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [durationSec, setDurationSec] = useState(0);
   const vapiRef = useRef<any>(null);
+  const endedByUserRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -63,7 +94,11 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
 
   useEffect(() => {
     return () => {
-      vapiRef.current?.stop?.();
+      try {
+        Promise.resolve(vapiRef.current?.stop?.()).catch(() => {});
+      } catch {
+        // ignore
+      }
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
@@ -78,7 +113,11 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
     setTranscript([]);
     setDurationSec(0);
     setCallState('connecting');
+    endedByUserRef.current = false;
     try {
+      // A previous session's instance is replaced below — stop it so its listeners can't keep
+      // firing into this one.
+      Promise.resolve(vapiRef.current?.stop?.()).catch(() => {});
       const { default: Vapi } = await import('@vapi-ai/web');
       const vapi = new Vapi(VAPI_PUBLIC_KEY as string);
       vapiRef.current = vapi;
@@ -95,10 +134,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
       vapi.on('speech-start', () => setAssistantSpeaking(true));
       vapi.on('speech-end', () => setAssistantSpeaking(false));
       vapi.on('error', (err: any) => {
-        // The SDK reports a normal assistant-side hangup ("Meeting has ended", ejection) as an
-        // error event — that's the call ending, not failing.
-        const raw = JSON.stringify(err?.error ?? err ?? '');
-        if (/meeting has ended|ejected|meeting ended/i.test(raw)) {
+        if (endedByUserRef.current || isCallEndedError(err)) {
           setCallState('ended');
           setAssistantSpeaking(false);
           if (timerRef.current) clearInterval(timerRef.current);
@@ -112,7 +148,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
         if (message?.type === 'transcript' && message.transcriptType === 'final' && message.transcript) {
           setTranscript((prev) => [
             ...prev,
-            { id: `${Date.now()}-${prev.length}`, role: message.role === 'user' ? 'user' : 'assistant', text: message.transcript },
+            { id: `${Date.now()}-${prev.length}`, role: message.role === 'user' ? 'user' : 'assistant', text: String(message.transcript) },
           ]);
         }
       });
@@ -125,7 +161,14 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
   };
 
   const handleStop = () => {
-    vapiRef.current?.stop?.();
+    endedByUserRef.current = true;
+    // stop() is async and can reject while the call is tearing down — never let that surface
+    // as an unhandled rejection.
+    try {
+      Promise.resolve(vapiRef.current?.stop?.()).catch(() => {});
+    } catch {
+      // ignore
+    }
     setCallState('ended');
     setAssistantSpeaking(false);
     if (timerRef.current) clearInterval(timerRef.current);
