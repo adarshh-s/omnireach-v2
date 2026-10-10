@@ -402,3 +402,49 @@ drop trigger if exists on_auth_user_created_access on auth.users;
 create trigger on_auth_user_created_access
   after insert on auth.users
   for each row execute function handle_new_org_access();
+
+-- ---------------------------------------------------------------------------
+-- AI Voice Agent (Vapi) call log. A row is inserted the moment an outbound call is
+-- placed (api/voice/vapi.ts), then filled in by Vapi's webhook as the call progresses:
+-- status updates, a book_meeting tool call mid-conversation, and the end-of-call report
+-- (transcript, summary, recording). Shaped like the two *_conversations tables
+-- (status/history/meeting_*/last_message_at) so the AI Inbox can render all three alike.
+-- See lib/voiceCalls.ts.
+-- ---------------------------------------------------------------------------
+create table if not exists voice_calls (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references auth.users(id) on delete cascade,
+  vapi_call_id text not null,
+  client_id text references clients(id) on delete set null,
+  phone text not null,
+  lead_name text,
+  lead_company text,
+  lead_email text,
+  lead_country text,
+  status text not null default 'active',  -- active | confirmed (meeting booked)
+  call_status text not null default 'queued',  -- queued | ringing | in-progress | ended
+  outcome text,  -- answered | no-answer | busy | voicemail | failed (set when the call ends)
+  ended_reason text,  -- Vapi's raw endedReason
+  duration_seconds int,
+  summary text,
+  history jsonb not null default '[]'::jsonb,  -- [{ role: 'user' | 'assistant', text, timestamp }]
+  recording_url text,
+  cost numeric,
+  meeting_date date,
+  meeting_time text,
+  meeting_datetime_iso timestamptz,
+  meet_link text,
+  calendar_event_id text,
+  last_message_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists idx_voice_calls_vapi_call_id on voice_calls(vapi_call_id);
+create index if not exists idx_voice_calls_org on voice_calls(org_id, last_message_at desc);
+
+alter table voice_calls enable row level security;
+drop policy if exists "org can read own voice calls" on voice_calls;
+create policy "org can read own voice calls" on voice_calls
+  for select using (auth.uid() = org_id);
+-- Inserts/updates come only from the server (service_role key, bypasses RLS).

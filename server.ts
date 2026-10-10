@@ -30,7 +30,8 @@ import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile, adminList
 import { generateViaGroq } from './lib/groqClient';
 import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
-import { startVapiCall, isVapiConfigured, getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
+import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
+import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl } from './lib/voiceCalls';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -618,7 +619,7 @@ app.get('/api/cron/dispatch-scheduled', async (req, res) => {
 });
 
 // API Route: List live AI bot conversations for the signed-in org (for the "AI Inbox" UI
-// panel) — one route for both channels (?channel=whatsapp|email), mirroring api/conversations.ts.
+// panel) — one route for every channel (?channel=whatsapp|email|voice), mirroring api/conversations.ts.
 app.get('/api/conversations', async (req, res) => {
   const supabase = getSupabaseAdmin();
   if (!supabase) {
@@ -628,7 +629,8 @@ app.get('/api/conversations', async (req, res) => {
   if (!orgId) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
-  const table = req.query.channel === 'email' ? 'email_conversations' : 'whatsapp_conversations';
+  const table =
+    req.query.channel === 'email' ? 'email_conversations' : req.query.channel === 'voice' ? 'voice_calls' : 'whatsapp_conversations';
   const { data, error } = await supabase
     .from(table)
     .select('*')
@@ -706,25 +708,15 @@ async function resolveOrgVapiCredentials(orgId: string): Promise<VapiCredentials
 
 app.post('/api/voice/vapi', async (req, res) => {
   if (req.query.action === 'webhook') {
-    const expected = process.env.VAPI_WEBHOOK_SECRET;
-    const headerSecret = req.headers['x-vapi-secret'];
-    const authorized = !!expected && (headerSecret === expected || req.query.token === expected);
-    if (!authorized) {
+    if (!verifyVapiWebhook(req.headers['x-vapi-secret'], req.query.token)) {
       return res.status(403).json({ error: 'Invalid token' });
     }
-    const message = req.body?.message;
-    const type = message?.type;
-    const callId = message?.call?.id;
-    if (type === 'end-of-call-report') {
-      console.log('[Vapi] Call ended', callId, '— reason:', message?.endedReason, '— summary:', message?.summary || message?.analysis?.summary);
-    } else if (type === 'status-update') {
-      console.log('[Vapi] Call status update', callId, '—', message?.status);
-    } else if (type === 'transcript') {
-      console.log('[Vapi] Transcript', callId, `[${message?.role}]`, message?.transcript);
-    } else if (type) {
-      console.log('[Vapi] Event', type, callId || '');
+    try {
+      return res.status(200).json(await handleVapiServerMessage(req.body?.message));
+    } catch (err) {
+      console.error('[Vapi] Webhook handling failed:', err);
+      return res.status(200).json({ received: true });
     }
-    return res.status(200).json({ received: true });
   }
 
   if (req.query.action === 'sync-assistant') {
@@ -753,16 +745,9 @@ app.post('/api/voice/vapi', async (req, res) => {
   if (!orgId) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
-  const org = await resolveOrgVapiCredentials(orgId);
-  if (!isVapiConfigured(org)) {
-    return res.status(400).json({ error: 'Voice calling is not configured yet — add your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' });
-  }
-  const { phone, name, variables } = req.body || {};
-  if (!phone) {
-    return res.status(400).json({ error: 'phone is required.' });
-  }
-  const result = await startVapiCall({ phone, name, variables, org });
-  return res.status(result.ok ? 200 : 400).json(result);
+  const { phone, name, clientId, variables } = req.body || {};
+  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, variables, baseUrl: getPublicBaseUrl(req.headers) });
+  return res.status(result.httpStatus).json(result.body);
 });
 
 app.get('/api/voice/vapi', async (req, res) => {

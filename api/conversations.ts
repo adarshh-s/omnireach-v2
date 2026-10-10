@@ -20,8 +20,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const channel = req.query?.channel === 'email' ? 'email' : 'whatsapp';
-  const table = channel === 'email' ? 'email_conversations' : 'whatsapp_conversations';
+  const channel = req.query?.channel === 'email' ? 'email' : req.query?.channel === 'voice' ? 'voice' : 'whatsapp';
+  const table = channel === 'email' ? 'email_conversations' : channel === 'voice' ? 'voice_calls' : 'whatsapp_conversations';
 
   const supabase = getSupabaseAdmin();
   if (!supabase) {

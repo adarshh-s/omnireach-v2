@@ -1,11 +1,12 @@
 import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
 import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile } from '../../lib/orgSettings.js';
-import { startVapiCall, isVapiConfigured, getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
+import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
+import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl } from '../../lib/voiceCalls.js';
 
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
-  body?: { phone?: string; name?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
+  body?: { phone?: string; name?: string; clientId?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -20,11 +21,10 @@ interface ApiResponse {
  * 12-serverless-function cap — see api/conversations.ts, which was merged from two
  * near-identical routes to free the slot this file uses.
  *
- * Vapi dashboard setup: point the assistant's (or phone number's) Server URL at
- *   https://<your-domain>/api/voice/vapi?action=webhook
- * with a custom header `x-vapi-secret: <VAPI_WEBHOOK_SECRET>` (Vapi's own auth
- * convention) — or append `&token=<VAPI_WEBHOOK_SECRET>` to the URL instead if you'd
- * rather not set a custom header. Either one verifies.
+ * No Vapi dashboard setup is needed for the webhook: every outbound call placed here
+ * attaches this route (?action=webhook, authenticated with an `x-vapi-secret:
+ * <VAPI_WEBHOOK_SECRET>` header) as its server URL, plus the book_meeting tool — see
+ * lib/voiceCalls.ts. Only VAPI_WEBHOOK_SECRET has to be set in the environment.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.query?.action === 'webhook') {
@@ -65,18 +65,9 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const org = await resolveOrgVapiCredentials(orgId);
-  if (!isVapiConfigured(org)) {
-    return res.status(400).json({ error: 'Voice calling is not configured yet — add your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' });
-  }
-
-  const { phone, name, variables } = req.body || {};
-  if (!phone) {
-    return res.status(400).json({ error: 'phone is required.' });
-  }
-
-  const result = await startVapiCall({ phone, name, variables, org });
-  return res.status(result.ok ? 200 : 400).json(result);
+  const { phone, name, clientId, variables } = req.body || {};
+  const result = await placeOrgVoiceCall({ orgId, phone, name, clientId, variables, baseUrl: getPublicBaseUrl(req.headers) });
+  return res.status(result.httpStatus).json(result.body);
 }
 
 /** Lets the Channel Setup UI prefill its prompt editor with whatever's actually live on the
@@ -128,40 +119,15 @@ async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
   return res.status(result.ok ? 200 : 400).json(result);
 }
 
-/** Vapi supports two ways to authenticate its outgoing webhook: a custom header configured
- * on the assistant/phone number (`x-vapi-secret`, Vapi's own convention), or a `?token=`
- * query string on the Server URL (this app's other webhooks — e.g. the email inbound one —
- * all use that pattern). Accepting either means this works regardless of which way a given
- * assistant was set up. */
-function verifyVapiWebhookRequest(req: ApiRequest): boolean {
-  const expected = process.env.VAPI_WEBHOOK_SECRET;
-  if (!expected) return false;
-  const headerSecret = req.headers?.['x-vapi-secret'];
-  if (typeof headerSecret === 'string' && headerSecret === expected) return true;
-  return req.query?.token === expected;
-}
-
 async function handleWebhook(req: ApiRequest, res: ApiResponse) {
-  if (!verifyVapiWebhookRequest(req)) {
+  if (!verifyVapiWebhook(req.headers?.['x-vapi-secret'], req.query?.token)) {
     return res.status(403).json({ error: 'Invalid token' });
   }
-
-  const message = (req.body as any)?.message;
-  const type = message?.type;
-  const callId = message?.call?.id;
-
-  // Kept intentionally simple for now (log + 200) rather than persisting to a new table —
-  // enough to see live call events during a demo. Vapi retries on a non-2xx response, so
-  // this always acks even if a given event type isn't one we specifically care about.
-  if (type === 'end-of-call-report') {
-    console.log('[Vapi] Call ended', callId, '— reason:', message?.endedReason, '— summary:', message?.summary || message?.analysis?.summary);
-  } else if (type === 'status-update') {
-    console.log('[Vapi] Call status update', callId, '—', message?.status);
-  } else if (type === 'transcript') {
-    console.log('[Vapi] Transcript', callId, `[${message?.role}]`, message?.transcript);
-  } else if (type) {
-    console.log('[Vapi] Event', type, callId || '');
+  try {
+    return res.status(200).json(await handleVapiServerMessage((req.body as any)?.message));
+  } catch (err: any) {
+    // Still 200 — Vapi retries non-2xx, and a retried end-of-call report would just fail again.
+    console.error('[Vapi] Webhook handling failed:', err);
+    return res.status(200).json({ received: true });
   }
-
-  return res.status(200).json({ received: true });
 }

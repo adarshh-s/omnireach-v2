@@ -66,6 +66,8 @@ export async function startVapiCall(params: {
   /** Extra variables the assistant's prompt/first-message can reference as {{key}}. */
   variables?: Record<string, string>;
   org?: VapiCredentials;
+  /** Merged into the call's assistantOverrides (e.g. server, model) — see lib/voiceCalls.ts. */
+  overrides?: Record<string, unknown>;
 }): Promise<StartCallResult> {
   const { apiKey, assistantId, phoneNumberId } = resolveCredentials(params.org);
 
@@ -92,7 +94,10 @@ export async function startVapiCall(params: {
           number,
           name: params.name || undefined,
         },
-        assistantOverrides: params.variables ? { variableValues: params.variables } : undefined,
+        assistantOverrides:
+          params.variables || params.overrides
+            ? { ...(params.overrides || {}), ...(params.variables ? { variableValues: params.variables } : {}) }
+            : undefined,
       }),
     });
 
@@ -103,6 +108,22 @@ export async function startVapiCall(params: {
     return { ok: true, callId: data?.id, status: data?.status };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Failed to reach Vapi.' };
+  }
+}
+
+/** The full assistant object (model, voice, ...) — used to build per-call model overrides
+ * that add the booking tool on top of whatever's configured, and as the template a newly
+ * auto-provisioned org assistant copies its model/voice from. */
+export async function fetchAssistant(org: VapiCredentials): Promise<any | null> {
+  const { apiKey, assistantId } = resolveCredentials(org);
+  if (!apiKey || !assistantId) return null;
+  try {
+    const res = await fetch(`${VAPI_BASE_URL}/assistant/${assistantId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
   }
 }
 
@@ -147,13 +168,22 @@ export async function syncAssistantPrompt(
   org: VapiCredentials,
   params: { systemPrompt: string; firstMessage: string; assistantName?: string }
 ): Promise<AssistantConfigResult> {
-  const { apiKey, assistantId } = resolveCredentials(org);
+  const { apiKey } = resolveCredentials(org);
+  // Deliberately the org's OWN assistantId only — not resolveCredentials' fallback to the
+  // platform's shared VAPI_ASSISTANT_ID. Falling back here meant an org without its own
+  // assistant yet PATCHed the shared one, overwriting every other org's prompt with theirs.
+  const assistantId = org?.assistantId?.trim() || '';
   if (!apiKey) {
     return { ok: false, error: 'Voice calling isn\'t set up on the platform yet — contact support.' };
   }
 
   if (!assistantId) {
     try {
+      // Copy model/voice from the platform's shared assistant (when the new one is created
+      // under the platform's key) so every org starts with the same tuned setup rather than
+      // generic defaults. An org on its own Vapi key can't read the platform's assistant.
+      const template = !org?.apiKey?.trim() && process.env.VAPI_ASSISTANT_ID ? await fetchAssistant({}) : null;
+      const { messages: _templateMessages, ...templateModel } = template?.model || {};
       const res = await fetch(`${VAPI_BASE_URL}/assistant`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -163,9 +193,10 @@ export async function syncAssistantPrompt(
           model: {
             provider: 'openai',
             model: 'gpt-4o',
+            ...templateModel,
             messages: [{ role: 'system', content: params.systemPrompt }],
           },
-          voice: { provider: 'vapi', voiceId: 'Elliot' },
+          voice: template?.voice || { provider: 'vapi', voiceId: 'Elliot' },
         }),
       });
       const data = await res.json().catch(() => ({}));

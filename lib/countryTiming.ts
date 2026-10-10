@@ -23,7 +23,8 @@ const GCC_WEEKEND = [5, 6]; // Friday-Saturday
 const STANDARD_WEEKEND = [0, 6]; // Saturday-Sunday
 
 const COUNTRY_TIMING: Record<string, CountryTimingEntry> = {
-  uae: { timezone: 'Asia/Dubai', weekend: GCC_WEEKEND, windows: DEFAULT_WINDOWS },
+  // UAE moved to a Saturday-Sunday weekend in 2022, unlike the rest of the GCC.
+  uae: { timezone: 'Asia/Dubai', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   saudiarabia: { timezone: 'Asia/Riyadh', weekend: GCC_WEEKEND, windows: DEFAULT_WINDOWS },
   qatar: { timezone: 'Asia/Qatar', weekend: GCC_WEEKEND, windows: DEFAULT_WINDOWS },
   kuwait: { timezone: 'Asia/Kuwait', weekend: GCC_WEEKEND, windows: DEFAULT_WINDOWS },
@@ -251,6 +252,25 @@ export function describeScheduledTime(date: Date, country: string | undefined | 
     minute: '2-digit',
     ...(timeZone ? { timeZoneName: 'short' as const } : {}),
   });
+}
+
+/**
+ * Whether it's a reasonable time to phone someone in this country right now — a wider
+ * window than the peak-send windows above (a live call at 6 PM is fine, a WhatsApp at
+ * 6 PM just gets buried), but never on their weekend or outside 9:00–19:59 local time.
+ * Unrecognized countries are allowed (never blocks on missing data, same as
+ * computeNextPeakSendTime). Returns the lead's local time label for error messages.
+ */
+export function checkCallingHours(
+  country: string | undefined | null,
+  now: Date = new Date()
+): { allowed: boolean; localTimeLabel?: string; timeZone?: string } {
+  const entry = resolveCountry(country);
+  if (!entry) return { allowed: true };
+  const local = getLocalDateParts(now, entry.timezone);
+  const localTimeLabel = now.toLocaleString('en-US', { timeZone: entry.timezone, weekday: 'long', hour: 'numeric', minute: '2-digit' });
+  const allowed = !entry.weekend.includes(local.weekday) && local.hour >= 9 && local.hour < 20;
+  return { allowed, localTimeLabel, timeZone: entry.timezone };
 }
 
 export function isCountryRecognized(country: string | undefined | null): boolean {

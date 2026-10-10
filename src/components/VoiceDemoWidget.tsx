@@ -2,6 +2,23 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Phone, PhoneOff, Mic, Loader2, AlertCircle } from 'lucide-react';
 
+// Browser mic errors arrive as raw DOMException text ("The request is not allowed by the user
+// agent...") — translate the common ones into something a non-technical user can act on.
+function friendlyCallError(err: any, fallback: string): string {
+  const name = err?.name || err?.error?.name;
+  const msg: string = err?.error?.message || err?.message || '';
+  if (name === 'NotAllowedError' || /not allowed|permission denied/i.test(msg)) {
+    return 'Microphone access is blocked. Click the lock/site icon in the address bar and allow the microphone, and make sure your browser has microphone access in your system privacy settings (macOS: System Settings → Privacy & Security → Microphone). Then try again.';
+  }
+  if (name === 'NotFoundError' || /requested device not found/i.test(msg)) {
+    return 'No microphone was found. Connect a microphone or headset and try again.';
+  }
+  if (name === 'NotReadableError' || /could not start audio source/i.test(msg)) {
+    return 'Your microphone is being used by another app (Zoom, Meet, etc.). Close it and try again.';
+  }
+  return msg || fallback;
+}
+
 type CallState = 'idle' | 'connecting' | 'active' | 'ended' | 'error';
 
 interface TranscriptLine {
@@ -78,7 +95,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
       vapi.on('speech-start', () => setAssistantSpeaking(true));
       vapi.on('speech-end', () => setAssistantSpeaking(false));
       vapi.on('error', (err: any) => {
-        setErrorMessage(err?.error?.message || err?.message || 'Something went wrong with the call.');
+        setErrorMessage(friendlyCallError(err, 'Something went wrong with the call.'));
         setCallState('error');
         if (timerRef.current) clearInterval(timerRef.current);
       });
@@ -93,7 +110,7 @@ export const VoiceDemoWidget: React.FC<VoiceDemoWidgetProps> = ({ publicKey, ass
 
       await vapi.start(VAPI_ASSISTANT_ID);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Could not start the demo call — check microphone permissions.');
+      setErrorMessage(friendlyCallError(err, 'Could not start the demo call — check microphone permissions.'));
       setCallState('error');
     }
   };

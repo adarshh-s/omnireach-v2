@@ -3,6 +3,7 @@ import {
   Bot,
   MessageCircle,
   Phone,
+  PhoneCall,
   Mail,
   Video,
   CheckCircle2,
@@ -39,10 +40,16 @@ interface RawConversation {
   meeting_time?: string;
   meet_link?: string;
   last_message_at: string;
+  // Voice calls only (voice_calls table)
+  call_status?: string;
+  outcome?: string;
+  duration_seconds?: number;
+  summary?: string;
+  recording_url?: string;
 }
 
 interface UnifiedConversation extends RawConversation {
-  channel: 'whatsapp' | 'email';
+  channel: 'whatsapp' | 'email' | 'voice';
   contact: string;
 }
 
@@ -58,6 +65,33 @@ const STATUS_STYLES: Record<RawConversation['status'], { label: string; classNam
   declined: { label: 'Not Interested', className: 'bg-border-strong text-ink-muted border-border-strong', icon: XCircle },
   handoff: { label: 'Needs a Human', className: 'bg-amber-500/15 text-amber-300 border-amber-500/30', icon: UserCog },
 };
+
+// A voice call without a booking has no conversation "status" worth showing — what matters
+// is how the call itself went.
+const CALL_OUTCOME_LABELS: Record<string, string> = {
+  answered: 'Call Answered',
+  'no-answer': 'No Answer',
+  busy: 'Line Busy',
+  voicemail: 'Voicemail',
+  failed: 'Call Failed',
+};
+
+function voiceStatusStyle(conv: UnifiedConversation) {
+  if (conv.status === 'confirmed') return STATUS_STYLES.confirmed;
+  if (!conv.outcome) {
+    return { label: conv.call_status === 'in-progress' ? 'On the Call' : 'Calling…', className: STATUS_STYLES.active.className, icon: PhoneCall };
+  }
+  return {
+    label: CALL_OUTCOME_LABELS[conv.outcome] || 'Call Ended',
+    className: conv.outcome === 'answered' ? STATUS_STYLES.active.className : STATUS_STYLES.declined.className,
+    icon: PhoneCall,
+  };
+}
+
+function formatDuration(seconds?: number): string | null {
+  if (seconds == null) return null;
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
 
 export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onUpdateLead, accessToken }) => {
   const [conversations, setConversations] = useState<UnifiedConversation[]>([]);
@@ -79,11 +113,14 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
       }
       try {
         const headers = { Authorization: `Bearer ${accessToken}` };
-        const [waRes, emRes] = await Promise.all([
+        const [waRes, emRes, vcRes] = await Promise.all([
           fetch('/api/conversations?channel=whatsapp', { headers }),
           fetch('/api/conversations?channel=email', { headers }),
+          fetch('/api/conversations?channel=voice', { headers }),
         ]);
-        const [waData, emData] = await Promise.all([waRes.json(), emRes.json()]);
+        // Voice is tolerated failing on its own (e.g. voice_calls not migrated yet) so it
+        // never takes the WhatsApp/Email inbox down with it.
+        const [waData, emData, vcData] = await Promise.all([waRes.json(), emRes.json(), vcRes.json().catch(() => ({}))]);
         if (cancelled) return;
 
         setConfigured(!!waData.configured || !!emData.configured);
@@ -95,7 +132,11 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
           (c: RawConversation) => ({ ...c, channel: 'email' as const, contact: c.client_email || '' })
         );
 
-        const merged = [...waConvs, ...emConvs].sort(
+        const vcConvs: UnifiedConversation[] = (Array.isArray(vcData.conversations) ? vcData.conversations : []).map(
+          (c: RawConversation) => ({ ...c, channel: 'voice' as const, contact: c.phone || '' })
+        );
+
+        const merged = [...waConvs, ...emConvs, ...vcConvs].sort(
           (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
         );
         setConversations(merged);
@@ -121,7 +162,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
       if (syncedIdsRef.current.has(conv.id)) return;
 
       const matchedLead =
-        conv.channel === 'whatsapp'
+        conv.channel !== 'email'
           ? leads.find((l) => {
               const convDigits = conv.contact.replace(/\D/g, '');
               const leadDigits = l.phone.replace(/\D/g, '');
@@ -144,7 +185,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
           meetingDate: conv.meeting_date,
           meetingTime: conv.meeting_time,
           notes: conv.meet_link
-            ? `${matchedLead.notes ? matchedLead.notes + '\n' : ''}Booked via AI ${conv.channel === 'whatsapp' ? 'WhatsApp' : 'Email'} bot — Meet link: ${conv.meet_link}`
+            ? `${matchedLead.notes ? matchedLead.notes + '\n' : ''}Booked via AI ${conv.channel === 'whatsapp' ? 'WhatsApp' : conv.channel === 'voice' ? 'Voice' : 'Email'} bot — Meet link: ${conv.meet_link}`
             : matchedLead.notes,
         });
       }
@@ -195,8 +236,8 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
           </div>
           <h2 className="text-xl font-bold text-ink">Unified Inbox</h2>
           <p className="text-xs sm:text-sm text-ink-secondary mt-0.5">
-            WhatsApp and Email replies in one place — the AI replies automatically, asks for a time, and books a real
-            Google Calendar meeting when confirmed.
+            WhatsApp, Email, and AI voice calls in one place — the AI replies automatically, asks for a time, and books a
+            real calendar meeting when confirmed.
           </p>
         </div>
         <span className="text-xs text-ink-muted flex items-center gap-1.5 flex-shrink-0">
@@ -207,16 +248,22 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
 
       {conversations.length === 0 ? (
         <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
-          No conversations yet. Once a prospect replies to a WhatsApp or Email campaign message, it'll show up here.
+          No conversations yet. Once a prospect replies to a WhatsApp or Email campaign message, or the AI Voice Agent places a call, it'll show up here.
         </div>
       ) : (
         <div className="space-y-3">
           {conversations.map((conv) => {
-            const style = STATUS_STYLES[conv.status] || STATUS_STYLES.active;
+            const style = conv.channel === 'voice' ? voiceStatusStyle(conv) : STATUS_STYLES[conv.status] || STATUS_STYLES.active;
             const StatusIcon = style.icon;
             const isExpanded = expandedId === conv.id;
             const lastTurn = conv.history?.[conv.history.length - 1];
-            const ChannelIcon = conv.channel === 'whatsapp' ? Phone : Mail;
+            const ChannelIcon = conv.channel === 'whatsapp' ? Phone : conv.channel === 'voice' ? PhoneCall : Mail;
+            const channelTint =
+              conv.channel === 'whatsapp'
+                ? { bg: 'bg-[#25D366]/10', fg: 'text-[#128C7E]' }
+                : conv.channel === 'voice'
+                  ? { bg: 'bg-violet-500/10', fg: 'text-violet-400' }
+                  : { bg: 'bg-[#4285F4]/10', fg: 'text-[#4285F4]' };
 
             return (
               <div
@@ -229,11 +276,9 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                 >
                   <div className="flex items-start gap-3 min-w-0">
                     <div
-                      className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
-                        conv.channel === 'whatsapp' ? 'bg-[#25D366]/10' : 'bg-[#4285F4]/10'
-                      }`}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${channelTint.bg}`}
                     >
-                      <ChannelIcon className={`w-4 h-4 ${conv.channel === 'whatsapp' ? 'text-[#128C7E]' : 'text-[#4285F4]'}`} />
+                      <ChannelIcon className={`w-4 h-4 ${channelTint.fg}`} />
                     </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -255,6 +300,9 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                       </div>
                       <div className="text-xs text-ink-muted mt-0.5 font-mono">
                         {conv.channel === 'whatsapp' ? `+${conv.contact}` : conv.contact}
+                        {conv.channel === 'voice' && formatDuration(conv.duration_seconds) && (
+                          <span className="ml-2 font-sans">• {formatDuration(conv.duration_seconds)}</span>
+                        )}
                       </div>
                       {lastTurn && (
                         <p className="text-xs text-ink-secondary mt-1.5 truncate max-w-lg">
@@ -297,6 +345,20 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                 {isExpanded && (
                   <div className="border-t border-border bg-canvas p-4 space-y-2 max-h-80 overflow-y-auto">
                     {conv.subject && <p className="text-[11px] text-ink-muted font-medium mb-1">Subject: {conv.subject}</p>}
+                    {conv.summary && (
+                      <p className="text-xs text-ink-secondary leading-relaxed mb-2">
+                        <span className="font-semibold text-ink">Call summary: </span>
+                        {conv.summary}
+                      </p>
+                    )}
+                    {conv.recording_url && (
+                      <audio controls preload="none" src={conv.recording_url} className="w-full h-9 mb-2" />
+                    )}
+                    {conv.channel === 'voice' && (conv.history || []).length === 0 && (
+                      <p className="text-xs text-ink-muted">
+                        {conv.outcome ? 'No conversation was recorded on this call.' : 'The transcript appears here when the call ends.'}
+                      </p>
+                    )}
                     {(conv.history || []).map((turn, idx) => (
                       <div
                         key={idx}
