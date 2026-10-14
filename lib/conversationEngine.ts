@@ -113,9 +113,16 @@ export async function generateWithFallback(
   throw lastErr;
 }
 
-export async function runConversationTurn(params: RunConversationTurnParams): Promise<ConversationResult> {
+/** The exact reply prompt for one turn — split out so the AI Learning page can show orgs
+ * the live prompt, lessons included, without running a model call. */
+export function buildConversationPrompt(params: Omit<RunConversationTurnParams, 'aiClient'>): {
+  prompt: string;
+  now: Date;
+  meetingTimeZone: string | null;
+  isEmail: boolean;
+  todayDateStr: string;
+} {
   const {
-    aiClient,
     channel = 'whatsapp',
     inboundSubject,
     leadName,
@@ -184,6 +191,13 @@ Rules:
 - "active": still gathering info, waiting on them, or proposing time options.
 - When proposing times for the first time, offer 1-2 concrete options (e.g. "would tomorrow 3 PM or Thursday 11 AM work?") instead of an open-ended "when works for you?". Only offer a fresh pair of times if they said the current ones don't work — otherwise see the pressure rule above.
 - "meeting.date" must be ${todayDateStr} or a later date. "meeting.time" must be 24-hour HH:MM.`;
+
+  return { prompt, now, meetingTimeZone, isEmail, todayDateStr };
+}
+
+export async function runConversationTurn(params: RunConversationTurnParams): Promise<ConversationResult> {
+  const { aiClient, inboundSubject } = params;
+  const { prompt, now, meetingTimeZone, isEmail } = buildConversationPrompt(params);
 
   const response = await generateWithFallback(aiClient, prompt);
 

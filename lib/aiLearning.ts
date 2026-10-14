@@ -1,7 +1,8 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { getGeminiClient } from './geminiClient.js';
 import { getOrgProfile, getOrgChannelSettings } from './orgSettings.js';
-import { generateWithFallback } from './conversationEngine.js';
+import { generateWithFallback, buildConversationPrompt } from './conversationEngine.js';
+import { fetchAssistant } from './vapiClient.js';
 
 /**
  * Self-improving prompts. After a conversation finishes (booked, declined, handed off, a
@@ -482,7 +483,10 @@ export async function handleLearningRequest(orgId: string, method: string | unde
         .not('learning_reviewed_at', 'is', null)
         .order('learning_reviewed_at', { ascending: false })
         .limit(1);
-    const [{ data, error }, mode, ...reviewed] = await Promise.all([
+    // Self-healing: brings the Vapi prompt's lessons block in line on every page load, in
+    // case an earlier sync was missed (e.g. lessons existed before this sync shipped).
+    const [, { data, error }, mode, ...reviewed] = await Promise.all([
+      syncLessonsToVapi(orgId),
       supabase.from('ai_lessons').select('*').eq('org_id', orgId).order('updated_at', { ascending: false }).limit(200),
       getLearningMode(orgId),
       ...Object.values(TABLES).map(lastReviewed),
@@ -508,6 +512,10 @@ export async function handleLearningRequest(orgId: string, method: string | unde
   if (op === 'sync') {
     await syncLessonsToVapi(orgId);
     return { httpStatus: 200, body: { ok: true } };
+  }
+
+  if (op === 'preview') {
+    return { httpStatus: 200, body: { ok: true, preview: await buildPromptPreview(orgId) } };
   }
 
   if (op === 'analyze') {
@@ -560,4 +568,35 @@ export async function handleLearningRequest(orgId: string, method: string | unde
   if (!update.data) return { httpStatus: 404, body: { error: 'Lesson not found.' } };
   if (op !== 'keep') await syncLessonsToVapi(orgId);
   return { httpStatus: 200, body: { ok: true, lesson: update.data } };
+}
+
+/**
+ * The prompts exactly as the AIs receive them right now, lessons included — for the AI
+ * Learning page. WhatsApp/email use a sample prospect message, since the real ones are
+ * built per incoming message; voice is the org's saved Vapi prompt with its lessons block.
+ */
+async function buildPromptPreview(orgId: string): Promise<{ whatsapp: string; email: string; voice: string | null }> {
+  const [profile, settings, waGuidance, emGuidance] = await Promise.all([
+    getOrgProfile(orgId),
+    getOrgChannelSettings(orgId),
+    buildLearnedGuidance(orgId, ['whatsapp']),
+    buildLearnedGuidance(orgId, ['email']),
+  ]);
+  const nowIso = new Date().toISOString();
+  const sample = {
+    leadName: 'Sample Prospect',
+    companyName: profile?.companyName,
+    senderName: profile?.senderName,
+    serviceDescription: profile?.serviceDescription,
+    history: [{ role: 'user' as const, text: 'Hi, what is this about?', timestamp: nowIso }],
+    nowIso,
+  };
+  const whatsapp = buildConversationPrompt({ ...sample, channel: 'whatsapp', learnedGuidance: waGuidance }).prompt;
+  const email = buildConversationPrompt({ ...sample, channel: 'email', inboundSubject: 'Quick intro', learnedGuidance: emGuidance }).prompt;
+
+  const assistant = await fetchAssistant({ apiKey: settings?.vapiApiKey, assistantId: settings?.vapiAssistantId });
+  const savedPrompt = (assistant?.model?.messages || []).find((m: any) => m.role === 'system')?.content;
+  const voice = typeof savedPrompt === 'string' && savedPrompt.trim() ? await withLearnedBlock(orgId, savedPrompt) : null;
+
+  return { whatsapp, email, voice };
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Sparkles,
   RefreshCw,
@@ -58,6 +58,22 @@ const MODES: { id: LearningMode; label: string; description: string }[] = [
 
 const MAX_LESSON_LENGTH = 240;
 
+type PreviewChannel = 'whatsapp' | 'email' | 'voice';
+const LESSONS_HEADING = 'LESSONS FROM PAST CONVERSATIONS';
+
+/** Splits a prompt around its learned-lessons section so it can be highlighted. */
+function splitAtLessons(prompt: string): [string, string, string] | null {
+  const start = prompt.indexOf(LESSONS_HEADING);
+  if (start === -1) return null;
+  const blockStart = prompt.lastIndexOf('### AI LEARNING', start);
+  const from = blockStart !== -1 && start - blockStart < 300 ? blockStart : start;
+  const endMarker = prompt.indexOf('### END AI LEARNING', start);
+  const blankLine = prompt.indexOf('\n\n', start);
+  const to =
+    endMarker !== -1 ? endMarker + '### END AI LEARNING'.length : blankLine !== -1 ? blankLine : prompt.length;
+  return [prompt.slice(0, from), prompt.slice(from, to), prompt.slice(to)];
+}
+
 /** Self-improving prompts — see lib/aiLearning.ts. Lessons the AI learned from finished
  * conversations, which get added to every WhatsApp, email, outreach, and voice prompt. */
 export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, campaignSettings, onUpdateSettings }) => {
@@ -73,6 +89,11 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
   const [newChannel, setNewChannel] = useState<LessonChannel>('all');
   const [showHistory, setShowHistory] = useState(false);
   const [lastReviewedAt, setLastReviewedAt] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Record<PreviewChannel, string | null> | null>(null);
+  const [previewChannel, setPreviewChannel] = useState<PreviewChannel>('whatsapp');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewBoxRef = useRef<HTMLPreElement | null>(null);
+  const highlightRef = useRef<HTMLSpanElement | null>(null);
 
   const mode: LearningMode = campaignSettings.aiLearningMode || 'auto';
 
@@ -106,10 +127,40 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
     }
   };
 
+  const loadPreview = async () => {
+    if (!accessToken) return;
+    setPreviewLoading(true);
+    try {
+      const data = await call('POST', { op: 'preview' });
+      setPreview(data.preview || null);
+    } catch {
+      // The preview is informational — the rest of the page works without it.
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
+
+  // Lessons changed — the prompts changed with them.
+  const activeSignature = lessons
+    .filter((l) => l.status === 'active')
+    .map((l) => `${l.id}:${l.channel}:${l.lesson}`)
+    .join('|');
+  useEffect(() => {
+    if (!loading) loadPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSignature, campaignSettings.aiLearningMode, loading]);
+
+  // Scroll the (long) prompt to the lessons section.
+  useEffect(() => {
+    const box = previewBoxRef.current;
+    const mark = highlightRef.current;
+    if (box && mark) box.scrollTop = Math.max(0, mark.offsetTop - box.offsetTop - 60);
+  }, [preview, previewChannel]);
 
   const upsertLocal = (lesson: Lesson) =>
     setLessons((prev) => (prev.some((l) => l.id === lesson.id) ? prev.map((l) => (l.id === lesson.id ? lesson : l)) : [lesson, ...prev]));
@@ -410,6 +461,77 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
             </div>
           </div>
         </div>
+      </div>
+
+      <div className={card}>
+        <div className="flex items-center justify-between gap-3 mb-1 flex-wrap">
+          <h3 className="text-sm font-semibold text-ink">Live prompts</h3>
+          <div className="flex items-center gap-1">
+            {(['whatsapp', 'email', 'voice'] as PreviewChannel[]).map((c) => (
+              <button
+                key={c}
+                onClick={() => setPreviewChannel(c)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                  previewChannel === c ? 'border-[#128C7E] bg-[#128C7E]/10 text-ink' : 'border-border text-ink-muted hover:bg-surface-hover'
+                }`}
+              >
+                {c === 'whatsapp' ? 'WhatsApp reply' : c === 'email' ? 'Email reply' : 'Voice (Vapi)'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-xs text-ink-muted mb-3">
+          {previewChannel === 'voice'
+            ? 'Your saved Vapi prompt as it is now. The highlighted section is kept up to date automatically; the rest is your own text from Channel Setup.'
+            : 'The exact prompt Gemini receives, shown for a sample incoming message (“Hi, what is this about?”). The highlighted section is what AI Learning adds.'}
+        </p>
+        {(() => {
+          if (previewLoading && !preview) {
+            return (
+              <div className="py-8 text-center text-xs text-ink-muted">
+                <Loader2 className="w-4 h-4 animate-spin mx-auto mb-2" /> Building the live prompts…
+              </div>
+            );
+          }
+          const text = preview?.[previewChannel];
+          if (!text) {
+            return (
+              <p className="text-xs text-ink-muted py-4 text-center">
+                {previewChannel === 'voice'
+                  ? 'No saved Vapi prompt for this workspace yet. Save one in Channel Setup → Voice; lessons are still sent on every call.'
+                  : 'Preview unavailable right now.'}
+              </p>
+            );
+          }
+          const parts = splitAtLessons(text);
+          return (
+            <>
+              {!parts && (
+                <p className="text-[11px] text-amber-300 mb-2">
+                  {mode === 'off'
+                    ? 'Learning is off, so no lessons are added to this prompt.'
+                    : 'No active lessons apply to this channel yet.'}
+                </p>
+              )}
+              <pre
+                ref={previewBoxRef}
+                className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed font-mono p-3 rounded-xl bg-canvas border border-border text-ink-muted"
+              >
+                {parts ? (
+                  <>
+                    {parts[0]}
+                    <span ref={highlightRef} className="block my-1 p-2 rounded-lg bg-[#128C7E]/15 border border-[#128C7E]/40 text-emerald-300">
+                      {parts[1]}
+                    </span>
+                    {parts[2]}
+                  </>
+                ) : (
+                  text
+                )}
+              </pre>
+            </>
+          );
+        })()}
       </div>
 
       {suggested.length > 0 && (
