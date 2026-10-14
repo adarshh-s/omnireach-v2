@@ -448,3 +448,41 @@ drop policy if exists "org can read own voice calls" on voice_calls;
 create policy "org can read own voice calls" on voice_calls
   for select using (auth.uid() = org_id);
 -- Inserts/updates come only from the server (service_role key, bypasses RLS).
+
+-- ---------------------------------------------------------------------------
+-- Self-improving prompts (lib/aiLearning.ts). After a conversation or call finishes,
+-- Gemini reviews it against its outcome and proposes short lessons; active lessons are
+-- appended to every prospect-facing prompt (WhatsApp/email replies, outreach copy, and
+-- the Vapi voice agent). Only this lessons layer is learned — core prompts never change.
+-- ---------------------------------------------------------------------------
+create table if not exists ai_lessons (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references auth.users(id) on delete cascade,
+  channel text not null default 'all',      -- all | whatsapp | email | voice
+  lesson text not null,
+  rationale text,
+  status text not null default 'suggested', -- suggested | active | rejected | archived
+  source text not null default 'ai',        -- ai | manual
+  evidence_count int not null default 1,
+  evidence jsonb not null default '[]'::jsonb,  -- [{ channel, conversationId, outcome }]
+  retire_reason text,                       -- set when the AI suggests removing a live lesson
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_ai_lessons_org_status on ai_lessons(org_id, status);
+
+alter table ai_lessons enable row level security;
+drop policy if exists "org can read own ai lessons" on ai_lessons;
+create policy "org can read own ai lessons" on ai_lessons
+  for select using (auth.uid() = org_id);
+-- Inserts/updates come only from the server (service_role key, bypasses RLS).
+
+-- When each conversation was last reviewed for lessons, and the outcome it had then — a
+-- thread is reviewed again only once its outcome changes (e.g. went quiet -> booked).
+alter table whatsapp_conversations add column if not exists learning_reviewed_at timestamptz;
+alter table whatsapp_conversations add column if not exists learning_outcome text;
+alter table email_conversations add column if not exists learning_reviewed_at timestamptz;
+alter table email_conversations add column if not exists learning_outcome text;
+alter table voice_calls add column if not exists learning_reviewed_at timestamptz;
+alter table voice_calls add column if not exists learning_outcome text;

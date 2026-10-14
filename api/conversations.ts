@@ -1,10 +1,12 @@
 import { getSupabaseAdmin } from '../lib/supabaseAdmin.js';
 import { getOrgIdFromAuthHeader } from '../lib/supabaseServerAuth.js';
 import { reconcileStaleVoiceCalls } from '../lib/voiceCalls.js';
+import { handleLearningRequest } from '../lib/aiLearning.js';
 
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
+  body?: any;
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -16,7 +18,15 @@ interface ApiResponse {
 // Merges what used to be two near-identical routes (api/whatsapp/conversations.ts,
 // api/email/conversations.ts — same query, different table) into one, freeing a slot
 // under Vercel's Hobby-plan 12-serverless-function cap for the Vapi voice routes below.
+// ?action=learning is the AI Learning page's API (lib/aiLearning.ts), here for the same reason.
 export default async function handler(req: ApiRequest, res: ApiResponse) {
+  if (req.query?.action === 'learning') {
+    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    const result = await handleLearningRequest(orgId, req.method, req.body);
+    return res.status(result.httpStatus).json(result.body);
+  }
+
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }

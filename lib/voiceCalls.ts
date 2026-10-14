@@ -4,6 +4,7 @@ import { startVapiCall, isVapiConfigured, fetchAssistant, VapiCredentials } from
 import { getConnectedCalendar, bookMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { checkCallingHours, getLocalTodayInfo, getTimezoneForCountry, toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
+import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
 
 /**
  * Server side of the AI Voice Agent: placing an outbound call (with OmniReach's own webhook
@@ -62,6 +63,7 @@ export function getPublicBaseUrl(headers: Record<string, string | string[] | und
 }
 
 async function buildCallOverrides(
+  orgId: string,
   org: VapiCredentials,
   baseUrl: string | null,
   lead: { name?: string; company?: string; email?: string; country?: string }
@@ -76,7 +78,7 @@ async function buildCallOverrides(
 
   // The booking tool and call context ride on the model, so the assistant's current model
   // config has to be read first — overriding `model` replaces it wholesale.
-  const assistant = await fetchAssistant(org);
+  const [assistant, learnedGuidance] = await Promise.all([fetchAssistant(org), buildLearnedGuidance(orgId, ['voice'])]);
 
   if (assistant?.model) {
     const timeZone = getTimezoneForCountry(lead.country);
@@ -89,6 +91,7 @@ async function buildCallOverrides(
       lead.email
         ? `- Their email on file is ${lead.email}; the invite goes there unless they give a different one.`
         : "- We don't have their email on file. Before booking, ask for it, spell it back to confirm, and pass it to book_meeting.",
+      ...(learnedGuidance ? ['', learnedGuidance] : []),
     ].join('\n');
 
     overrides.model = {
@@ -161,7 +164,7 @@ export async function placeOrgVoiceCall(params: {
     email: client?.email || undefined,
     country,
   };
-  const overrides = await buildCallOverrides(org, baseUrl, lead);
+  const overrides = await buildCallOverrides(orgId, org, baseUrl, lead);
   const result = await startVapiCall({ phone, name: lead.name, variables, org, overrides });
 
   if (result.ok && result.callId && supabase) {
@@ -193,9 +196,9 @@ function classifyOutcome(endedReason: string | undefined, userTurns: number): st
 
 /** Vapi's end-of-call report (webhook) and its GET /call/:id object share the fields used
  * here, so the same function finalizes a call from either source. */
-async function handleEndOfCallReport(message: any, callId: string): Promise<void> {
+async function handleEndOfCallReport(message: any, callId: string): Promise<{ orgId: string; answered: boolean } | null> {
   const supabase = getSupabaseAdmin();
-  if (!supabase) return;
+  if (!supabase) return null;
 
   const artifact = message.artifact || {};
   const rawMessages: any[] = artifact.messages || message.messages || [];
@@ -232,7 +235,7 @@ async function handleEndOfCallReport(message: any, callId: string): Promise<void
       updated_at: new Date().toISOString(),
     })
     .eq('vapi_call_id', callId)
-    .select('client_id, status')
+    .select('org_id, client_id, status')
     .maybeSingle();
 
   // A real conversation moves a fresh lead forward in the pipeline; a booked call already
@@ -244,6 +247,7 @@ async function handleEndOfCallReport(message: any, callId: string): Promise<void
       .eq('id', row.client_id)
       .in('status', ['Pending', 'In Progress']);
   }
+  return row ? { orgId: row.org_id, answered: outcome === 'answered' } : null;
 }
 
 async function bookMeetingFromCall(callId: string, args: { date?: string; time?: string; email?: string }): Promise<string> {
@@ -411,7 +415,9 @@ export async function handleVapiServerMessage(message: any): Promise<Record<stri
         .eq('vapi_call_id', callId);
     }
   } else if (type === 'end-of-call-report') {
-    await handleEndOfCallReport(message, callId);
+    const ended = await handleEndOfCallReport(message, callId);
+    // A real conversation happened — review it for lessons the voice agent can use next call.
+    if (ended?.answered) await reviewAfterConversation(ended.orgId);
   }
 
   return { received: true };

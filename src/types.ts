@@ -91,6 +91,9 @@ export interface CampaignSettings {
   includeBookingLink: boolean;
   customInstructions?: string;
   useAiCopywriting?: boolean;
+  /** Self-improving prompts (lib/aiLearning.ts): 'auto' (default) applies AI-learned lessons
+   * immediately, 'review' queues them for approval, 'off' stops learning and stops using them. */
+  aiLearningMode?: 'off' | 'review' | 'auto';
 }
 
 export type WhatsAppProvider = 'web_direct' | 'twilio' | 'cloud_api' | 'webhook';

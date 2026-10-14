@@ -35,6 +35,8 @@ export interface RunConversationTurnParams {
   companyName?: string;
   senderName?: string;
   serviceDescription?: string;
+  /** Prompt section built from the org's approved AI lessons (lib/aiLearning.ts) — empty when there are none. */
+  learnedGuidance?: string;
   history: ConversationTurn[];
   nowIso: string;
 }
@@ -70,7 +72,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-async function generateWithFallback(aiClient: GoogleGenAI, prompt: string): Promise<{ text: string }> {
+export async function generateWithFallback(
+  aiClient: GoogleGenAI,
+  prompt: string,
+  opts: { temperature?: number; timeoutMs?: number } = {}
+): Promise<{ text: string }> {
+  const temperature = opts.temperature ?? 0.65;
+  const timeoutMs = opts.timeoutMs ?? PROVIDER_TIMEOUT_MS;
   let lastErr: unknown;
   for (const model of [PRIMARY_MODEL, FALLBACK_MODEL]) {
     try {
@@ -85,9 +93,9 @@ async function generateWithFallback(aiClient: GoogleGenAI, prompt: string): Prom
           // from an initial 0.85 after that setting made the model too willing to guess at
           // "confirmed" (a real calendar invite) on ambiguous wording — 0.65 keeps most of
           // the phrasing variety without the same hit to how reliably it reads intent.
-          config: { responseMimeType: 'application/json', temperature: 0.65 },
+          config: { responseMimeType: 'application/json', temperature },
         }),
-        PROVIDER_TIMEOUT_MS,
+        timeoutMs,
         `Gemini (${model})`
       );
       return { text: response.text || '' };
@@ -97,7 +105,7 @@ async function generateWithFallback(aiClient: GoogleGenAI, prompt: string): Prom
   }
   if (process.env.GROQ_API_KEY) {
     try {
-      return await withTimeout(generateViaGroq(prompt), PROVIDER_TIMEOUT_MS, 'Groq');
+      return await withTimeout(generateViaGroq(prompt), timeoutMs, 'Groq');
     } catch (err) {
       lastErr = err;
     }
@@ -116,6 +124,7 @@ export async function runConversationTurn(params: RunConversationTurnParams): Pr
     companyName,
     senderName,
     serviceDescription,
+    learnedGuidance,
     history,
     nowIso,
   } = params;
@@ -158,6 +167,7 @@ HOW TO SOUND HUMAN, NOT SCRIPTED:
       : 'Keep it under 50 words. Sound like a text message, not an email crammed into a chat box.'
   }
 - Never invent facts you weren't given, and never output bracket placeholders (e.g. "[Your Name]", "[Company]") — use the concrete names given above, or omit that detail entirely.
+${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 
 Reply to the prospect's latest message. Output STRICT JSON only, no markdown, no commentary:
 {

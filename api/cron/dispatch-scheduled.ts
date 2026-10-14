@@ -4,6 +4,7 @@ import { sendCampaignWhatsAppMessage } from '../../lib/whatsappCampaignSender.js
 import { sendEmailViaOrgProvider } from '../../lib/emailSender.js';
 import { seedConversationFromLead } from '../../lib/whatsappWebhookHandler.js';
 import { seedEmailConversationFromLead, buildEmailReplyToAddress } from '../../lib/emailWebhookHandler.js';
+import { reviewAllOrgs } from '../../lib/aiLearning.js';
 import type { ChannelApiSettings } from '../../src/types.js';
 
 interface ApiRequest {
@@ -285,5 +286,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
   }
 
-  return res.status(200).json({ processed: (due || []).length + (retryable || []).length, sent, failed, skipped, retried });
+  // Once a day (Vercel's own cron fires at 06:00 UTC; an external pinger also lands in this
+  // hour), sweep every org for finished conversations to learn from — mainly text threads
+  // that went quiet, which no webhook ever signals. A no-op for orgs with nothing pending.
+  const learning = new Date().getUTCHours() === 6 ? await reviewAllOrgs(25000) : undefined;
+
+  return res.status(200).json({ processed: (due || []).length + (retryable || []).length, sent, failed, skipped, retried, learning });
 }

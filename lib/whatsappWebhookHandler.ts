@@ -13,6 +13,7 @@ import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { toMeetingStartIso } from './countryTiming.js';
+import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
 
 /**
  * Verifies Meta's X-Hub-Signature-256 header (HMAC-SHA256 of the raw request body, keyed
@@ -222,18 +223,23 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     return;
   }
 
-  const [orgProfile, orgChannelSettings, calendar] = await Promise.all([
+  const [orgProfile, orgChannelSettings, calendar, learnedGuidance] = await Promise.all([
     getOrgProfile(orgId),
     getOrgChannelSettings(orgId),
     getConnectedCalendar(orgId),
+    buildLearnedGuidance(orgId, ['whatsapp']),
   ]);
 
+  // Set when this message ends the conversation (booked / declined / handoff) — it's then
+  // reviewed for lessons once the reply is out and the lock released (lib/aiLearning.ts).
+  let conversationFinished = false;
   const locked = await acquireConversationLock(supabase, orgId, fromPhone);
   try {
     await processLockedMessage();
   } finally {
     if (locked) await releaseConversationLock(supabase, orgId, fromPhone);
   }
+  if (conversationFinished) await reviewAfterConversation(orgId);
 
   async function processLockedMessage(): Promise<void> {
   const { data: existing } = await supabase
@@ -321,6 +327,7 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     }
 
     await sendWhatsAppText(orgChannelSettings?.whatsappCloudApiKey, orgChannelSettings?.whatsappCloudPhoneId, fromPhone, OPT_OUT_REPLY);
+    conversationFinished = true;
     return;
   }
 
@@ -334,6 +341,7 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
         companyName: orgProfile?.companyName,
         senderName: orgProfile?.senderName,
         serviceDescription: orgProfile?.serviceDescription,
+        learnedGuidance,
         history,
         nowIso,
       })
@@ -472,6 +480,7 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
   if (!sendResult.ok) {
     console.error('[WhatsApp Bot] Failed to send auto-reply:', sendResult.error);
   }
+  conversationFinished = finalStatus !== 'active' && finalStatus !== existing?.status;
   }
 }
 

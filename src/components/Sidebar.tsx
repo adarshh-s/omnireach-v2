@@ -14,6 +14,7 @@ import {
   X,
   LogOut,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { NotificationBell } from './NotificationBell';
 
@@ -25,6 +26,7 @@ export type ActiveTab =
   | 'templates'
   | 'calendar'
   | 'inbox'
+  | 'learning'
   | 'admin';
 
 interface SidebarProps {
@@ -97,6 +99,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Bot,
           badge: inboxCount && inboxCount > 0 ? `${inboxCount} Live` : undefined,
         },
+        { id: 'learning', label: 'AI Learning', icon: Sparkles },
         { id: 'simulator', label: 'Chat & Email Preview', icon: MessageSquare },
         {
           id: 'calendar',

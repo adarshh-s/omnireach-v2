@@ -14,6 +14,7 @@ import { OnboardingWizard } from './components/OnboardingWizard';
 import { AuthGate } from './components/AuthGate';
 import { AccessLockedScreen } from './components/AccessLockedScreen';
 import { AdminDashboard } from './components/AdminDashboard';
+import { AiLearningView } from './components/AiLearningView';
 import { AuthState } from './hooks/useAuth';
 import { useCloudSettings } from './hooks/useCloudSettings';
 import { useCloudClients } from './hooks/useCloudClients';
@@ -543,6 +544,14 @@ function AppContent({ auth }: { auth: AuthState }) {
 
         {activeTab === 'inbox' && (
           <ConversationsView leads={leads} onUpdateLead={handleUpdateLead} accessToken={auth.accessToken} />
+        )}
+
+        {activeTab === 'learning' && (
+          <AiLearningView
+            accessToken={auth.accessToken}
+            campaignSettings={campaignSettings}
+            onUpdateSettings={setCampaignSettings}
+          />
         )}
 
         {activeTab === 'admin' && isAdmin && <AdminDashboard accessToken={auth.accessToken} />}

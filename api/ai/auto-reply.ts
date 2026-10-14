@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { buildLearnedGuidance } from '../../lib/aiLearning.js';
 
 interface ApiRequest {
   method?: string;
@@ -47,6 +48,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           },
         });
 
+        const learnedGuidance = await buildLearnedGuidance(orgId, ['whatsapp', 'email']);
         const prompt = `A client named ${clientName} at company ${lead?.company || 'their firm'} replied to our outreach with:
 "${incomingMessage}"
 
@@ -58,7 +60,7 @@ persuasive response (under 75 words).
 - If they are interested or asking for times: ask them to reply with a day/time that works for them so it can be confirmed directly on the calendar.
 - If they ask about pricing or features: answer positively with general context and invite them to reply with a day/time for a quick call.
 - If they say not interested or unsubscribe: acknowledge politely and confirm they are opted out.
-
+${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 Return strict JSON:
 {
   "reply": "The response message text"

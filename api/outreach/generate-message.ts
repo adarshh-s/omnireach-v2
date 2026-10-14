@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { generateViaGroq } from '../../lib/groqClient.js';
 import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { buildLearnedGuidance } from '../../lib/aiLearning.js';
 
 interface ApiRequest {
   method?: string;
@@ -65,6 +66,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       sender_phone: senderPhone,
     };
 
+    const learnedGuidance = await buildLearnedGuidance(orgId, ['whatsapp', 'email']);
+
     const prompt = `You are an expert B2B copywriter specialized in high-converting WhatsApp messages and cold/warm outreach emails.
 Generate a personalized WhatsApp message AND Email for this prospect:
 - Client Name: ${lead?.name || 'Prospect'}
@@ -81,7 +84,7 @@ ${template ? `- Base Template Guidance:\nWhatsApp Base: ${template.whatsAppConte
 There is no booking link or scheduling page — do NOT invent or include one. Instead, the
 call to action must ask the prospect to simply reply with a day/time that works for them;
 an AI assistant will read their reply and confirm the meeting directly on the calendar.
-
+${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 Output strict JSON with these 3 keys:
 {
   "whatsApp": "A concise, engaging WhatsApp message formatted with natural emojis, bolding (*text*), ending with a call-to-action to reply with a day/time that works",

@@ -13,6 +13,7 @@ import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
+import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
 
 /** Verifies the shared secret appended to the Inbound Parse Destination URL, so this
  * endpoint can't be spammed by anyone who finds the URL. */
@@ -131,12 +132,16 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     return;
   }
 
+  // Set when this email ends the conversation (booked / declined / handoff) — it's then
+  // reviewed for lessons once the reply is out and the lock released (lib/aiLearning.ts).
+  let conversationFinished = false;
   const locked = await acquireEmailConversationLock(supabase, orgId, fromEmail);
   try {
     await processLockedEmail();
   } finally {
     if (locked) await releaseEmailConversationLock(supabase, orgId, fromEmail);
   }
+  if (conversationFinished) await reviewAfterConversation(orgId);
 
   async function processLockedEmail(): Promise<void> {
   const { data: existing } = await supabase
@@ -168,10 +173,11 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       .eq('email', fromEmail);
   }
 
-  const [orgProfile, orgChannelSettings, calendar] = await Promise.all([
+  const [orgProfile, orgChannelSettings, calendar, learnedGuidance] = await Promise.all([
     getOrgProfile(orgId),
     getOrgChannelSettings(orgId),
     getConnectedCalendar(orgId),
+    buildLearnedGuidance(orgId, ['email']),
   ]);
   const fromName = orgProfile?.senderName || orgProfile?.companyName || 'Team';
 
@@ -213,6 +219,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       fromName,
       replyTo: trackingAddress,
     });
+    conversationFinished = true;
     return;
   }
 
@@ -228,6 +235,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
         companyName: orgProfile?.companyName,
         senderName: orgProfile?.senderName,
         serviceDescription: orgProfile?.serviceDescription,
+        learnedGuidance,
         history,
         nowIso,
       })
@@ -373,6 +381,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   if (!sendResult.ok) {
     console.error('[Email Bot] Failed to send auto-reply:', sendResult.error);
   }
+  conversationFinished = finalStatus !== 'active' && finalStatus !== existing?.status;
   } // end processLockedEmail
 }
 

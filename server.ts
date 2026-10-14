@@ -32,6 +32,7 @@ import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
 import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
 import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl, reconcileStaleVoiceCalls } from './lib/voiceCalls';
+import { buildLearnedGuidance, handleLearningRequest, reviewAllOrgs } from './lib/aiLearning';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,6 +127,9 @@ app.post('/api/outreach/generate-message', async (req, res) => {
       sender_phone: senderPhone,
     };
 
+    // This local twin doesn't require sign-in, so lessons apply only when a session is sent.
+    const learnedGuidance = await buildLearnedGuidance(await getOrgIdFromAuthHeader(req.headers.authorization), ['whatsapp', 'email']);
+
     const prompt = `You are a world-class B2B copywriter specialized in high-converting WhatsApp messages and cold/warm outreach emails.
 Generate a personalized WhatsApp message AND Email for this prospect:
 - Client Name: ${lead?.name}
@@ -142,7 +146,7 @@ ${template ? `- Base Template Guidance:\nWhatsApp Base: ${template.whatsAppConte
 There is no booking link or scheduling page — do NOT invent or include one. Instead, the
 call to action must ask the prospect to simply reply with a day/time that works for them;
 an AI assistant will read their reply and confirm the meeting directly on the calendar.
-
+${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 Output strict JSON with these 3 keys:
 {
   "whatsApp": "A concise, engaging WhatsApp message formatted with natural emojis, bolding (*text*), ending with a call-to-action to reply with a day/time that works",
@@ -228,6 +232,7 @@ app.post('/api/ai/auto-reply', async (req, res) => {
     const companyName = settings?.companyName || 'our company';
 
     if (ai && incomingMessage) {
+      const learnedGuidance = await buildLearnedGuidance(await getOrgIdFromAuthHeader(req.headers.authorization), ['whatsapp', 'email']);
       const prompt = `A client named ${clientName} at company ${lead?.company || 'their firm'} replied to our outreach with:
 "${incomingMessage}"
 
@@ -239,7 +244,7 @@ persuasive response (under 75 words).
 - If they are interested or asking for times: ask them to reply with a day/time that works for them so it can be confirmed directly on the calendar.
 - If they ask about pricing or features: answer positively with general context and invite them to reply with a day/time for a quick call.
 - If they say not interested or unsubscribe: acknowledge politely and confirm they are opted out.
-
+${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 Return strict JSON:
 {
   "reply": "The response message text"
@@ -615,7 +620,20 @@ app.get('/api/cron/dispatch-scheduled', async (req, res) => {
     }
   }
 
-  res.json({ processed: (due || []).length, sent, failed, skipped });
+  // Daily lessons sweep — see api/cron/dispatch-scheduled.ts.
+  const learning = new Date().getUTCHours() === 6 ? await reviewAllOrgs(25000) : undefined;
+
+  res.json({ processed: (due || []).length, sent, failed, skipped, learning });
+});
+
+// API Route: AI Learning page — list/approve/edit lessons, run a review (lib/aiLearning.ts).
+// Mirrors api/conversations.ts?action=learning.
+app.all('/api/conversations', async (req, res, next) => {
+  if (req.query.action !== 'learning') return next();
+  const orgId = await getOrgIdFromAuthHeader(req.headers.authorization);
+  if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+  const result = await handleLearningRequest(orgId, req.method, req.body);
+  res.status(result.httpStatus).json(result.body);
 });
 
 // API Route: List live AI bot conversations for the signed-in org (for the "AI Inbox" UI
