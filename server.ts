@@ -32,7 +32,7 @@ import { subscribeAppToWaba } from './lib/whatsappSubscribe';
 import { checkChannelHealth } from './lib/channelHealth';
 import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from './lib/vapiClient';
 import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl, reconcileStaleVoiceCalls } from './lib/voiceCalls';
-import { buildLearnedGuidance, handleLearningRequest, reviewAllOrgs } from './lib/aiLearning';
+import { buildLearnedGuidance, handleLearningRequest, reviewAllOrgs, withLearnedBlock } from './lib/aiLearning';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -753,7 +753,8 @@ app.post('/api/voice/vapi', async (req, res) => {
       getOrgProfile(orgId),
     ]);
     const assistantName = profile?.companyName ? `${profile.companyName} — AI Voice Agent` : undefined;
-    const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage, assistantName });
+    const promptWithLessons = await withLearnedBlock(orgId, systemPrompt);
+    const result = await syncAssistantPrompt(org, { systemPrompt: promptWithLessons, firstMessage, assistantName });
     if (result.ok && result.assistantId) {
       await saveOrgChannelSettings(orgId, { ...(existingSettings || ({} as any)), vapiAssistantId: result.assistantId });
     }

@@ -2,6 +2,7 @@ import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
 import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile } from '../../lib/orgSettings.js';
 import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
 import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl } from '../../lib/voiceCalls.js';
+import { withLearnedBlock } from '../../lib/aiLearning.js';
 
 interface ApiRequest {
   method?: string;
@@ -107,7 +108,9 @@ async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
     getOrgProfile(orgId),
   ]);
   const assistantName = profile?.companyName ? `${profile.companyName} — AI Voice Agent` : undefined;
-  const result = await syncAssistantPrompt(org, { systemPrompt, firstMessage, assistantName });
+  // The lessons block is AI Learning's — whatever the editor sent for it is replaced with the current lessons.
+  const promptWithLessons = await withLearnedBlock(orgId, systemPrompt);
+  const result = await syncAssistantPrompt(org, { systemPrompt: promptWithLessons, firstMessage, assistantName });
 
   if (result.ok && result.assistantId) {
     await saveOrgChannelSettings(orgId, {

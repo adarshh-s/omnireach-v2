@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { getGeminiClient } from './geminiClient.js';
-import { getOrgProfile } from './orgSettings.js';
+import { getOrgProfile, getOrgChannelSettings } from './orgSettings.js';
 import { generateWithFallback } from './conversationEngine.js';
 
 /**
@@ -90,6 +90,65 @@ export async function buildLearnedGuidance(orgId: string | null | undefined, cha
     ].join('\n');
   } catch {
     return '';
+  }
+}
+
+// The lessons are also written into the org's saved Vapi assistant prompt, between these
+// markers, so they're visible in Channel Setup and Vapi's own dashboard. Everything between
+// them is owned by AI Learning and replaced on every sync; the rest of the prompt is the
+// org's own text and is never touched.
+const VAPI_BLOCK_START = '### AI LEARNING (auto-updated by OmniReach. Manage these on the AI Learning page; edits inside this block are overwritten)';
+const VAPI_BLOCK_END = '### END AI LEARNING';
+
+export function stripLearnedBlock(prompt: string): string {
+  const start = prompt.indexOf(VAPI_BLOCK_START);
+  if (start === -1) return prompt;
+  const end = prompt.indexOf(VAPI_BLOCK_END, start);
+  const after = end === -1 ? '' : prompt.slice(end + VAPI_BLOCK_END.length);
+  return `${prompt.slice(0, start).trimEnd()}${after.trim() ? `\n\n${after.trim()}` : ''}`;
+}
+
+/** The org's prompt with the current voice lessons block (re)written at the end. */
+export async function withLearnedBlock(orgId: string, prompt: string): Promise<string> {
+  const base = stripLearnedBlock(prompt || '').trimEnd();
+  const guidance = await buildLearnedGuidance(orgId, ['voice']);
+  return guidance ? `${base}\n\n${VAPI_BLOCK_START}\n${guidance}\n${VAPI_BLOCK_END}` : base;
+}
+
+/**
+ * Rewrites the lessons block in the org's own Vapi assistant prompt to match the active
+ * lessons. Only the org's own assistant — never the platform's shared default, which other
+ * orgs inherit. Orgs without their own assistant still get lessons per call (voiceCalls.ts).
+ */
+export async function syncLessonsToVapi(orgId: string): Promise<void> {
+  try {
+    const settings = await getOrgChannelSettings(orgId);
+    const assistantId = settings?.vapiAssistantId?.trim();
+    const apiKey = settings?.vapiApiKey?.trim() || process.env.VAPI_API_KEY;
+    if (!assistantId || !apiKey) return;
+
+    const url = `https://api.vapi.ai/assistant/${assistantId}`;
+    const currentRes = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!currentRes.ok) return;
+    const current = await currentRes.json();
+    const messages: any[] = current?.model?.messages || [];
+    const systemIdx = messages.findIndex((m) => m.role === 'system');
+    const currentPrompt = systemIdx >= 0 ? String(messages[systemIdx].content || '') : '';
+    if (!currentPrompt.trim()) return;
+
+    const nextPrompt = await withLearnedBlock(orgId, currentPrompt);
+    if (nextPrompt === currentPrompt) return;
+
+    const nextMessages = [...messages];
+    nextMessages[systemIdx] = { ...messages[systemIdx], content: nextPrompt };
+    const patchRes = await fetch(url, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: { ...current.model, messages: nextMessages } }),
+    });
+    if (!patchRes.ok) console.error('[AI Learning] Vapi prompt sync failed:', patchRes.status, await patchRes.text());
+  } catch (err) {
+    console.error('[AI Learning] Vapi prompt sync failed:', err);
   }
 }
 
@@ -344,6 +403,7 @@ export async function reviewPendingConversations(orgId: string): Promise<ReviewR
   }
 
   if (mode === 'auto') await enforceActiveCap(orgId);
+  if (mode === 'auto' && (result.added || result.retired || result.reinforced)) await syncLessonsToVapi(orgId);
   return result;
 }
 
@@ -414,20 +474,41 @@ export async function handleLearningRequest(orgId: string, method: string | unde
   if (!supabase) return { httpStatus: 200, body: { configured: false, lessons: [] } };
 
   if (method === 'GET') {
-    const [{ data, error }, mode] = await Promise.all([
+    const lastReviewed = (table: string) =>
+      supabase
+        .from(table)
+        .select('learning_reviewed_at')
+        .eq('org_id', orgId)
+        .not('learning_reviewed_at', 'is', null)
+        .order('learning_reviewed_at', { ascending: false })
+        .limit(1);
+    const [{ data, error }, mode, ...reviewed] = await Promise.all([
       supabase.from('ai_lessons').select('*').eq('org_id', orgId).order('updated_at', { ascending: false }).limit(200),
       getLearningMode(orgId),
+      ...Object.values(TABLES).map(lastReviewed),
     ]);
+    const lastReviewedAt =
+      reviewed
+        .map((r: any) => r.data?.[0]?.learning_reviewed_at as string | undefined)
+        .filter((v): v is string => !!v)
+        .sort()
+        .pop() || null;
     if (error) {
       return { httpStatus: 200, body: { configured: false, mode, lessons: [], error: 'Run the latest supabase/schema.sql to enable AI learning.' } };
     }
-    return { httpStatus: 200, body: { configured: true, mode, lessons: data } };
+    return { httpStatus: 200, body: { configured: true, mode, lessons: data, lastReviewedAt } };
   }
 
   if (method !== 'POST') return { httpStatus: 405, body: { error: 'Method not allowed' } };
 
   const op = body?.op;
   const now = new Date().toISOString();
+
+  // After the org switches learning mode — adds or removes the lessons block in the Vapi prompt.
+  if (op === 'sync') {
+    await syncLessonsToVapi(orgId);
+    return { httpStatus: 200, body: { ok: true } };
+  }
 
   if (op === 'analyze') {
     return { httpStatus: 200, body: { ok: true, result: await reviewPendingConversations(orgId) } };
@@ -445,6 +526,7 @@ export async function handleLearningRequest(orgId: string, method: string | unde
       .select('*')
       .maybeSingle();
     if (error) return { httpStatus: 500, body: { error: error.message } };
+    await syncLessonsToVapi(orgId);
     return { httpStatus: 200, body: { ok: true, lesson: data } };
   }
 
@@ -476,5 +558,6 @@ export async function handleLearningRequest(orgId: string, method: string | unde
 
   if (update.error) return { httpStatus: 500, body: { error: update.error.message } };
   if (!update.data) return { httpStatus: 404, body: { error: 'Lesson not found.' } };
+  if (op !== 'keep') await syncLessonsToVapi(orgId);
   return { httpStatus: 200, body: { ok: true, lesson: update.data } };
 }

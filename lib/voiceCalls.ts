@@ -4,7 +4,7 @@ import { startVapiCall, isVapiConfigured, fetchAssistant, VapiCredentials } from
 import { getConnectedCalendar, bookMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { checkCallingHours, getLocalTodayInfo, getTimezoneForCountry, toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
-import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
+import { buildLearnedGuidance, reviewAfterConversation, stripLearnedBlock } from './aiLearning.js';
 
 /**
  * Server side of the AI Voice Agent: placing an outbound call (with OmniReach's own webhook
@@ -96,7 +96,14 @@ async function buildCallOverrides(
 
     overrides.model = {
       ...assistant.model,
-      messages: [...(assistant.model.messages || []), { role: 'system', content: context }],
+      // The saved prompt's AI Learning block is swapped for the per-call copy in `context`,
+      // so the call always gets the current lessons exactly once.
+      messages: [
+        ...(assistant.model.messages || []).map((m: any) =>
+          m.role === 'system' && typeof m.content === 'string' ? { ...m, content: stripLearnedBlock(m.content) } : m
+        ),
+        { role: 'system', content: context },
+      ],
       tools: [...(assistant.model.tools || []).filter((t: any) => t?.function?.name !== 'book_meeting'), BOOK_MEETING_TOOL],
     };
   }

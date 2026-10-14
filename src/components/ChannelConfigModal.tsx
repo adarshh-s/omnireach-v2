@@ -158,8 +158,10 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
         if (data?.ok) {
           setFormData((prev) => ({
             ...prev,
-            vapiSystemPrompt: prev.vapiSystemPrompt || data.systemPrompt || '',
-            vapiFirstMessage: prev.vapiFirstMessage || data.firstMessage || '',
+            // Live Vapi copy first — it carries the AI Learning lessons block, which the
+            // locally saved copy of the prompt goes stale on as lessons change.
+            vapiSystemPrompt: data.systemPrompt || prev.vapiSystemPrompt || '',
+            vapiFirstMessage: data.firstMessage || prev.vapiFirstMessage || '',
           }));
         }
       })
@@ -183,6 +185,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {
+        // The server re-attaches the current AI Learning lessons block — show what's actually live.
+        if (data.systemPrompt) setFormData((prev) => ({ ...prev, vapiSystemPrompt: data.systemPrompt }));
         setVapiSyncResult({ ok: true, message: 'Synced — your Vapi assistant now uses this prompt live.' });
       } else {
         setVapiSyncResult({ ok: false, message: data.error || 'Could not sync to Vapi.' });
