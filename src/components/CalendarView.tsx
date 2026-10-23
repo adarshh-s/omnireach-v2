@@ -1,6 +1,6 @@
+import { PageHeader, headerPrimaryButton } from './PageHeader';
 import React, { useState } from 'react';
 import {
-  Calendar as CalendarIcon,
   Clock,
   Video,
   User,
@@ -40,28 +40,16 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner */}
-      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
-            <CalendarIcon className="w-3.5 h-3.5 text-[#128C7E]" />
-            <span>Google Calendar Booking Engine</span>
-          </div>
-          <h2 className="text-xl font-bold text-ink">Meeting Slots & Scheduled Events</h2>
-          <p className="text-xs sm:text-sm text-ink-secondary mt-0.5">
-            The AI queries open slots in real time, offers 2–3 options, and automatically generates Google Meet appointments.
-          </p>
-        </div>
-
-        <button
-          id="btn-add-calendar-slot"
-          onClick={() => setIsAdding(!isAdding)}
-          className="flex items-center space-x-1.5 px-4 py-2 rounded-full bg-[#128C7E] hover:bg-[#128C7E] text-white font-medium text-xs shadow-sm transition-all"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Add Open Slot</span>
-        </button>
-      </div>
+      <PageHeader
+        title="Meetings"
+        description="Meetings the AI has booked, and the open times it offers leads when they want to talk."
+        actions={
+          <button id="btn-add-calendar-slot" onClick={() => setIsAdding(!isAdding)} className={headerPrimaryButton}>
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add Open Slot</span>
+          </button>
+        }
+      />
 
       {/* Add Slot Form */}
       {isAdding && (
@@ -120,7 +108,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 <CheckCircle2 className="w-4 h-4 text-[#128C7E]" />
                 Booked Meetings ({bookedSlots.length})
               </h3>
-              <span className="text-xs text-ink-muted">Google Meet Invites Dispatched</span>
+              <span className="text-xs text-ink-muted">Invites sent with a meeting link</span>
             </div>
 
             {bookedSlots.length === 0 ? (
@@ -196,9 +184,9 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-border mb-4">
               <h3 className="font-semibold text-sm text-ink flex items-center gap-2">
                 <Clock className="w-4 h-4 text-[#128C7E]" />
-                Available Slots Pool ({openSlots.length})
+                Open Slots ({openSlots.length})
               </h3>
-              <span className="text-xs text-ink-muted">Offered by AI Booking Bot</span>
+              <span className="text-xs text-ink-muted">Offered to leads by the AI</span>
             </div>
 
             <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1">

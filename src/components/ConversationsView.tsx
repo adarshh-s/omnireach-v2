@@ -1,6 +1,6 @@
+import { PageHeader } from './PageHeader';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Bot,
   MessageCircle,
   Phone,
   PhoneCall,
@@ -43,6 +43,11 @@ interface RawConversation {
   // Voice calls only (voice_calls table)
   call_status?: string;
   outcome?: string;
+  direction?: 'inbound' | 'outbound';
+  attempt?: number;
+  followup_status?: string | null;
+  next_retry_at?: string | null;
+  followup_detail?: string | null;
   duration_seconds?: number;
   summary?: string;
   recording_url?: string;
@@ -76,10 +81,37 @@ const CALL_OUTCOME_LABELS: Record<string, string> = {
   failed: 'Call Failed',
 };
 
+/** What happens next after an unanswered call (lib/voiceFollowUp.ts), in plain words. */
+function followUpLabel(conv: UnifiedConversation): string | null {
+  switch (conv.followup_status) {
+    case 'retry_scheduled':
+      return conv.next_retry_at
+        ? `Calling again ${new Date(conv.next_retry_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`
+        : 'Calling again soon';
+    case 'retrying':
+      return 'Calling again now…';
+    case 'retried':
+      return 'Called again — see the newer call';
+    case 'following_up':
+      return 'Sending a follow-up message…';
+    case 'fallback_whatsapp':
+      return 'No answer after the last try — followed up on WhatsApp';
+    case 'fallback_email':
+      return 'No answer after the last try — followed up by email';
+    case 'gave_up':
+      return `No answer after the last try — couldn't send a follow-up${conv.followup_detail ? ` (${conv.followup_detail})` : ''}`;
+    case 'stopped':
+      return `Follow-up stopped${conv.followup_detail ? ` — ${conv.followup_detail}` : ''}`;
+    default:
+      return null;
+  }
+}
+
 function voiceStatusStyle(conv: UnifiedConversation) {
   if (conv.status === 'confirmed') return STATUS_STYLES.confirmed;
   if (!conv.outcome) {
-    return { label: conv.call_status === 'in-progress' ? 'On the Call' : 'Calling…', className: STATUS_STYLES.active.className, icon: PhoneCall };
+    const ringingLabel = conv.direction === 'inbound' ? 'Incoming…' : 'Calling…';
+    return { label: conv.call_status === 'in-progress' ? 'On the Call' : ringingLabel, className: STATUS_STYLES.active.className, icon: PhoneCall };
   }
   return {
     label: CALL_OUTCOME_LABELS[conv.outcome] || 'Call Ended',
@@ -97,6 +129,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
   const [conversations, setConversations] = useState<UnifiedConversation[]>([]);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [unplayableRecordings, setUnplayableRecordings] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const syncedIdsRef = useRef<Set<string>>(new Set());
 
@@ -231,27 +264,20 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
 
   return (
     <div className="space-y-6">
-      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
-            <Bot className="w-3.5 h-3.5 text-[#4285F4]" />
-            <span>AI Booking Bot</span>
-          </div>
-          <h2 className="text-xl font-bold text-ink">Unified Inbox</h2>
-          <p className="text-xs sm:text-sm text-ink-secondary mt-0.5">
-            WhatsApp, Email, and AI voice calls in one place — the AI replies automatically, asks for a time, and books a
-            real calendar meeting when confirmed.
-          </p>
-        </div>
-        <span className="text-xs text-ink-muted flex items-center gap-1.5 flex-shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse" />
-          Live — refreshes every 8s
-        </span>
-      </div>
+      <PageHeader
+        title="AI Inbox"
+        description="Every WhatsApp, email and call conversation the AI is handling — it replies, finds a time and books the meeting."
+        actions={
+          <span className="text-xs text-ink-muted flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse" />
+            Live
+          </span>
+        }
+      />
 
       {conversations.length === 0 ? (
         <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-10 shadow-card text-center text-sm text-ink-muted">
-          No conversations yet. Once a prospect replies to a WhatsApp or Email campaign message, or the AI Voice Agent places a call, it'll show up here.
+          No conversations yet. They show up here as soon as a lead replies or the AI places a call.
         </div>
       ) : (
         <div className="space-y-3">
@@ -303,10 +329,19 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                       </div>
                       <div className="text-xs text-ink-muted mt-0.5 font-mono">
                         {conv.channel === 'whatsapp' ? `+${conv.contact}` : conv.contact}
+                        {conv.channel === 'voice' && conv.direction === 'inbound' && (
+                          <span className="ml-2 font-sans">• Called in</span>
+                        )}
+                        {conv.channel === 'voice' && (conv.attempt || 1) > 1 && <span className="ml-2 font-sans">• Try {conv.attempt}</span>}
                         {conv.channel === 'voice' && formatDuration(conv.duration_seconds) && (
                           <span className="ml-2 font-sans">• {formatDuration(conv.duration_seconds)}</span>
                         )}
                       </div>
+                      {conv.channel === 'voice' && followUpLabel(conv) && (
+                        <p className="text-[11px] text-ink-muted mt-1" title={conv.followup_detail || undefined}>
+                          {followUpLabel(conv)}
+                        </p>
+                      )}
                       {lastTurn && (
                         <p className="text-xs text-ink-secondary mt-1.5 truncate max-w-lg">
                           <span className="font-medium">{lastTurn.role === 'user' ? 'Them: ' : 'Bot: '}</span>
@@ -354,9 +389,22 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                         {conv.summary}
                       </p>
                     )}
-                    {conv.recording_url && (
-                      <audio controls preload="none" src={conv.recording_url} className="w-full h-9 mb-2" />
-                    )}
+                    {conv.recording_url &&
+                      (unplayableRecordings.has(conv.recording_url) ? (
+                        <p className="text-[11px] text-ink-muted mb-2">
+                          Recording not available — the voice provider is keeping it private. The transcript is below.
+                        </p>
+                      ) : (
+                        // metadata (not none) so a recording that can't be fetched is caught when the
+                        // conversation opens, instead of leaving a player that silently does nothing.
+                        <audio
+                          controls
+                          preload="metadata"
+                          src={conv.recording_url}
+                          onError={() => setUnplayableRecordings((prev) => new Set(prev).add(conv.recording_url!))}
+                          className="w-full h-9 mb-2"
+                        />
+                      ))}
                     {conv.channel === 'voice' && (conv.history || []).length === 0 && (
                       <p className="text-xs text-ink-muted">
                         {conv.outcome ? 'No conversation was recorded on this call.' : 'The transcript appears here when the call ends.'}

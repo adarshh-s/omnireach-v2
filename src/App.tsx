@@ -15,6 +15,8 @@ import { AuthGate } from './components/AuthGate';
 import { AccessLockedScreen } from './components/AccessLockedScreen';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AiLearningView } from './components/AiLearningView';
+import { TeamView } from './components/TeamView';
+import { ReportsView } from './components/ReportsView';
 import { AuthState } from './hooks/useAuth';
 import { useCloudSettings } from './hooks/useCloudSettings';
 import { useCloudClients } from './hooks/useCloudClients';
@@ -27,6 +29,7 @@ import {
   MessageTemplate,
 } from './types';
 import { INITIAL_LEADS, INITIAL_CALENDAR_SLOTS } from './data/sampleLeads';
+import { hasChannelSecret } from './utils/channelSecrets';
 import { DEFAULT_TEMPLATES, DEFAULT_CAMPAIGN_SETTINGS } from './data/sampleTemplates';
 
 const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
@@ -39,12 +42,36 @@ const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
   safeDailyWhatsAppLimit: 250,
 };
 
+const PAGE_TABS: ActiveTab[] = ['dashboard', 'reports', 'campaign', 'sheets', 'templates', 'inbox', 'learning', 'simulator', 'calendar', 'team', 'admin'];
+
+function tabFromHash(): ActiveTab {
+  if (typeof window === 'undefined') return 'dashboard';
+  const hash = window.location.hash.replace(/^#/, '') as ActiveTab;
+  return PAGE_TABS.includes(hash) ? hash : 'dashboard';
+}
+
 export default function App() {
   return <AuthGate>{(auth) => <AppContent auth={auth} />}</AuthGate>;
 }
 
 function AppContent({ auth }: { auth: AuthState }) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  // The open page lives in the URL hash (#inbox, #campaign…) so a refresh stays on it and the
+  // browser's back button moves between pages. Anything else in the hash (e.g. an auth
+  // redirect's tokens) just means the dashboard.
+  const [activeTab, setActiveTabState] = useState<ActiveTab>(tabFromHash);
+  const setActiveTab = (tab: ActiveTab) => {
+    setActiveTabState(tab);
+    if (window.location.hash !== `#${tab}`) window.history.pushState(null, '', `#${tab}`);
+  };
+  useEffect(() => {
+    const onHashChange = () => setActiveTabState(tabFromHash());
+    window.addEventListener('popstate', onHashChange);
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('popstate', onHashChange);
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, []);
 
   const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.trim().toLowerCase();
   const isAdmin = Boolean(ADMIN_EMAIL && auth.user?.email && auth.user.email.trim().toLowerCase() === ADMIN_EMAIL);
@@ -57,7 +84,7 @@ function AppContent({ auth }: { auth: AuthState }) {
   // access loses it because of this rollout.
   const [orgAccessStatus, setOrgAccessStatus] = useState<'active' | 'locked' | 'loading'>('active');
   useEffect(() => {
-    if (!auth.configured || !auth.user?.id || !isSupabaseBrowserConfigured || !supabase) {
+    if (!auth.configured || !auth.orgId || !isSupabaseBrowserConfigured || !supabase) {
       setOrgAccessStatus('active');
       return;
     }
@@ -65,7 +92,7 @@ function AppContent({ auth }: { auth: AuthState }) {
     setOrgAccessStatus('loading');
     (async () => {
       try {
-        const { data } = await supabase!.from('org_access').select('status').eq('org_id', auth.user!.id).maybeSingle();
+        const { data } = await supabase!.from('org_access').select('status').eq('org_id', auth.orgId!).maybeSingle();
         if (cancelled) return;
         setOrgAccessStatus((data?.status as 'active' | 'locked') || 'active');
       } catch {
@@ -75,7 +102,7 @@ function AppContent({ auth }: { auth: AuthState }) {
     return () => {
       cancelled = true;
     };
-  }, [auth.configured, auth.user?.id]);
+  }, [auth.configured, auth.orgId]);
 
   // Leads State with LocalStorage Persistence
   const [leads, setLeads] = useState<Lead[]>(() => {
@@ -96,17 +123,17 @@ function AppContent({ auth }: { auth: AuthState }) {
   // Clients (Lead[]) sync with Supabase, scoped to the signed-in org — same
   // graceful-degradation pattern as campaignSettings/channelSettings: falls back
   // to the localStorage-backed state above when Supabase/auth isn't available.
-  const cloudClients = useCloudClients(auth.user?.id);
+  const cloudClients = useCloudClients(auth.orgId);
   const loadedClientsForUser = React.useRef<string | null>(null);
   // Gates the sync effect below until the initial cloud load actually resolves. Without
-  // this, both effects fire as soon as auth.user?.id is set, and if the load (a real
+  // this, both effects fire as soon as auth.orgId is set, and if the load (a real
   // network round-trip) takes longer than the sync's 600ms debounce, the sync effect wins
   // the race and upserts whatever `leads` happened to be first — on a fresh browser, the
   // INITIAL_LEADS sample data, or leftover localStorage from a previous session — into
   // this org's real Supabase row before the authoritative fetch ever lands.
   const cloudClientsReadyRef = React.useRef(false);
   useEffect(() => {
-    const userId = auth.user?.id;
+    const userId = auth.orgId;
     if (!userId || loadedClientsForUser.current === userId) return;
     loadedClientsForUser.current = userId;
     cloudClientsReadyRef.current = false;
@@ -115,16 +142,16 @@ function AppContent({ auth }: { auth: AuthState }) {
       cloudClientsReadyRef.current = true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.user?.id]);
+  }, [auth.orgId]);
 
   useEffect(() => {
-    if (!auth.user?.id || !cloudClientsReadyRef.current) return;
+    if (!auth.orgId || !cloudClientsReadyRef.current) return;
     const timer = setTimeout(() => {
       cloudClients.syncClients(leads);
     }, 600);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads, auth.user?.id]);
+  }, [leads, auth.orgId]);
 
   // Calendar Slots State
   const [calendarSlots, setCalendarSlots] = useState<CalendarSlot[]>(() => {
@@ -145,13 +172,13 @@ function AppContent({ auth }: { auth: AuthState }) {
     'org_profile',
     'omnireach_campaign_settings_v1',
     DEFAULT_CAMPAIGN_SETTINGS,
-    auth.user?.id
+    auth.orgId
   );
   const [channelSettings, setChannelSettings, channelSettingsStatus] = useCloudSettings<ChannelApiSettings>(
     'org_channel_settings',
     'omnireach_channels_v1',
     DEFAULT_CHANNEL_SETTINGS,
-    auth.user?.id
+    auth.orgId
   );
 
   // Templates
@@ -182,7 +209,7 @@ function AppContent({ auth }: { auth: AuthState }) {
       !campaignSettings.companyName &&
       !campaignSettings.senderName &&
       channelSettings.whatsAppProvider === 'web_direct' &&
-      !channelSettings.whatsappCloudApiKey;
+      !hasChannelSecret(channelSettings, 'whatsappCloudApiKey');
     if (!dismissed && nothingConfiguredYet) setShowOnboarding(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelSettingsStatus.loading]);
@@ -202,16 +229,38 @@ function AppContent({ auth }: { auth: AuthState }) {
     const params = new URLSearchParams(window.location.search);
     const googleStatus = params.get('google_calendar');
     const outlookStatus = params.get('outlook_calendar');
-    const status = googleStatus || outlookStatus;
-    const providerLabel = outlookStatus ? 'Outlook Calendar' : 'Google Calendar';
+    const emailStatus = params.get('email_connect');
+    const crmStatus = params.get('crm_connect');
+    const status = googleStatus || outlookStatus || emailStatus || crmStatus;
+    const crmName = { hubspot: 'HubSpot', zoho: 'Zoho CRM', salesforce: 'Salesforce' }[params.get('crm') || ''] || 'Your CRM';
+    const providerLabel = crmStatus
+      ? crmName
+      : emailStatus
+      ? params.get('provider') === 'outlook'
+        ? 'Outlook'
+        : 'Gmail'
+      : outlookStatus
+        ? 'Outlook Calendar'
+        : 'Google Calendar';
     if (status === 'connected') {
-      setCalendarBanner({ type: 'success', message: `${providerLabel} connected — the AI booking bot can now schedule real meetings.` });
+      setCalendarBanner({
+        type: 'success',
+        message: crmStatus
+          ? `${providerLabel} connected — leads OmniReach contacts, call summaries and booked meetings will now appear there.`
+          : emailStatus
+          ? `${providerLabel} connected — campaign emails and AI replies now go out from your own mailbox.`
+          : `${providerLabel} connected — the AI booking bot can now schedule real meetings.`,
+      });
     } else if (status === 'error') {
       setCalendarBanner({ type: 'error', message: params.get('message') || `Failed to connect ${providerLabel}.` });
     }
     if (status) {
       params.delete('google_calendar');
       params.delete('outlook_calendar');
+      params.delete('email_connect');
+      params.delete('crm_connect');
+      params.delete('crm');
+      params.delete('provider');
       params.delete('message');
       const newSearch = params.toString();
       window.history.replaceState({}, '', window.location.pathname + (newSearch ? `?${newSearch}` : ''));
@@ -366,7 +415,7 @@ function AppContent({ auth }: { auth: AuthState }) {
   }
 
   return (
-    <div className="relative min-h-screen text-ink-secondary flex font-sans">
+    <div className="relative min-h-screen text-ink-secondary flex flex-col lg:flex-row font-sans">
       {/* Global Modals */}
       <ExcelUploadModal
         isOpen={isExcelModalOpen}
@@ -382,8 +431,9 @@ function AppContent({ auth }: { auth: AuthState }) {
         onSaveSettings={setChannelSettings}
         campaignSettings={campaignSettings}
         availableSlots={calendarSlots}
-        userId={auth.user?.id}
+        userId={auth.orgId}
         accessToken={auth.accessToken}
+        onImportLeads={(imported) => handleImportLeads(imported, true)}
       />
 
       <OnboardingWizard
@@ -402,7 +452,7 @@ function AppContent({ auth }: { auth: AuthState }) {
         setActiveTab={setActiveTab}
         pendingCount={pendingCount}
         scheduledCount={scheduledCount}
-        userId={auth.user?.id}
+        userId={auth.orgId}
         userEmail={auth.configured ? auth.user?.email ?? null : null}
         isAdmin={isAdmin}
         onSignOut={auth.configured ? auth.signOut : undefined}
@@ -467,7 +517,7 @@ function AppContent({ auth }: { auth: AuthState }) {
         {activeTab === 'dashboard' && (
           <DashboardView
             leads={leads}
-            userId={auth.user?.id}
+            userId={auth.orgId}
             accessToken={auth.accessToken}
             onOpenExcelUpload={() => setIsExcelModalOpen(true)}
           />
@@ -481,7 +531,7 @@ function AppContent({ auth }: { auth: AuthState }) {
             channelSettings={channelSettings}
             templates={templates}
             accessToken={auth.accessToken}
-            userId={auth.user?.id}
+            userId={auth.orgId}
             onUpdateLead={handleUpdateLead}
             onUpdateSettings={setCampaignSettings}
             onResetAllLeadsToPending={handleResetAllLeadsToPending}
@@ -554,15 +604,15 @@ function AppContent({ auth }: { auth: AuthState }) {
           />
         )}
 
+        {activeTab === 'reports' && <ReportsView accessToken={auth.accessToken} />}
+
+        {activeTab === 'team' && <TeamView accessToken={auth.accessToken} />}
+
         {activeTab === 'admin' && isAdmin && <AdminDashboard accessToken={auth.accessToken} />}
       </motion.div>
       </AnimatePresence>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border bg-surface/80 py-4 text-center text-xs text-ink-muted">
-        OmniReach AI • Automated WhatsApp & Email Outreach Engine with Spreadsheet Ingestion & Google Calendar Sync • Powered by Gemini 3.7
-      </footer>
       </div>
     </div>
   );

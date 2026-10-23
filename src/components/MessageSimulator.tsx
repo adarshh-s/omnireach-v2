@@ -290,16 +290,9 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
       <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold text-ink">
-                Interactive Message & Conversation Simulator
-              </h1>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#128C7E]/10 text-[#128C7E] border border-[#128C7E]/30">
-                Live Preview
-              </span>
-            </div>
-            <p className="text-xs text-ink-muted mt-0.5">
-              Preview AI-generated WhatsApp messages and cold outreach emails with variable interpolation and test real-time simulated client replies.
+            <h1 className="text-xl font-bold text-ink tracking-tight">Message Preview</h1>
+            <p className="text-xs sm:text-sm text-ink-muted mt-1">
+              See exactly what a lead will receive, and try replying as them to test the AI.
             </p>
           </div>
 
@@ -620,12 +613,12 @@ export const MessageSimulator: React.FC<MessageSimulatorProps> = ({
                 onClick={handleSendLiveEmailNow}
                 disabled={isSendingLiveEmail || !lead.email}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#128C7E] text-white text-xs font-semibold shadow-xs hover:bg-[#0E6D62] disabled:opacity-50 transition-colors"
-                title="Dispatch directly to lead's inbox via Resend"
+                title="Send this email to the lead now"
               >
                 {isSendingLiveEmail ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Dispatching...</span>
+                    <span>Sending…</span>
                   </>
                 ) : (
                   <>

@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { getGeminiClient } from './geminiClient.js';
-import { getOrgProfile, getOrgChannelSettings } from './orgSettings.js';
+import { getOrgProfile, resolveOrgVoiceSetup } from './orgSettings.js';
 import { generateWithFallback, buildConversationPrompt } from './conversationEngine.js';
 import { fetchAssistant } from './vapiClient.js';
 
@@ -123,9 +123,9 @@ export async function withLearnedBlock(orgId: string, prompt: string): Promise<s
  */
 export async function syncLessonsToVapi(orgId: string): Promise<void> {
   try {
-    const settings = await getOrgChannelSettings(orgId);
-    const assistantId = settings?.vapiAssistantId?.trim();
-    const apiKey = settings?.vapiApiKey?.trim() || process.env.VAPI_API_KEY;
+    const { creds } = await resolveOrgVoiceSetup(orgId);
+    const assistantId = creds.assistantId?.trim();
+    const apiKey = creds.apiKey || process.env.VAPI_API_KEY;
     if (!assistantId || !apiKey) return;
 
     const url = `https://api.vapi.ai/assistant/${assistantId}`;
@@ -576,9 +576,9 @@ export async function handleLearningRequest(orgId: string, method: string | unde
  * built per incoming message; voice is the org's saved Vapi prompt with its lessons block.
  */
 async function buildPromptPreview(orgId: string): Promise<{ whatsapp: string; email: string; voice: string | null }> {
-  const [profile, settings, waGuidance, emGuidance] = await Promise.all([
+  const [profile, { creds: voiceCreds }, waGuidance, emGuidance] = await Promise.all([
     getOrgProfile(orgId),
-    getOrgChannelSettings(orgId),
+    resolveOrgVoiceSetup(orgId),
     buildLearnedGuidance(orgId, ['whatsapp']),
     buildLearnedGuidance(orgId, ['email']),
   ]);
@@ -594,7 +594,8 @@ async function buildPromptPreview(orgId: string): Promise<{ whatsapp: string; em
   const whatsapp = buildConversationPrompt({ ...sample, channel: 'whatsapp', learnedGuidance: waGuidance }).prompt;
   const email = buildConversationPrompt({ ...sample, channel: 'email', inboundSubject: 'Quick intro', learnedGuidance: emGuidance }).prompt;
 
-  const assistant = await fetchAssistant({ apiKey: settings?.vapiApiKey, assistantId: settings?.vapiAssistantId });
+  // Only the org's own assistant — fetchAssistant would otherwise fall back to the platform's shared template.
+  const assistant = voiceCreds.assistantId ? await fetchAssistant(voiceCreds) : null;
   const savedPrompt = (assistant?.model?.messages || []).find((m: any) => m.role === 'system')?.content;
   const voice = typeof savedPrompt === 'string' && savedPrompt.trim() ? await withLearnedBlock(orgId, savedPrompt) : null;
 

@@ -11,6 +11,8 @@ import { runConversationTurn, ConversationTurn } from './conversationEngine.js';
 import { getConnectedCalendar, bookMeeting, cancelMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
+import { addToSuppression } from './suppression.js';
+import { emitCrmEvent } from './crm/index.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
@@ -184,6 +186,8 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   if (OPT_OUT_PATTERN.test(bodyText)) {
     history.push({ role: 'assistant', text: OPT_OUT_REPLY, timestamp: new Date().toISOString() });
     if (clientId) await markClientOptedOut(orgId, clientId);
+    await addToSuppression(orgId, { email: fromEmail }, 'replied STOP by email');
+    await emitCrmEvent(orgId, clientId, { kind: 'note', title: 'OmniReach: opted out', text: 'Replied STOP by email — do not contact.', stage: 'opted_out' });
 
     await supabase.from('email_conversations').upsert(
       {
@@ -369,6 +373,27 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       orgChannelSettings?.slackWebhookUrl,
       `📅 *Meeting booked* via Email — ${leadName} (${fromEmail}) confirmed for ${whenStr}.${meetLink ? ` <${meetLink}|Join on Google Meet>` : ''}`
     );
+  }
+
+  // The org's CRM (if connected) gets the booking, or the outcome when they decline or ask for a person.
+  if (finalStatus !== existing?.status) {
+    if (finalStatus === 'confirmed' && meetingDateTimeIso) {
+      await emitCrmEvent(orgId, replyClientId, {
+        kind: 'meeting',
+        title: `Discovery call with ${existing?.lead_name || context.clientName || fromEmail}`,
+        startIso: meetingDateTimeIso,
+        durationMinutes: result.meeting?.durationMinutes || 30,
+        link: meetLink,
+        notes: 'Booked by OmniReach AI over email.',
+      });
+    } else if (finalStatus === 'declined' || finalStatus === 'handoff') {
+      await emitCrmEvent(orgId, replyClientId, {
+        kind: 'note',
+        title: finalStatus === 'declined' ? 'OmniReach: not interested (email)' : 'OmniReach: needs a person (email)',
+        text: `Their last message: "${bodyText.slice(0, 500)}"`,
+        stage: 'replied',
+      });
+    }
   }
 
   const sendResult = await sendEmailViaOrgProvider(orgChannelSettings, {

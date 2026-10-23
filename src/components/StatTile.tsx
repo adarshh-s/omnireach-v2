@@ -40,20 +40,27 @@ export const StatTile: React.FC<StatTileProps> = ({ label, value, icon: Icon, ac
       transition={{ duration: 0.25, delay, ease: 'easeOut' }}
       className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
     >
-      <div className="flex items-center justify-between mb-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${accentClass}`}>
+      <div className="flex items-center gap-3">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${accentClass}`}>
           <Icon className="w-4.5 h-4.5" />
         </div>
+        <div className="min-w-0">
+          {value === null ? (
+            <div className="text-2xl font-bold text-ink leading-tight">—</div>
+          ) : (
+            <div ref={numberRef} className="text-2xl font-bold text-ink leading-tight">
+              0{suffix}
+            </div>
+          )}
+          <div className="text-xs text-ink-muted leading-tight">{label}</div>
+        </div>
       </div>
-      {value === null ? (
-        <div className="text-2xl font-bold text-ink">—</div>
-      ) : (
-        <div ref={numberRef} className="text-2xl font-bold text-ink">
-          0{suffix}
+      {/* The trend line only means something once there's movement to show. */}
+      {history.some((v) => v > 0) && (
+        <div className="mt-3">
+          <Sparkline data={history} color={color} height={36} />
         </div>
       )}
-      <div className="text-xs text-ink-muted mt-0.5 mb-2">{label}</div>
-      <Sparkline data={history} color={color} height={40} />
     </motion.div>
   );
 };

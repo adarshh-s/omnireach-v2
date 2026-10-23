@@ -1,13 +1,36 @@
-import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
-import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile } from '../../lib/orgSettings.js';
-import { getAssistantConfig, syncAssistantPrompt, VapiCredentials } from '../../lib/vapiClient.js';
-import { placeOrgVoiceCall, handleVapiServerMessage, verifyVapiWebhook, getPublicBaseUrl } from '../../lib/voiceCalls.js';
+import { getOrgIdFromAuthHeader, getCallerFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { enqueueCampaignCalls, processCallQueue, getQueueStatus, setOrgQueueStatus } from '../../lib/callQueue.js';
+import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile, saveOrgVoice, resolveOrgVoiceSetup } from '../../lib/orgSettings.js';
+import { getAssistantConfig, syncAssistantPrompt } from '../../lib/vapiClient.js';
+import {
+  placeOrgVoiceCall,
+  handleVapiServerMessage,
+  verifyVapiWebhook,
+  getPublicBaseUrl,
+  enableInboundCalls,
+} from '../../lib/voiceCalls.js';
 import { withLearnedBlock } from '../../lib/aiLearning.js';
+import { voiceLanguageOverrides, applyLanguageBlock, VoiceGender } from '../../lib/voiceLanguages.js';
 
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
-  body?: { phone?: string; name?: string; clientId?: string; country?: string; variables?: Record<string, string>; systemPrompt?: string; firstMessage?: string };
+  body?: {
+    phone?: string;
+    name?: string;
+    clientId?: string;
+    country?: string;
+    variables?: Record<string, string>;
+    systemPrompt?: string;
+    firstMessage?: string;
+    language?: string | null;
+    voiceGender?: VoiceGender;
+    leads?: { clientId: string; name?: string; phone?: string; country?: string }[];
+    batchSize?: number;
+    concurrency?: number;
+    batchGapMinutes?: number;
+    control?: 'pause' | 'resume' | 'cancel';
+  };
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -43,21 +66,44 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return handleSyncAssistant(req, res);
   }
 
+  // Voice campaigns run from the server-side call queue (lib/callQueue.ts), not the browser.
+  if (req.query?.action === 'queue-calls') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    return handleQueueCalls(req, res);
+  }
+
+  if (req.query?.action === 'queue-status') {
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    return res.status(200).json(await getQueueStatus(orgId));
+  }
+
+  if (req.query?.action === 'queue-control') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    const control = req.body?.control;
+    if (control !== 'pause' && control !== 'resume' && control !== 'cancel') {
+      return res.status(400).json({ error: 'control must be pause, resume or cancel.' });
+    }
+    await setOrgQueueStatus(orgId, control);
+    if (control === 'resume') await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall, orgId);
+    return res.status(200).json({ ok: true, status: await getQueueStatus(orgId) });
+  }
+
+  if (req.query?.action === 'enable-inbound') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    const result = await enableInboundCalls(orgId, getPublicBaseUrl(req.headers));
+    return res.status(result.ok ? 200 : 400).json(result);
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
   return handleTriggerCall(req, res);
-}
-
-/** An org's own Vapi credentials (Channel Setup) always win; startVapiCall/isVapiConfigured
- * fall back to the platform's shared VAPI_* env vars field-by-field when a field is unset. */
-async function resolveOrgVapiCredentials(orgId: string): Promise<VapiCredentials> {
-  const settings = await getOrgChannelSettings(orgId);
-  return {
-    apiKey: settings?.vapiApiKey,
-    assistantId: settings?.vapiAssistantId,
-    phoneNumberId: settings?.vapiPhoneNumberId,
-  };
 }
 
 async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
@@ -71,6 +117,31 @@ async function handleTriggerCall(req: ApiRequest, res: ApiResponse) {
   return res.status(result.httpStatus).json(result.body);
 }
 
+async function handleQueueCalls(req: ApiRequest, res: ApiResponse) {
+  const caller = await getCallerFromAuthHeader(req.headers?.authorization as string | undefined);
+  if (!caller) return res.status(401).json({ error: 'Sign in required.' });
+
+  // Refuse up front if the org can't call at all, instead of queueing calls that will fail.
+  const { creds, ownAccount } = await resolveOrgVoiceSetup(caller.orgId);
+  if (!creds.phoneNumberId) {
+    return res.status(400).json({
+      ok: false,
+      error: ownAccount
+        ? 'Add your Vapi Phone Number ID in Channel Setup → Voice first.'
+        : 'No phone number is assigned to your workspace yet — contact support to get one.',
+    });
+  }
+
+  const { leads, batchSize, concurrency, batchGapMinutes } = req.body || {};
+  if (!Array.isArray(leads) || leads.length === 0) return res.status(400).json({ ok: false, error: 'No leads to call.' });
+  const result = await enqueueCampaignCalls(caller.orgId, caller.userId, leads, { batchSize, concurrency, batchGapMinutes });
+  if (!result.ok) return res.status(400).json(result);
+
+  // Start the first calls now; the rest follow as calls end (and on the scheduled dispatcher).
+  await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall, caller.orgId);
+  return res.status(200).json({ ...result, status: await getQueueStatus(caller.orgId) });
+}
+
 /** Lets the Channel Setup UI prefill its prompt editor with whatever's actually live on the
  * org's Vapi assistant right now, instead of starting blank every time the modal opens. */
 async function handleGetAssistant(req: ApiRequest, res: ApiResponse) {
@@ -79,8 +150,11 @@ async function handleGetAssistant(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const org = await resolveOrgVapiCredentials(orgId);
-  const result = await getAssistantConfig(org);
+  const { creds } = await resolveOrgVoiceSetup(orgId);
+  // No assistant of the org's own yet — nothing to prefill (and the platform's shared
+  // template assistant isn't theirs to show).
+  if (!creds.assistantId) return res.status(200).json({ ok: false, error: 'No voice agent saved yet.' });
+  const result = await getAssistantConfig(creds);
   return res.status(result.ok ? 200 : 400).json(result);
 }
 
@@ -97,26 +171,40 @@ async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const { systemPrompt, firstMessage } = req.body || {};
+  const { systemPrompt, firstMessage, language: languageCode, voiceGender } = req.body || {};
   if (!systemPrompt || !firstMessage) {
     return res.status(400).json({ error: 'systemPrompt and firstMessage are required.' });
   }
 
-  const [org, existingSettings, profile] = await Promise.all([
-    resolveOrgVapiCredentials(orgId),
+  const [{ creds, ownAccount }, existingSettings, profile] = await Promise.all([
+    resolveOrgVoiceSetup(orgId),
     getOrgChannelSettings(orgId),
     getOrgProfile(orgId),
   ]);
   const assistantName = profile?.companyName ? `${profile.companyName} — AI Voice Agent` : undefined;
-  // The lessons block is AI Learning's — whatever the editor sent for it is replaced with the current lessons.
-  const promptWithLessons = await withLearnedBlock(orgId, systemPrompt);
-  const result = await syncAssistantPrompt(org, { systemPrompt: promptWithLessons, firstMessage, assistantName });
+  // The language and lessons blocks are ours — whatever the editor sent for them is replaced
+  // with the current language instruction and lessons.
+  const language = voiceLanguageOverrides(languageCode, voiceGender);
+  const promptWithLessons = await withLearnedBlock(orgId, applyLanguageBlock(systemPrompt, language?.instruction || null));
+  const result = await syncAssistantPrompt(creds, {
+    systemPrompt: promptWithLessons,
+    firstMessage,
+    assistantName,
+    speech: language ? { transcriber: language.transcriber, voice: language.voice } : null,
+  });
 
-  if (result.ok && result.assistantId) {
+  // A newly provisioned assistant on the platform account is recorded server-side only; on
+  // the org's own account it belongs with the rest of its own Vapi settings (the browser
+  // also stores the returned id, so its next save doesn't drop it).
+  if (result.ok) {
+    // Calls read the language from settings too (per-call overrides in lib/voiceCalls.ts).
     await saveOrgChannelSettings(orgId, {
       ...(existingSettings || ({} as any)),
-      vapiAssistantId: result.assistantId,
+      vapiLanguage: language?.language.code,
+      vapiVoiceGender: voiceGender,
+      ...(result.assistantId && ownAccount ? { vapiAssistantId: result.assistantId } : {}),
     });
+    if (result.assistantId && !ownAccount) await saveOrgVoice(orgId, { assistant_id: result.assistantId });
   }
 
   return res.status(result.ok ? 200 : 400).json(result);
@@ -127,7 +215,7 @@ async function handleWebhook(req: ApiRequest, res: ApiResponse) {
     return res.status(403).json({ error: 'Invalid token' });
   }
   try {
-    return res.status(200).json(await handleVapiServerMessage((req.body as any)?.message));
+    return res.status(200).json(await handleVapiServerMessage((req.body as any)?.message, getPublicBaseUrl(req.headers)));
   } catch (err: any) {
     // Still 200 — Vapi retries non-2xx, and a retried end-of-call report would just fail again.
     console.error('[Vapi] Webhook handling failed:', err);

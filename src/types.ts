@@ -19,7 +19,9 @@ export type ChannelDeliveryStatus =
   | 'Opened'
   | 'Clicked'
   | 'Replied'
-  | 'Failed';
+  | 'Failed'
+  | 'Skipped'
+  | 'Cancelled';
 
 export interface Lead {
   id: string;
@@ -49,6 +51,9 @@ export interface Lead {
   isValidEmail: boolean;
   customFields?: Record<string, string>;
   optedOut?: boolean;
+  /** The lead agreed to be called (prior express written consent). Required before AI calls
+   * to US numbers (TCPA) — see lib/regionRules.ts. */
+  callConsent?: boolean;
   /** ISO timestamp — set client-side when country peak-time scheduling defers this lead's
    * send; not persisted to Supabase (the authoritative copy lives on campaign_recipients). */
   scheduledFor?: string;
@@ -86,6 +91,8 @@ export interface CampaignSettings {
   senderName: string;
   senderEmail: string;
   senderPhone: string;
+  /** Postal address shown in outreach email footers (required by US CAN-SPAM). */
+  businessAddress?: string;
   serviceDescription: string;
   defaultCountryCode: string; // e.g. '+91', '+1', '+44'
   includeBookingLink: boolean;
@@ -97,7 +104,25 @@ export interface CampaignSettings {
 }
 
 export type WhatsAppProvider = 'web_direct' | 'twilio' | 'cloud_api' | 'webhook';
-export type EmailProvider = 'mailto_direct' | 'sendgrid' | 'resend' | 'smtp' | 'mailgun' | 'webhook';
+export type EmailProvider = 'mailto_direct' | 'sendgrid' | 'resend' | 'smtp' | 'mailgun' | 'webhook' | 'gmail' | 'outlook';
+
+/** Fields of ChannelApiSettings that never come back to the browser once saved — the
+ * database moves them into a server-only table on every write (see
+ * divert_org_channel_secrets in supabase/schema.sql). Keep the two lists in sync. */
+export const CHANNEL_SECRET_KEYS = [
+  'twilioAuthToken',
+  'whatsappCloudApiKey',
+  'whatsappAppSecret',
+  'emailApiKey',
+  'smtpPass',
+  'vapiApiKey',
+] as const;
+export type ChannelSecretKey = (typeof CHANNEL_SECRET_KEYS)[number];
+
+/** Sent after the last unanswered AI call when the org hasn't written its own
+ * (ChannelApiSettings.voiceFallbackMessage) — see lib/voiceFollowUp.ts. */
+export const DEFAULT_VOICE_FALLBACK_MESSAGE =
+  "Hi {{first_name}}, this is {{sender_name}} from {{company_name}} — I tried calling you just now. When's a good time to talk? Just reply here with a day and time.";
 
 export type WhatsAppMessageMode = 'text' | 'template';
 
@@ -135,6 +160,14 @@ export interface ChannelApiSettings {
   twilioContentSid?: string;
   twilioContentVariables?: string[]; // values for Twilio ContentVariables "1","2",...
 
+  // Optional second approved template for campaign follow-ups (lib/messageQueue.ts) —
+  // WhatsApp only allows approved templates once 24h have passed without a reply.
+  whatsappFollowupTemplateName?: string;
+  whatsappFollowupTemplateLanguage?: string;
+  whatsappFollowupTemplateVariables?: string[];
+  twilioFollowupContentSid?: string;
+  twilioFollowupContentVariables?: string[];
+
   emailProvider: EmailProvider;
   emailApiKey?: string;
 
@@ -165,11 +198,53 @@ export interface ChannelApiSettings {
   vapiSystemPrompt?: string;
   vapiFirstMessage?: string;
 
+  // Greeting the AI Voice Agent opens with when it answers a call to the org's number.
+  vapiInboundFirstMessage?: string;
+  // Language the voice agent hears and speaks on calls — a code from lib/voiceLanguages.ts
+  // ('auto' to follow the caller). Unset keeps the assistant's own voice and transcriber.
+  vapiLanguage?: string;
+  vapiVoiceGender?: 'female' | 'male';
+
+  // When an outbound call isn't answered (lib/voiceFollowUp.ts): total tries including the
+  // first call, hours between tries, and how to follow up after the last one.
+  voiceRetryAttempts?: number;
+  voiceRetryHours?: number;
+  voiceFallback?: 'whatsapp_email' | 'email' | 'none';
+  /** {{first_name}}, {{name}}, {{company}}, {{company_name}}, {{sender_name}} are filled in. */
+  voiceFallbackMessage?: string;
+  /** Left when voicemail picks up. Blank: English default, or just hang up in other languages. */
+  voicemailMessage?: string;
+  /** Most outbound AI calls in any 24 hours (lib/callQueue.ts) — keeps the number from being
+   * flagged as spam. Default 150. */
+  voiceDailyCallLimit?: number;
+  /** When the agent says "I'm an AI assistant" (lib/regionRules.ts): 'required' (default) —
+   * only to leads in the EU/EEA and US, where the law requires it; 'always'; or 'never'. */
+  voiceAiDisclosureMode?: 'required' | 'always' | 'never';
+  /** @deprecated earlier on/off switch — false is read as voiceAiDisclosureMode 'never'. */
+  voiceAiDisclosure?: boolean;
+  /** Say "this call may be recorded" at the start of calls. On unless false. */
+  voiceRecordingNotice?: boolean;
+  /** Skip AI calls to US numbers unless the lead has recorded consent (TCPA). On unless false. */
+  voiceUsConsentRequired?: boolean;
+
   // Slack — an Incoming Webhook URL (api.slack.com/apps -> your app -> Incoming Webhooks),
   // posted to whenever the AI bot confirms a meeting. No OAuth, no new serverless function:
   // Slack's webhook endpoint is called directly, server-side for real notifications and
   // client-side for the "Send Test" button in Channel Setup.
   slackWebhookUrl?: string;
+
+  /** Browser-only: which secrets are saved server-side (values are never sent back).
+   * Filled from get_channel_secret_status() on load; stripped from every write. */
+  savedSecrets?: Partial<Record<ChannelSecretKey, boolean>>;
+
+  // Server-only — merged in by lib/orgSettings.ts's getOrgChannelSettings from their own
+  // tables, never stored in the settings row and ignored if a browser sends them.
+  gmailRefreshToken?: string;
+  gmailAddress?: string;
+  outlookRefreshToken?: string;
+  outlookAddress?: string;
+  /** Set only once the org's own domain is verified on the platform's Resend account. */
+  verifiedFromAddress?: string;
 }
 
 export interface CampaignState {
@@ -194,6 +269,8 @@ export interface ColumnMapping {
   email: string;
   notes: string;
   country: string;
+  /** Optional: a column saying the lead agreed to calls (yes/true/written…). */
+  consent?: string;
 }
 
 export interface OutreachDispatchLog {

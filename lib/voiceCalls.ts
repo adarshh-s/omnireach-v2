@@ -1,10 +1,24 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
-import { getOrgChannelSettings } from './orgSettings.js';
-import { startVapiCall, isVapiConfigured, fetchAssistant, VapiCredentials } from './vapiClient.js';
+import {
+  getOrgChannelSettings,
+  saveOrgVoice,
+  getOrgIdByVoicePhoneNumberId,
+  getOrgAccessStatus,
+  getOrgProfile,
+  resolveOrgVoiceSetup,
+} from './orgSettings.js';
+import { startVapiCall, fetchAssistant, configurePhoneNumberForInbound, VapiCredentials } from './vapiClient.js';
 import { getConnectedCalendar, bookMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { checkCallingHours, getLocalTodayInfo, getTimezoneForCountry, toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { buildLearnedGuidance, reviewAfterConversation, stripLearnedBlock } from './aiLearning.js';
+import { voiceLanguageOverrides, VoiceLanguageOverrides } from './voiceLanguages.js';
+import { scheduleVoiceFollowUp } from './voiceFollowUp.js';
+import { markQueuedCallFinished, processCallQueue } from './callQueue.js';
+import { optOutClient } from './suppression.js';
+import { emitCrmEvent } from './crm/index.js';
+import { needsAiDisclosure, legalRegion } from './regionRules.js';
+import type { ChannelApiSettings } from '../src/types.js';
 
 /**
  * Server side of the AI Voice Agent: placing an outbound call (with OmniReach's own webhook
@@ -17,6 +31,38 @@ import { buildLearnedGuidance, reviewAfterConversation, stripLearnedBlock } from
  * org-provisioned assistants have none at all. Attaching `server` + the book_meeting tool
  * on every call means call results always land here, whatever the assistant says.
  */
+
+const DO_NOT_CONTACT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'do_not_contact',
+    description:
+      "Records that this person doesn't want to be contacted again (no more calls, WhatsApp or email). Call this as soon as they ask not to be called or contacted again, then apologise and end the call politely.",
+    parameters: { type: 'object', properties: {} },
+  },
+};
+
+/** What the agent says up front. "I'm an AI" is legally required for leads in the EU/EEA
+ * and the US (lib/regionRules.ts) and said there by default; "this call may be recorded" is
+ * required much more widely (UAE, India's DPDP Act, UK, Canada, many US states…), so it's
+ * said on every call while recording is on. */
+export interface CallNotice {
+  ai: boolean;
+  recording: boolean;
+}
+
+export function noticeSentence(notice: CallNotice): string {
+  if (notice.ai && notice.recording) return "Just so you know, I'm an AI assistant, and this call may be recorded.";
+  if (notice.ai) return "Just so you know, I'm an AI assistant.";
+  if (notice.recording) return 'Just so you know, this call may be recorded.';
+  return '';
+}
+
+function noticeForLead(settings: ChannelApiSettings | null | undefined, country: string | null | undefined, phone: string | null | undefined): CallNotice {
+  // voiceAiDisclosure: false is the earlier on/off switch — read as "never".
+  const mode = settings?.voiceAiDisclosureMode || (settings?.voiceAiDisclosure === false ? 'never' : 'required');
+  return { ai: needsAiDisclosure(mode, country, phone), recording: settings?.voiceRecordingNotice !== false };
+}
 
 const BOOK_MEETING_TOOL = {
   type: 'function',
@@ -62,18 +108,32 @@ export function getPublicBaseUrl(headers: Record<string, string | string[] | und
   return `${proto}://${host}`;
 }
 
+interface CallLead {
+  name?: string;
+  company?: string;
+  email?: string;
+  country?: string;
+}
+
 async function buildCallOverrides(
   orgId: string,
   org: VapiCredentials,
   baseUrl: string | null,
-  lead: { name?: string; company?: string; email?: string; country?: string }
+  lead: CallLead,
+  language: VoiceLanguageOverrides | null,
+  notice: CallNotice,
+  inbound?: { callerNumber?: string; knownCaller: boolean; companyName?: string }
 ): Promise<Record<string, unknown> | undefined> {
+  // The org's chosen language swaps how the caller is heard and the voice that speaks —
+  // applied even when the webhook can't be attached (local dev).
+  const languageFields = language ? { transcriber: language.transcriber, voice: language.voice } : {};
   const secret = process.env.VAPI_WEBHOOK_SECRET;
-  if (!baseUrl || !secret) return undefined;
+  if (!baseUrl || !secret) return language ? languageFields : undefined;
 
   const overrides: Record<string, unknown> = {
     server: { url: `${baseUrl}/api/voice/vapi?action=webhook`, headers: { 'x-vapi-secret': secret } },
     serverMessages: ['status-update', 'end-of-call-report', 'tool-calls'],
+    ...languageFields,
   };
 
   // The booking tool and call context ride on the model, so the assistant's current model
@@ -83,9 +143,42 @@ async function buildCallOverrides(
   if (assistant?.model) {
     const timeZone = getTimezoneForCountry(lead.country);
     const { label: todayLabel } = getLocalTodayInfo(new Date(), timeZone);
+    const who = inbound
+      ? [
+          `- This is an INCOMING call: ${inbound.knownCaller ? `${lead.name || 'a known contact'}${lead.company ? ` from ${lead.company}` : ''}` : 'someone'} called ${inbound.companyName || 'us'}${inbound.callerNumber ? ` from ${inbound.callerNumber}` : ''}. They called you, so don't pitch as if you'd reached out.`,
+          inbound.knownCaller
+            ? '- Greet them, ask how you can help, and answer their questions.'
+            : "- Ask for their name and what they're calling about, then help them. If they want to talk further with the team, offer to book a meeting.",
+        ]
+      : [`- You are speaking with ${lead.name || 'the prospect'}${lead.company ? ` from ${lead.company}` : ''}.`];
+    // The disclosure is spoken word for word in English; in other languages the model writes
+    // the opening line itself (in that language) and is told to include it.
+    const english = !language || language.language.code.startsWith('en');
+    const openingLanguage = language && language.language.promptName ? language.language.promptName : 'the language of your greeting';
+    const disclosureLines: string[] = [
+      // Never deceive, whatever the region: if asked, the agent says what it is.
+      "- If anyone asks whether you're a person or a bot, say honestly that you're an AI assistant.",
+    ];
+    const sentence = noticeSentence(notice);
+    if (sentence) {
+      if (!english) {
+        const what = [notice.ai ? "that you're an AI assistant" : '', notice.recording ? 'that the call may be recorded' : ''].filter(Boolean).join(' and ');
+        disclosureLines.push(
+          inbound
+            ? `- OPENING LINE: greet the caller in ${openingLanguage}, and in the same opening say ${what}.`
+            : `- OPENING LINE: greet them in ${openingLanguage}, based on this greeting: "${assistant.firstMessage || ''}", and in the same opening say ${what}.`
+        );
+        if (!inbound) overrides.firstMessageMode = 'assistant-speaks-first-with-model-generated-message';
+      } else if (!inbound && assistant.firstMessage) {
+        overrides.firstMessage = `${String(assistant.firstMessage).trim()} ${sentence}`;
+      }
+    }
     const context = [
       'CALL CONTEXT (added automatically for this call):',
-      `- You are speaking with ${lead.name || 'the prospect'}${lead.company ? ` from ${lead.company}` : ''}.`,
+      ...who,
+      ...(language ? [language.instruction] : []),
+      ...disclosureLines,
+      "- DO NOT CONTACT: if they ask not to be called or contacted again, call the do_not_contact tool, apologise, and end the call politely. Never try to change their mind.",
       `- Today is ${todayLabel}${timeZone ? ` in the prospect's local time zone (${timeZone})` : ''}. Every date and time you discuss is in the prospect's local time.`,
       "- BOOKING: if the prospect wants a meeting, agree on ONE specific date and time, repeat it back, and once they confirm, call the book_meeting tool. Never tell them it's booked until the tool confirms it. If the tool says the slot is taken, offer a different time.",
       lead.email
@@ -104,7 +197,11 @@ async function buildCallOverrides(
         ),
         { role: 'system', content: context },
       ],
-      tools: [...(assistant.model.tools || []).filter((t: any) => t?.function?.name !== 'book_meeting'), BOOK_MEETING_TOOL],
+      tools: [
+        ...(assistant.model.tools || []).filter((t: any) => !['book_meeting', 'do_not_contact'].includes(t?.function?.name)),
+        BOOK_MEETING_TOOL,
+        DO_NOT_CONTACT_TOOL,
+      ],
     };
   }
   return overrides;
@@ -122,28 +219,32 @@ export async function placeOrgVoiceCall(params: {
   country?: string;
   variables?: Record<string, string>;
   baseUrl: string | null;
+  /** Which try this is for the lead (retries after no answer — lib/voiceFollowUp.ts). */
+  attempt?: number;
 }): Promise<ApiResult> {
-  const { orgId, phone, name, clientId, variables, baseUrl } = params;
+  const { orgId, phone, name, clientId, variables, baseUrl, attempt = 1 } = params;
 
-  const settings = await getOrgChannelSettings(orgId);
-  const org: VapiCredentials = {
-    apiKey: settings?.vapiApiKey,
-    assistantId: settings?.vapiAssistantId,
-    phoneNumberId: settings?.vapiPhoneNumberId,
-  };
-  if (!isVapiConfigured(org)) {
-    return { httpStatus: 400, body: { error: 'Voice calling is not configured yet — add your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' } };
+  const { creds: org, ownAccount, settings } = await resolveOrgVoiceSetup(orgId);
+  if (!org.phoneNumberId) {
+    return {
+      httpStatus: 400,
+      body: {
+        error: ownAccount
+          ? 'Add your Vapi Phone Number ID in Channel Setup → Voice to place calls.'
+          : 'No phone number is assigned to your workspace yet — contact support to get one.',
+      },
+    };
   }
   if (!phone) {
     return { httpStatus: 400, body: { error: 'phone is required.' } };
   }
 
   const supabase = getSupabaseAdmin();
-  let client: { name?: string; company?: string; email?: string; country?: string; opted_out?: boolean } | null = null;
+  let client: { name?: string; company?: string; email?: string; country?: string; opted_out?: boolean; call_consent?: boolean } | null = null;
   if (supabase && clientId) {
     const { data } = await supabase
       .from('clients')
-      .select('name, company, email, country, opted_out')
+      .select('name, company, email, country, opted_out, call_consent')
       .eq('id', clientId)
       .eq('org_id', orgId)
       .maybeSingle();
@@ -155,6 +256,13 @@ export async function placeOrgVoiceCall(params: {
   }
 
   const country = client?.country || params.country || undefined;
+  // US law (TCPA): AI-voice marketing calls to US numbers need the lead's prior written consent.
+  if (settings?.voiceUsConsentRequired !== false && !client?.call_consent && legalRegion(country, phone) === 'us') {
+    return {
+      httpStatus: 400,
+      body: { error: `${client?.name || name || 'This lead'} has a US number and no recorded consent to calls — US law requires it for AI calls. Tick "Agreed to be called" on the lead once you have it.` },
+    };
+  }
   const hours = checkCallingHours(country);
   if (!hours.allowed) {
     return {
@@ -171,8 +279,32 @@ export async function placeOrgVoiceCall(params: {
     email: client?.email || undefined,
     country,
   };
-  const overrides = await buildCallOverrides(orgId, org, baseUrl, lead);
-  const result = await startVapiCall({ phone, name: lead.name, variables, org, overrides });
+  const language = voiceLanguageOverrides(settings?.vapiLanguage, settings?.vapiVoiceGender);
+  const [overrides, profile] = await Promise.all([
+    buildCallOverrides(orgId, org, baseUrl, lead, language, noticeForLead(settings, lead.country, phone)),
+    getOrgProfile(orgId),
+  ]);
+
+  // Voicemail: leave a short message (or just hang up) rather than pitching to a machine.
+  // The default message is English, so other languages only get one if the org wrote it.
+  const firstName = (lead.name || '').trim().split(/\s+/)[0];
+  const sender = profile?.senderName || profile?.companyName;
+  const voicemailMessage =
+    settings?.voicemailMessage?.trim() ||
+    (!language || language.language.code.startsWith('en')
+      ? `Hi${firstName ? ` ${firstName}` : ''}, this is ${sender || 'a quick call'}${profile?.companyName && sender !== profile.companyName ? ` from ${profile.companyName}` : ''}. Sorry I missed you — I'll send you a quick message, or just call me back on this number.`
+      : undefined);
+  const voicemailFields = {
+    voicemailDetection: { provider: 'vapi' },
+    ...(voicemailMessage ? { voicemailMessage } : {}),
+  };
+
+  let result = await startVapiCall({ phone, name: lead.name, variables, org, overrides: { ...(overrides || {}), ...voicemailFields } });
+  // Voicemail detection is an extra — if this Vapi account or number rejects it, call without it.
+  if (!result.ok && /voicemail/i.test(result.error || '')) {
+    console.warn('[Vapi] Voicemail settings rejected, calling without them:', result.error);
+    result = await startVapiCall({ phone, name: lead.name, variables, org, overrides });
+  }
 
   if (result.ok && result.callId && supabase) {
     const { error } = await supabase.from('voice_calls').insert({
@@ -185,11 +317,12 @@ export async function placeOrgVoiceCall(params: {
       lead_email: lead.email,
       lead_country: lead.country,
       call_status: result.status || 'queued',
+      attempt,
     });
     if (error) console.error('[Vapi] Failed to log call', result.callId, error.message);
   }
 
-  return { httpStatus: result.ok ? 200 : 400, body: { ...result, webhookAttached: !!overrides } };
+  return { httpStatus: result.ok ? 200 : 400, body: { ...result, webhookAttached: !!overrides?.server } };
 }
 
 function classifyOutcome(endedReason: string | undefined, userTurns: number): string {
@@ -244,6 +377,25 @@ async function handleEndOfCallReport(message: any, callId: string): Promise<{ or
     .eq('vapi_call_id', callId)
     .select('org_id, client_id, status')
     .maybeSingle();
+
+  // Log the call in the org's CRM (if connected): outcome, length and the AI's summary.
+  if (row?.client_id) {
+    const outcomeLabel: Record<string, string> = { answered: 'Answered', 'no-answer': 'No answer', busy: 'Busy', voicemail: 'Voicemail', failed: "Couldn't connect" };
+    await emitCrmEvent(row.org_id, row.client_id, {
+      kind: 'note',
+      title: `OmniReach AI call: ${outcomeLabel[outcome] || outcome}`,
+      text: [
+        durationSeconds ? `Length: ${Math.floor(durationSeconds / 60)}m ${durationSeconds % 60}s` : '',
+        message.analysis?.summary || message.summary || '',
+      ]
+        .filter(Boolean)
+        .join('\n') || 'No conversation.',
+      stage: outcome === 'answered' ? 'replied' : 'contacted',
+    });
+  }
+
+  // Nobody picked up — schedule the next try, or follow up on WhatsApp/email after the last one.
+  if (row && outcome !== 'answered') await scheduleVoiceFollowUp(callId).catch((err) => console.error('[Vapi] Follow-up scheduling failed', callId, err));
 
   // A real conversation moves a fresh lead forward in the pipeline; a booked call already
   // set 'Meeting Scheduled' during the tool call, and anything further along is left alone.
@@ -332,6 +484,14 @@ async function bookMeetingFromCall(callId: string, args: { date?: string; time?:
       .update({ status: 'Meeting Scheduled', meeting_date: date, meeting_time: time, last_contacted: now, updated_at: now })
       .eq('id', row.client_id);
   }
+  await emitCrmEvent(row.org_id, row.client_id, {
+    kind: 'meeting',
+    title: `Discovery call with ${row.lead_name || row.phone}`,
+    startIso,
+    durationMinutes: 30,
+    link: meetLink,
+    notes: 'Booked by OmniReach AI on a phone call.',
+  });
 
   sendSlackNotification(
     settings?.slackWebhookUrl,
@@ -346,6 +506,14 @@ async function bookMeetingFromCall(callId: string, args: { date?: string; time?:
   return email
     ? `Booked for ${whenLabel}. A calendar invite with the meeting link was sent to ${email}.`
     : `Booked for ${whenLabel}. There's no email on file, so tell the prospect the team will send the meeting link.`;
+}
+
+/** The person asked not to be contacted again — opt them out everywhere (lib/suppression.ts). */
+async function doNotContactFromCall(callId: string): Promise<string> {
+  const supabase = getSupabaseAdmin();
+  const { data: row } = supabase ? await supabase.from('voice_calls').select('org_id, client_id, phone, lead_email').eq('vapi_call_id', callId).maybeSingle() : { data: null };
+  if (row) await optOutClient(row.org_id, row.client_id, 'asked on a call', { phone: row.phone, email: row.lead_email });
+  return "Done — they won't be contacted again by call, WhatsApp or email. Apologise for the interruption, say goodbye, and end the call.";
 }
 
 /**
@@ -374,6 +542,7 @@ export async function reconcileStaleVoiceCalls(orgId: string, rows: any[]): Prom
         const call = await res.json();
         if (call?.status !== 'ended') return;
         await handleEndOfCallReport(call, row.vapi_call_id);
+        await markQueuedCallFinished(row.vapi_call_id, null);
         changed = true;
       } catch {
         // Best effort — retried on the next inbox load.
@@ -386,9 +555,13 @@ export async function reconcileStaleVoiceCalls(orgId: string, rows: any[]): Prom
 /** Handles one Vapi server message. The return value is the JSON response body — only
  * tool-calls needs a meaningful one ({ results }); everything else is just acked, since
  * Vapi retries non-2xx responses. */
-export async function handleVapiServerMessage(message: any): Promise<Record<string, unknown>> {
+export async function handleVapiServerMessage(message: any, baseUrl: string | null): Promise<Record<string, unknown>> {
   const type = message?.type;
   const callId: string | undefined = message?.call?.id;
+
+  if (type === 'assistant-request') {
+    return handleInboundCall(message, baseUrl);
+  }
 
   if (type === 'tool-calls') {
     const toolCalls: any[] = message.toolCallList || (message.toolWithToolCallList || []).map((t: any) => t.toolCall) || [];
@@ -404,7 +577,11 @@ export async function handleVapiServerMessage(message: any): Promise<Record<stri
           }
         }
         const result =
-          name === 'book_meeting' && callId ? await bookMeetingFromCall(callId, args) : `Tool "${name}" isn't available on this call.`;
+          name === 'book_meeting' && callId
+            ? await bookMeetingFromCall(callId, args)
+            : name === 'do_not_contact' && callId
+              ? await doNotContactFromCall(callId)
+              : `Tool "${name}" isn't available on this call.`;
         return { toolCallId: tc?.id, result };
       })
     );
@@ -423,9 +600,143 @@ export async function handleVapiServerMessage(message: any): Promise<Record<stri
     }
   } else if (type === 'end-of-call-report') {
     const ended = await handleEndOfCallReport(message, callId);
+    // That call's slot in the queue is free — start the next queued call for this org now,
+    // rather than waiting for the scheduled dispatcher.
+    const queueOrgId = await markQueuedCallFinished(callId, ended ? (ended.answered ? 'answered' : 'not answered') : null);
+    if (queueOrgId) await processCallQueue(baseUrl, placeOrgVoiceCall, queueOrgId).catch((err) => console.error('[Vapi] Call queue failed', err));
     // A real conversation happened — review it for lessons the voice agent can use next call.
     if (ended?.answered) await reviewAfterConversation(ended.orgId);
   }
 
   return { received: true };
+}
+
+function digitsOnly(phone: string | undefined | null): string {
+  return (phone || '').replace(/\D/g, '');
+}
+
+/** Finds the caller among the org's clients. Stored numbers are formatted any which way
+ * ("+971 50 123 4567"), so this narrows by the last 4 digits and compares the last 9. */
+async function findClientByPhone(orgId: string, callerNumber: string | undefined) {
+  const supabase = getSupabaseAdmin();
+  const digits = digitsOnly(callerNumber);
+  if (!supabase || digits.length < 7) return null;
+  const { data } = await supabase
+    .from('clients')
+    .select('id, name, company, email, country, opted_out, phone')
+    .eq('org_id', orgId)
+    .ilike('phone', `%${digits.slice(-4)}`)
+    .limit(50);
+  const tail = digits.slice(-9);
+  return (data || []).find((c: any) => digitsOnly(c.phone).endsWith(tail)) || null;
+}
+
+/**
+ * Someone dialed an org's number. Vapi asks which assistant should answer (the number has
+ * none fixed — see configurePhoneNumberForInbound); this answers with the org's own
+ * assistant plus the same webhook, booking tool and lessons as an outbound call, and a
+ * greeting for an incoming caller. Has to respond within Vapi's ~7.5s limit.
+ */
+async function handleInboundCall(message: any, baseUrl: string | null): Promise<Record<string, unknown>> {
+  const call = message?.call || {};
+  const phoneNumberId: string | undefined = call.phoneNumberId || message?.phoneNumber?.id;
+  const callerNumber: string | undefined = call.customer?.number || message?.customer?.number;
+  const sorry = "Sorry, this number isn't taking calls right now. Please try again later.";
+
+  const orgId = phoneNumberId ? await getOrgIdByVoicePhoneNumberId(phoneNumberId) : null;
+  if (!orgId) {
+    console.warn('[Vapi] Inbound call to a number not assigned to any org:', phoneNumberId);
+    return { error: sorry };
+  }
+  if ((await getOrgAccessStatus(orgId)) === 'locked') return { error: sorry };
+
+  const [{ creds, settings }, profile, client] = await Promise.all([
+    resolveOrgVoiceSetup(orgId),
+    getOrgProfile(orgId),
+    findClientByPhone(orgId, callerNumber),
+  ]);
+  const assistantId = creds.assistantId || process.env.VAPI_ASSISTANT_ID;
+  if (!assistantId) return { error: sorry };
+
+  const lead: CallLead = client
+    ? { name: client.name, company: client.company, email: client.email || undefined, country: client.country || undefined }
+    : {};
+  const companyName = profile?.companyName || undefined;
+  const notice = noticeForLead(settings, client?.country, callerNumber);
+  const language = voiceLanguageOverrides(settings?.vapiLanguage, settings?.vapiVoiceGender);
+  const overrides =
+    (await buildCallOverrides(orgId, { ...creds, assistantId }, baseUrl, lead, language, notice, {
+      callerNumber,
+      knownCaller: !!client,
+      companyName,
+    })) || {};
+
+  // The built-in default greeting is English; in any other language the model writes the
+  // greeting itself (in that language) unless the org typed its own.
+  const customGreeting = settings?.vapiInboundFirstMessage?.trim();
+  const englishGreeting = !language || language.language.code.startsWith('en');
+  const sentence = noticeSentence(notice);
+  const withNotice = (text: string) => (sentence ? `${text.trim()} ${sentence}` : text);
+  const greeting = customGreeting && (englishGreeting || !sentence)
+    ? { firstMessage: withNotice(customGreeting), firstMessageMode: 'assistant-speaks-first' }
+    : englishGreeting
+      ? {
+          firstMessage: sentence
+            ? `Hi, thanks for calling${companyName ? ` ${companyName}` : ''}! ${sentence} How can I help you today?`
+            : `Hi, thanks for calling${companyName ? ` ${companyName}` : ''}! ${client?.name ? `Am I speaking with ${client.name.split(' ')[0]}? ` : ''}How can I help you today?`,
+          firstMessageMode: 'assistant-speaks-first',
+        }
+      : { firstMessageMode: 'assistant-speaks-first-with-model-generated-message' };
+
+  const supabase = getSupabaseAdmin();
+  if (supabase && call.id) {
+    const { error } = await supabase.from('voice_calls').insert({
+      org_id: orgId,
+      vapi_call_id: call.id,
+      client_id: client?.id || null,
+      phone: callerNumber || 'unknown',
+      lead_name: client?.name || null,
+      lead_company: client?.company || null,
+      lead_email: client?.email || null,
+      lead_country: client?.country || null,
+      call_status: 'ringing',
+      direction: 'inbound',
+    });
+    if (error) console.error('[Vapi] Failed to log inbound call', call.id, error.message);
+  }
+
+  return {
+    assistantId,
+    assistantOverrides: { ...overrides, ...greeting },
+  };
+}
+
+/**
+ * Makes an org's number answer incoming calls with its AI agent: points the number at this
+ * app on Vapi, and records it in org_voice so inbound calls route to this org. On the
+ * platform account the number must already be the one the admin assigned; on an org's own
+ * account, Vapi accepting the update with the org's key is the proof it owns the number.
+ */
+export async function enableInboundCalls(orgId: string, baseUrl: string | null): Promise<{ ok: boolean; error?: string; phoneNumber?: string | null }> {
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+  if (!baseUrl) return { ok: false, error: "Inbound calls need the app's public URL — set APP_URL on the server (localhost can't receive calls)." };
+  if (!secret) return { ok: false, error: 'VAPI_WEBHOOK_SECRET is not set on the server.' };
+
+  const { creds, ownAccount } = await resolveOrgVoiceSetup(orgId);
+  const apiKey = creds.apiKey || process.env.VAPI_API_KEY;
+  if (!apiKey) return { ok: false, error: 'Voice calling is not set up on the platform yet.' };
+  if (!creds.phoneNumberId) {
+    return { ok: false, error: ownAccount ? 'Add your Vapi Phone Number ID first.' : 'No phone number is assigned to your workspace yet — contact support to get one.' };
+  }
+
+  const result = await configurePhoneNumberForInbound(apiKey, creds.phoneNumberId, { url: `${baseUrl}/api/voice/vapi?action=webhook`, secret });
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const saved = await saveOrgVoice(orgId, {
+    phone_number_id: creds.phoneNumberId,
+    phone_number: result.number?.number || null,
+    inbound_enabled: true,
+  });
+  if (saved.error) return { ok: false, error: saved.error };
+  return { ok: true, phoneNumber: result.number?.number || null };
 }

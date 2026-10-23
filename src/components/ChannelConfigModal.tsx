@@ -7,31 +7,46 @@ import {
   Mail,
   Network,
   CheckCircle2,
-  AlertCircle,
-  HelpCircle,
-  Shield,
-  Zap,
   Send,
   Loader2,
-  Bot,
   Calendar,
   ExternalLink,
-  Copy,
-  Check,
-  ChevronDown,
-  ChevronRight,
   Phone,
   Slack,
+  ShieldCheck,
+  Trash2,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
-import { ChannelApiSettings, CampaignSettings, CalendarSlot } from '../types';
+import { ChannelApiSettings, CampaignSettings, CalendarSlot, ChannelSecretKey, DEFAULT_VOICE_FALLBACK_MESSAGE, Lead } from '../types';
+import { sanitizePhoneNumber } from '../utils/excelParser';
 import { sendEmailDirectOrBackend } from '../services/emailService';
 import { sendWhatsAppDirectOrBackend } from '../services/whatsappService';
 import { resolveTemplateVariables } from '../utils/outreachEngine';
 import { useGoogleCalendarConnection } from '../hooks/useGoogleCalendarConnection';
 import { useMicrosoftCalendarConnection } from '../hooks/useMicrosoftCalendarConnection';
+import { useEmailOAuthConnection } from '../hooks/useEmailOAuthConnection';
+import { useEmailDomain } from '../hooks/useEmailDomain';
+import { useOrgVoice } from '../hooks/useOrgVoice';
+import { VOICE_LANGUAGES, findVoiceLanguage } from '../../lib/voiceLanguages';
 import { useChannelHealth } from '../hooks/useChannelHealth';
-import { ChannelHealthPanel } from './ChannelHealthPanel';
+import {
+  SetupSection,
+  Card,
+  Field,
+  ChoiceCard,
+  Segmented,
+  Note,
+  CopyRow,
+  inputClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+} from './channelSetup/SetupUI';
 import { AdvancedSection } from './AdvancedSection';
+import { SecretInput } from './SecretInput';
+import { hasChannelSecret } from '../utils/channelSecrets';
+
+type SetupSectionId = 'whatsapp' | 'email' | 'voice' | 'calendar' | 'crm' | 'compliance' | 'notifications' | 'integrations';
 
 interface ChannelConfigModalProps {
   isOpen: boolean;
@@ -42,6 +57,8 @@ interface ChannelConfigModalProps {
   availableSlots?: CalendarSlot[];
   userId?: string | null;
   accessToken?: string | null;
+  /** Adds leads (deduplicated) — used by "Import from CRM". */
+  onImportLeads?: (leads: Lead[]) => void;
 }
 
 export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
@@ -53,9 +70,34 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   onSaveSettings,
   userId = null,
   accessToken = null,
+  onImportLeads,
 }) => {
   const [formData, setFormData] = useState<ChannelApiSettings>(settings);
-  const [activeSubTab, setActiveSubTab] = useState<'whatsapp' | 'email' | 'bot' | 'n8n' | 'voice' | 'slack'>('email');
+  // This modal stays mounted from app start, before cloud settings have loaded — start each
+  // opening from the current settings so a save never writes back a stale copy.
+  useEffect(() => {
+    if (!isOpen) return;
+    setFormData(settings);
+    // "Other" email = the org's own SMTP or API key; 'resend' without its own key is automatic.
+    setEmailAdvancedOpen(
+      ['smtp', 'sendgrid', 'mailgun', 'webhook'].includes(settings.emailProvider) ||
+        (settings.emailProvider === 'resend' && !!settings.savedSecrets?.emailApiKey)
+    );
+    setWhatsappMoreOpen(settings.whatsAppProvider === 'twilio' || settings.whatsAppProvider === 'webhook');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+  const hasSecret = (key: ChannelSecretKey) => hasChannelSecret(formData, key);
+  // null removes a saved secret: it's persisted as JSON null, which the database reads as
+  // "delete" (divert_org_channel_secrets) — hence the cast past the string-typed field.
+  const setSecret = (key: ChannelSecretKey, value: string | null) => {
+    if (key === 'vapiApiKey') setVapiPromptLoaded(false);
+    setFormData((prev) => ({
+      ...prev,
+      [key]: value as unknown as string,
+      ...(value === null ? { savedSecrets: { ...prev.savedSecrets, [key]: false } } : {}),
+    }));
+  };
+  const [activeSubTab, setActiveSubTab] = useState<SetupSectionId>('whatsapp');
   const [savedSuccess, setSavedSuccess] = useState(false);
   // 'resend' with no org-supplied API key is the automatic platform default (see the
   // "Email sending is automatic" banner) — only a provider that actually needs the org's
@@ -70,7 +112,93 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   );
   const googleCalendar = useGoogleCalendarConnection(userId, accessToken);
   const microsoftCalendar = useMicrosoftCalendarConnection(userId, accessToken);
-  const { health, loading: healthLoading, error: healthError, reload: reloadHealth } = useChannelHealth(accessToken);
+  const emailOAuth = useEmailOAuthConnection(userId, accessToken);
+  const emailDomain = useEmailDomain(accessToken, isOpen && activeSubTab === 'email');
+  const orgVoice = useOrgVoice(userId, accessToken);
+  // CRM connection (lib/crm/*) — loaded when its section opens.
+  type CrmId = 'hubspot' | 'zoho' | 'salesforce';
+  const CRM_NAMES: Record<CrmId, string> = { hubspot: 'HubSpot', zoho: 'Zoho CRM', salesforce: 'Salesforce' };
+  const [crm, setCrm] = useState<{
+    available: CrmId[];
+    connection: { provider: CrmId; account: string | null; lastSyncAt: string | null; lastError: string | null } | null;
+    pending: number;
+    failed: number;
+  } | null>(null);
+  const [crmBusy, setCrmBusy] = useState<string | null>(null);
+  const [crmNote, setCrmNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const loadCrm = async () => setCrm(await dncCall('crm'));
+  useEffect(() => {
+    if (isOpen && activeSubTab === 'crm') loadCrm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, activeSubTab]);
+  const connectCrm = async (id: CrmId) => {
+    if (!accessToken) return;
+    setCrmBusy(id);
+    setCrmNote(null);
+    const res = await fetch(`/api/auth/google/connect?purpose=crm&crm=${id}`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.authUrl) {
+      window.location.href = data.authUrl;
+      return;
+    }
+    setCrmNote({ ok: false, text: data.error || 'Could not start the connection.' });
+    setCrmBusy(null);
+  };
+  const importCrm = async () => {
+    setCrmBusy('import');
+    setCrmNote(null);
+    const r = await dncCall('crm-import', { limit: 500 });
+    setCrmBusy(null);
+    if (!r?.ok) {
+      setCrmNote({ ok: false, text: r?.error || 'Could not import.' });
+      return;
+    }
+    const code = campaignSettings?.defaultCountryCode || '+91';
+    const leads: Lead[] = (r.contacts || [])
+      .filter((c: any) => c.phone || c.email)
+      .map((c: any, i: number) => {
+        const { formatted, isValid } = sanitizePhoneNumber(c.phone, code);
+        return {
+          id: `lead-crm-${Date.now()}-${i}`,
+          name: c.name,
+          company: c.company || '',
+          phone: c.phone ? formatted || c.phone : '',
+          rawPhone: c.phone || '',
+          email: c.email || '',
+          country: c.country || undefined,
+          status: 'Pending',
+          whatsAppStatus: 'Pending',
+          emailStatus: 'Pending',
+          isValidPhone: !!c.phone && isValid,
+          isValidEmail: !!c.email && c.email.includes('@'),
+        } as Lead;
+      });
+    onImportLeads?.(leads);
+    setCrmNote({ ok: true, text: `Imported ${leads.length} from ${CRM_NAMES[r.provider as CrmId]} — anyone already in your leads was skipped.` });
+  };
+
+  // Do-not-contact list (lib/suppression.ts) — loaded when its section opens.
+  const [dnc, setDnc] = useState<{ total: number; entries: { id: string; kind: string; value: string; reason: string | null }[] } | null>(null);
+  const [dncInput, setDncInput] = useState('');
+  const [dncBusy, setDncBusy] = useState(false);
+  const [dncNote, setDncNote] = useState<string | null>(null);
+  const dncCall = async (action: string, body?: Record<string, unknown>) => {
+    if (!accessToken) return null;
+    const res = await fetch(`/api/whatsapp/subscribe-app?action=${action}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return res.json().catch(() => null);
+  };
+  const loadDnc = async () => setDnc(await dncCall('do-not-contact'));
+  useEffect(() => {
+    if (isOpen && activeSubTab === 'compliance') loadDnc();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, activeSubTab]);
+  const [domainInput, setDomainInput] = useState('');
+  const [fromLocalPart, setFromLocalPart] = useState('outreach');
+  const { health, loading: healthLoading, reload: reloadHealth } = useChannelHealth(accessToken);
 
   // Test email state
   const [testEmailTo, setTestEmailTo] = useState('');
@@ -82,9 +210,6 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   const [testWaStatus, setTestWaStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [testWaResultMsg, setTestWaResultMsg] = useState('');
 
-  // Collapsed by default — real testing value, but shouldn't clutter the default settings view.
-  const [showEmailTest, setShowEmailTest] = useState(false);
-  const [showWaTest, setShowWaTest] = useState(false);
 
   // Test Slack notification state — posts directly to the webhook URL from the browser
   // (text/plain avoids a CORS preflight; Slack parses the JSON body regardless).
@@ -129,7 +254,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeSubTab !== 'bot' || !accessToken || verifyToken !== null) return;
+    if (activeSubTab !== 'whatsapp' || !accessToken || verifyToken !== null) return;
     fetch('/api/whatsapp/subscribe-app', { headers: { Authorization: `Bearer ${accessToken}` } })
       .then((res) => res.json())
       .then((data) => setVerifyToken(data.verifyToken || ''))
@@ -146,10 +271,10 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
 
   useEffect(() => {
     if (activeSubTab !== 'voice' || !accessToken || vapiPromptLoaded) return;
-    // No assistant assigned to this org yet (brand new, hasn't saved a prompt before) —
-    // nothing to prefill; leave the fields empty for them to write a fresh prompt. Doesn't
-    // require formData.vapiApiKey — the server resolves the platform's shared key just fine.
-    if (!formData.vapiAssistantId) return;
+    // No assistant of this org's own yet (brand new, hasn't saved a prompt before) — nothing
+    // to prefill; leave the fields empty for them to write a fresh prompt. On the platform's
+    // Vapi account the assistant id lives server-side (org_voice), on their own in settings.
+    if (!orgVoice.voice?.assistantId && !formData.vapiAssistantId) return;
     setVapiPromptLoaded(true);
     setIsLoadingVapiPrompt(true);
     fetch('/api/voice/vapi?action=get-assistant', { headers: { Authorization: `Bearer ${accessToken}` } })
@@ -168,7 +293,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       .catch(() => {})
       .finally(() => setIsLoadingVapiPrompt(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSubTab, accessToken, vapiPromptLoaded, formData.vapiAssistantId]);
+  }, [activeSubTab, accessToken, vapiPromptLoaded, formData.vapiAssistantId, orgVoice.voice?.assistantId]);
 
   const handleSyncVapiAssistant = async () => {
     if (!accessToken) return;
@@ -181,12 +306,18 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
         body: JSON.stringify({
           systemPrompt: formData.vapiSystemPrompt || '',
           firstMessage: formData.vapiFirstMessage || '',
+          language: formData.vapiLanguage || null,
+          voiceGender: formData.vapiVoiceGender || 'female',
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {
         // The server re-attaches the current AI Learning lessons block — show what's actually live.
         if (data.systemPrompt) setFormData((prev) => ({ ...prev, vapiSystemPrompt: data.systemPrompt }));
+        // A newly created assistant on the org's own Vapi account is kept with its other Vapi
+        // settings (so the next save doesn't drop it); one on ours is recorded server-side.
+        if (data.assistantId && hasSecret('vapiApiKey')) setFormData((prev) => ({ ...prev, vapiAssistantId: data.assistantId }));
+        if (data.assistantId) orgVoice.refresh();
         setVapiSyncResult({ ok: true, message: 'Synced — your Vapi assistant now uses this prompt live.' });
       } else {
         setVapiSyncResult({ ok: false, message: data.error || 'Could not sync to Vapi.' });
@@ -212,12 +343,12 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       setTestWaResultMsg('Enter a phone number (with country code) to send the test to first');
       return;
     }
-    if (formData.whatsAppProvider === 'twilio' && (!formData.twilioAccountSid || !formData.twilioAuthToken)) {
+    if (formData.whatsAppProvider === 'twilio' && (!formData.twilioAccountSid || !hasSecret('twilioAuthToken'))) {
       setTestWaStatus('error');
       setTestWaResultMsg('Please enter your Twilio Account SID and Auth Token first');
       return;
     }
-    if (formData.whatsAppProvider === 'cloud_api' && (!formData.whatsappCloudApiKey || !formData.whatsappCloudPhoneId)) {
+    if (formData.whatsAppProvider === 'cloud_api' && (!hasSecret('whatsappCloudApiKey') || !formData.whatsappCloudPhoneId)) {
       setTestWaStatus('error');
       setTestWaResultMsg('Please enter your WhatsApp Cloud API access token and Phone Number ID first');
       return;
@@ -290,7 +421,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   };
 
   const handleSubscribeApp = async () => {
-    if (!formData.whatsappCloudApiKey || !formData.whatsappBusinessAccountId) {
+    if (!hasSecret('whatsappCloudApiKey') || !formData.whatsappBusinessAccountId) {
       setSubscribeStatus('error');
       setSubscribeMsg('Enter your Access Token and WhatsApp Business Account ID above first.');
       return;
@@ -306,8 +437,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       const res = await fetch('/api/whatsapp/subscribe-app', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        // A saved token isn't in the browser — the server falls back to the saved one.
         body: JSON.stringify({
-          accessToken: formData.whatsappCloudApiKey,
+          accessToken: formData.whatsappCloudApiKey || undefined,
           wabaId: formData.whatsappBusinessAccountId,
         }),
       });
@@ -325,7 +457,11 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     }
   };
 
-  type TemplateVarKey = 'whatsappTemplateVariables' | 'twilioContentVariables';
+  type TemplateVarKey =
+    | 'whatsappTemplateVariables'
+    | 'twilioContentVariables'
+    | 'whatsappFollowupTemplateVariables'
+    | 'twilioFollowupContentVariables';
 
   const addTemplateVariable = (key: TemplateVarKey) => {
     setFormData({ ...formData, [key]: [...(formData[key] || []), ''] });
@@ -393,19 +529,25 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
       setTestResultMsg('Enter an email address to send the test to first');
       return;
     }
-    if (formData.emailProvider === 'smtp') {
-      if (!formData.smtpHost || !formData.smtpUser || !formData.smtpPass) {
+    if (formData.emailProvider === 'gmail' || formData.emailProvider === 'outlook') {
+      if (!emailOAuth.status.connected || emailOAuth.status.provider !== formData.emailProvider) {
+        setTestStatus('error');
+        setTestResultMsg(`Connect ${formData.emailProvider === 'gmail' ? 'Gmail' : 'Outlook'} first`);
+        return;
+      }
+    } else if (formData.emailProvider === 'smtp') {
+      if (!formData.smtpHost || !formData.smtpUser || !hasSecret('smtpPass')) {
         setTestStatus('error');
         setTestResultMsg('Please enter SMTP host, username, and password first');
         return;
       }
     } else if (formData.emailProvider === 'mailgun') {
-      if (!formData.emailApiKey || !formData.mailgunDomain) {
+      if (!hasSecret('emailApiKey') || !formData.mailgunDomain) {
         setTestStatus('error');
         setTestResultMsg('Please enter your Mailgun API key and domain first');
         return;
       }
-    } else if (!formData.emailApiKey) {
+    } else if (formData.emailProvider !== 'resend' && !hasSecret('emailApiKey')) {
       setTestStatus('error');
       setTestResultMsg('Please enter an API Key first');
       return;
@@ -423,6 +565,7 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
         body: 'Hello!\n\nThis is a verified live test from your OmniReach AI outreach system.\n\nYour email connection is active. All automated outreach emails in your batch will be delivered directly to prospective client inboxes.\n\nBest regards,\nOmniReach AI Engine',
         channelSettings: formData,
         senderName: 'OmniReach AI',
+        accessToken,
       });
 
       if (data.delivered) {
@@ -448,123 +591,299 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     }, 600);
   };
 
+  const resultNote = (status: 'idle' | 'sending' | 'success' | 'error' | 'loading', message: string) =>
+    status === 'success' ? <Note tone="success">{message}</Note> : status === 'error' ? <Note tone="error">{message}</Note> : null;
+
   const testEmailBox = (
-    <div className="pt-2 border-t border-border">
-      <button
-        type="button"
-        onClick={() => setShowEmailTest((v) => !v)}
-        className="w-full flex items-center justify-between text-[11px] font-semibold text-ink-muted hover:text-ink transition-colors"
-      >
-        <span>Test Live Email Delivery</span>
-        {showEmailTest ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-      </button>
-
-      {showEmailTest && (
-        <div className="mt-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="email"
-              placeholder="your-email@gmail.com"
-              value={testEmailTo}
-              onChange={(e) => setTestEmailTo(e.target.value)}
-              className="flex-1 bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs"
-            />
-            <button
-              type="button"
-              onClick={handleSendTestEmail}
-              disabled={testStatus === 'sending'}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
-            >
-              {testStatus === 'sending' ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>Sending...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-3 h-3" />
-                  <span>Send Live Test</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {testStatus === 'success' && (
-            <div className="mt-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>{testResultMsg}</span>
-            </div>
-          )}
-
-          {testStatus === 'error' && (
-            <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] flex items-start gap-1.5">
-              <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-              <span>{testResultMsg}</span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    <AdvancedSection label="Send a test email">
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input
+          type="email"
+          placeholder="you@company.com"
+          value={testEmailTo}
+          onChange={(e) => setTestEmailTo(e.target.value)}
+          className={inputClass}
+        />
+        <button type="button" onClick={handleSendTestEmail} disabled={testStatus === 'sending'} className={`${primaryButtonClass} shrink-0`}>
+          {testStatus === 'sending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          <span>{testStatus === 'sending' ? 'Sending…' : 'Send Test'}</span>
+        </button>
+      </div>
+      {resultNote(testStatus, testResultMsg)}
+    </AdvancedSection>
   );
 
   const testWhatsAppBox = (
-    <div className="pt-2 border-t border-border">
-      <button
-        type="button"
-        onClick={() => setShowWaTest((v) => !v)}
-        className="w-full flex items-center justify-between text-[11px] font-semibold text-ink-muted hover:text-ink transition-colors"
-      >
-        <span>Test Live WhatsApp Delivery</span>
-        {showWaTest ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-      </button>
+    <AdvancedSection label="Send a test WhatsApp message">
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input
+          type="tel"
+          placeholder="+971501234567"
+          value={testWaTo}
+          onChange={(e) => setTestWaTo(e.target.value)}
+          className={`${inputClass} font-mono`}
+        />
+        <button type="button" onClick={handleSendTestWhatsApp} disabled={testWaStatus === 'sending'} className={`${primaryButtonClass} shrink-0`}>
+          {testWaStatus === 'sending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          <span>{testWaStatus === 'sending' ? 'Sending…' : 'Send Test'}</span>
+        </button>
+      </div>
+      {resultNote(testWaStatus, testWaResultMsg)}
+    </AdvancedSection>
+  );
 
-      {showWaTest && (
-        <div className="mt-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="tel"
-              placeholder="+971501234567"
-              value={testWaTo}
-              onChange={(e) => setTestWaTo(e.target.value)}
-              className="flex-1 bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-            />
+  const domainStatusLabel: Record<string, string> = {
+    verified: 'Verified',
+    pending: 'Checking DNS…',
+    not_started: 'Waiting for DNS records',
+    failed: 'Verification failed',
+    temporary_failure: 'Temporarily failing',
+  };
+
+  // Own sending domain on the platform's email account — what "automatic" sending sends from.
+  const ownDomainPanel = (
+    <Card
+      title="Send from your own domain"
+      aside={
+        emailDomain.domain && (
+          <span
+            className={`text-[10px] px-2 py-0.5 rounded-full border ${
+              emailDomain.domain.status === 'verified'
+                ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
+                : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+            }`}
+          >
+            {domainStatusLabel[emailDomain.domain.status] || emailDomain.domain.status}
+          </span>
+        )
+      }
+    >
+      {!emailDomain.domain ? (
+        <>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            Optional. Emails go out from our shared address until you add your company's domain — then they come from
+            e.g. <span className="text-ink-secondary">outreach@yourcompany.com</span>.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="flex items-center gap-1 flex-1 min-w-0">
+              <input
+                type="text"
+                value={fromLocalPart}
+                onChange={(e) => setFromLocalPart(e.target.value)}
+                className={`${inputClass} !w-28 font-mono`}
+                aria-label="Address name"
+              />
+              <span className="text-xs text-ink-muted">@</span>
+              <input
+                type="text"
+                placeholder="yourcompany.com"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                className={`${inputClass} font-mono`}
+                aria-label="Domain"
+              />
+            </div>
             <button
               type="button"
-              onClick={handleSendTestWhatsApp}
-              disabled={testWaStatus === 'sending'}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] disabled:opacity-50 transition-colors shadow-xs shrink-0"
+              disabled={emailDomain.busy || !domainInput.trim()}
+              onClick={() => emailDomain.add(domainInput, fromLocalPart)}
+              className={`${secondaryButtonClass} shrink-0`}
             >
-              {testWaStatus === 'sending' ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>Sending...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-3 h-3" />
-                  <span>Send Live Test</span>
-                </>
-              )}
+              {emailDomain.busy ? 'Adding…' : 'Add Domain'}
             </button>
           </div>
-
-          {testWaStatus === 'success' && (
-            <div className="mt-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>{testWaResultMsg}</span>
-            </div>
+        </>
+      ) : emailDomain.domain.status === 'verified' ? (
+        <p className="text-[11px] text-ink-secondary">
+          Emails go out from <strong className="text-ink">{emailDomain.domain.fromAddress}</strong>.
+        </p>
+      ) : (
+        <>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            Add these records at your domain host (GoDaddy, Cloudflare, Namecheap…), then click Verify. Once verified,
+            emails come from <strong className="text-ink-secondary">{emailDomain.domain.fromAddress}</strong>.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-[10px] font-mono">
+              <thead className="bg-surface">
+                <tr className="text-left text-ink-muted">
+                  <th className="px-2 py-1.5 font-semibold">Type</th>
+                  <th className="px-2 py-1.5 font-semibold">Name</th>
+                  <th className="px-2 py-1.5 font-semibold">Value</th>
+                  <th className="px-2 py-1.5 font-semibold">Priority</th>
+                </tr>
+              </thead>
+              <tbody>
+                {emailDomain.domain.records.map((r, i) => (
+                  <tr key={i} className="align-top border-t border-border">
+                    <td className="px-2 py-1.5">{r.type}</td>
+                    <td className="px-2 py-1.5 break-all">
+                      <button type="button" onClick={() => copyToClipboard(r.name, `dns-name-${i}`)} className="text-left hover:underline">
+                        {copiedField === `dns-name-${i}` ? 'Copied' : r.name}
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5 break-all">
+                      <button type="button" onClick={() => copyToClipboard(r.value, `dns-value-${i}`)} className="text-left hover:underline">
+                        {copiedField === `dns-value-${i}` ? 'Copied' : r.value}
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5">{r.priority ?? ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-ink-muted">Click a name or value to copy it.</p>
+        </>
+      )}
+      {emailDomain.domain && (
+        <div className="flex flex-wrap gap-2">
+          {emailDomain.domain.status !== 'verified' && (
+            <button type="button" disabled={emailDomain.busy} onClick={() => emailDomain.verify()} className={primaryButtonClass}>
+              {emailDomain.busy ? 'Checking…' : 'Verify DNS'}
+            </button>
           )}
-
-          {testWaStatus === 'error' && (
-            <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] flex items-start gap-1.5">
-              <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-              <span>{testWaResultMsg}</span>
-            </div>
-          )}
+          <button
+            type="button"
+            disabled={emailDomain.busy}
+            onClick={() => {
+              if (window.confirm(`Stop sending from ${emailDomain.domain!.domain}?`)) emailDomain.remove();
+            }}
+            className="text-[11px] text-ink-muted hover:text-rose-400 underline"
+          >
+            Remove domain
+          </button>
         </div>
       )}
-    </div>
+      {emailDomain.error && <Note tone="error">{emailDomain.error}</Note>}
+    </Card>
   );
+
+  // Gmail / Outlook "Connect" — sends from the org's own mailbox, no app password needed.
+  const emailOAuthProvider = formData.emailProvider === 'outlook' ? 'outlook' : 'gmail';
+  const emailOAuthLabel = emailOAuthProvider === 'gmail' ? 'Gmail' : 'Outlook';
+  const emailOAuthConnectedHere = emailOAuth.status.connected && emailOAuth.status.provider === emailOAuthProvider;
+  const emailOAuthPanel = (
+    <Card title={`${emailOAuthLabel} account`}>
+      {emailOAuthConnectedHere ? (
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-emerald-300 flex items-center gap-1.5">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            Sending as {emailOAuth.status.connectedEmail || `your ${emailOAuthLabel} account`}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              // The server also switches the org back to automatic sending (lib/emailOAuth.ts).
+              emailOAuth.disconnect();
+              setFormData((prev) => ({ ...prev, emailProvider: 'resend' }));
+              setEmailAdvancedOpen(false);
+            }}
+            className="text-[11px] text-ink-muted hover:text-rose-400 underline"
+          >
+            Disconnect
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="text-[11px] text-ink-muted leading-relaxed">
+            Sign in once and allow sending. Emails then go out from your own mailbox and appear in its Sent folder.
+            {emailOAuth.status.connected && ` This replaces the ${emailOAuth.status.provider === 'gmail' ? 'Gmail' : 'Outlook'} account connected now.`}
+          </p>
+          <button
+            type="button"
+            disabled={emailOAuth.connecting || !userId}
+            onClick={() => emailOAuth.connect(emailOAuthProvider)}
+            className={primaryButtonClass}
+          >
+            {emailOAuth.connecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+            <span>Connect {emailOAuthLabel}</span>
+          </button>
+        </>
+      )}
+      {emailOAuth.error && <Note tone="error">{emailOAuth.error}</Note>}
+      {emailOAuthConnectedHere && testEmailBox}
+    </Card>
+  );
+
+  // ---- Section status (one live line per section, from the health check) ----
+  type Section = SetupSectionId;
+  const whatsappStatus =
+    formData.whatsAppProvider !== 'cloud_api'
+      ? null
+      : health?.whatsappToken && !health.whatsappToken.ok
+        ? health.whatsappToken
+        : health?.whatsapp || null;
+  const sectionStatus: Record<Section, { ok: boolean; message: string } | null> = {
+    whatsapp: whatsappStatus,
+    email: health?.email || null,
+    voice: health?.voice || null,
+    calendar: health?.calendar || null,
+    crm: crm?.connection
+      ? crm.connection.lastError
+        ? { ok: false, message: `${CRM_NAMES[crm.connection.provider]}: ${crm.connection.lastError}` }
+        : {
+            ok: true,
+            message: `Connected to ${CRM_NAMES[crm.connection.provider]}${crm.connection.account ? ` (${crm.connection.account})` : ''}${
+              crm.connection.lastSyncAt ? ` · last sync ${new Date(crm.connection.lastSyncAt).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : ''
+            }.`,
+          }
+      : null,
+    compliance: dnc ? { ok: true, message: `${dnc.total} number${dnc.total === 1 ? '' : 's'} and address${dnc.total === 1 ? '' : 'es'} on your list.` } : null,
+    notifications: formData.slackWebhookUrl ? { ok: true, message: 'Slack notifications are on.' } : null,
+    integrations: formData.n8nWebhookUrl ? { ok: true, message: 'Webhook is set.' } : null,
+  };
+  const sections: { id: Section; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'whatsapp', label: 'WhatsApp', icon: MessageSquare },
+    { id: 'email', label: 'Email', icon: Mail },
+    { id: 'voice', label: 'Voice Agent', icon: Phone },
+    { id: 'calendar', label: 'Calendar', icon: Calendar },
+    { id: 'crm', label: 'CRM', icon: Database },
+    { id: 'compliance', label: 'Do not contact', icon: ShieldCheck },
+    { id: 'notifications', label: 'Notifications', icon: Slack },
+    { id: 'integrations', label: 'Integrations', icon: Network },
+  ];
+  const statusDot = (id: Section) => {
+    const s = sectionStatus[id];
+    return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${!s ? 'bg-border-strong' : s.ok ? 'bg-emerald-400' : 'bg-amber-400'}`} />;
+  };
+  const sectionProps = (id: Section) => ({
+    status: sectionStatus[id],
+    statusLoading: healthLoading && (id === 'whatsapp' ? formData.whatsAppProvider === 'cloud_api' : ['email', 'voice', 'calendar'].includes(id)),
+    onRefreshStatus: accessToken ? reloadHealth : undefined,
+  });
+
+  const messageModeEditor = (templateEditor: React.ReactNode) => (
+    <Card title="Message settings">
+      <Field
+        label="Message type"
+        hint="Free text only reaches people who messaged you in the last 24 hours. For first contact (cold outreach), WhatsApp requires an approved template."
+      >
+        <Segmented
+          value={formData.whatsappMessageMode || 'text'}
+          onChange={(v) => setFormData({ ...formData, whatsappMessageMode: v })}
+          options={[
+            { value: 'text', label: 'Free text' },
+            { value: 'template', label: 'Approved template' },
+          ]}
+        />
+      </Field>
+      {formData.whatsappMessageMode === 'template' && templateEditor}
+    </Card>
+  );
+
+  const emailMethod: 'auto' | 'gmail' | 'outlook' | 'other' =
+    formData.emailProvider === 'gmail' || formData.emailProvider === 'outlook'
+      ? formData.emailProvider
+      : emailAdvancedOpen
+        ? 'other'
+        : 'auto';
+  const otherEmailProvider = (['smtp', 'resend', 'sendgrid', 'mailgun'] as const).includes(formData.emailProvider as any)
+    ? (formData.emailProvider as 'smtp' | 'resend' | 'sendgrid' | 'mailgun')
+    : 'smtp';
+
+  const voiceLanguage = findVoiceLanguage(formData.vapiLanguage);
+  const hasVoiceNumber = orgVoice.voice?.hasNumber || (hasSecret('vapiApiKey') && !!formData.vapiPhoneNumberId);
 
   return (
     <AnimatePresence>
@@ -574,1324 +893,1199 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-2 sm:p-4"
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.96, y: 8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="bg-surface/65 backdrop-blur-3xl border border-white/10 ring-1 ring-white/5 rounded-3xl shadow-modal max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+            className="bg-surface/80 backdrop-blur-3xl border border-white/10 ring-1 ring-white/5 rounded-3xl shadow-modal max-w-4xl w-full h-[92vh] sm:h-[85vh] flex flex-col overflow-hidden"
           >
-        {/* Modal Header — pinned so the close button is always reachable, even when a
-            provider panel below (e.g. WhatsApp Cloud API's template editor) grows tall. */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-canvas shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#25D366]/20 text-[#128C7E] flex items-center justify-center">
-              <Zap className="w-4 h-4 fill-[#25D366]" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-ink">
-                Automated Dispatch & API Configuration
-              </h2>
-              <p className="text-[11px] text-ink-muted">
-                Configure real automated sending via Twilio WhatsApp, Resend Email, or Webhooks
-              </p>
-            </div>
-          </div>
-
-          <button
-            onClick={onClose}
-            className="p-1.5 text-ink-muted hover:text-ink rounded-lg transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Sub Navigation */}
-        <div className="flex border-b border-border px-6 bg-surface shrink-0">
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('whatsapp')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'whatsapp'
-                ? 'border-[#25D366] text-emerald-300'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span>WhatsApp Dispatch</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('email')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'email'
-                ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <Mail className="w-3.5 h-3.5" />
-            <span>Email Dispatch</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('bot')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'bot'
-                ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <Bot className="w-3.5 h-3.5" />
-            <span>AI Booking Bot</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('n8n')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'n8n'
-                ? 'border-[#18181B] text-ink'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <Network className="w-3.5 h-3.5" />
-            <span>n8n / Webhook</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('voice')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'voice'
-                ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <Phone className="w-3.5 h-3.5" />
-            <span>AI Voice Agent</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveSubTab('slack')}
-            className={`py-3 px-3 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'slack'
-                ? 'border-[#4285F4] text-[#1967D2]'
-                : 'border-transparent text-ink-muted hover:text-ink'
-            }`}
-          >
-            <Slack className="w-3.5 h-3.5" />
-            <span>Slack</span>
-          </button>
-        </div>
-
-        {accessToken && (
-          <div className="px-6 pt-4 shrink-0">
-            <ChannelHealthPanel
-              accessToken={accessToken}
-              health={health}
-              loading={healthLoading}
-              error={healthError}
-              onRefresh={reloadHealth}
-            />
-          </div>
-        )}
-
-        {/* Form Body — the only part that scrolls */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
-          {activeSubTab === 'whatsapp' && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-ink mb-1.5">
-                  WhatsApp Dispatch Method
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, whatsAppProvider: 'cloud_api' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.whatsAppProvider === 'cloud_api'
-                        ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold flex items-center gap-1">
-                      <span>⚡ WhatsApp Cloud API (Meta)</span>
-                      <span className="text-[9px] font-bold text-emerald-300 bg-emerald-500/15 px-1.5 py-0.5 rounded-full">Recommended</span>
-                    </div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Official Meta WhatsApp Business Platform. No middleman markup — direct from Meta.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, whatsAppProvider: 'web_direct' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.whatsAppProvider === 'web_direct'
-                        ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold flex items-center gap-1">
-                      <span>WhatsApp Web / App</span>
-                    </div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Zero setup. Direct 1-click links opening your WhatsApp.
-                    </div>
-                  </button>
+            <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-border shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-brand-strong/20 text-brand-strong flex items-center justify-center">
+                  <Settings className="w-4 h-4" />
                 </div>
-
-                {!whatsappMoreOpen ? (
-                  <button
-                    type="button"
-                    onClick={() => setWhatsappMoreOpen(true)}
-                    className="mt-2 text-[11px] font-semibold text-[#1967D2] hover:underline"
-                  >
-                    More options (Twilio, Custom Webhook / BSP)
-                  </button>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormData({ ...formData, whatsAppProvider: 'twilio' })
-                      }
-                      className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                        formData.whatsAppProvider === 'twilio'
-                          ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold shadow-xs'
-                          : 'bg-canvas border-border-strong text-ink-secondary'
-                      }`}
-                    >
-                      <div className="font-bold flex items-center gap-1">
-                        <span>⚡ Twilio WhatsApp API</span>
-                      </div>
-                      <div className="text-[11px] text-ink-muted mt-0.5">
-                        Automated background delivery via Twilio Sandbox or API.
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormData({ ...formData, whatsAppProvider: 'webhook' })
-                      }
-                      className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                        formData.whatsAppProvider === 'webhook'
-                          ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold shadow-xs'
-                          : 'bg-canvas border-border-strong text-ink-secondary'
-                      }`}
-                    >
-                      <div className="font-bold flex items-center gap-1">
-                        <span>⚡ Custom Webhook / BSP</span>
-                      </div>
-                      <div className="text-[11px] text-ink-muted mt-0.5">
-                        Route sends through your own n8n workflow or WhatsApp BSP (360dialog, Gupshup, etc.).
-                      </div>
-                    </button>
-                  </div>
-                )}
+                <div>
+                  <h2 className="text-sm font-bold text-ink">Channel Setup</h2>
+                  <p className="text-[11px] text-ink-muted">Connect the channels your AI uses to reach and reply to leads.</p>
+                </div>
               </div>
+              <button type="button" onClick={onClose} className="p-1.5 text-ink-muted hover:text-ink rounded-lg transition-colors" aria-label="Close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-              {formData.whatsAppProvider === 'twilio' && (
-                <div className="space-y-3 p-4 bg-canvas rounded-xl border border-border">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">Twilio WhatsApp Credentials</span>
-                    <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                      Live Server Sending
-                    </span>
-                  </div>
+            <form onSubmit={handleSubmit} className="flex-1 min-h-0 flex flex-col sm:flex-row">
+              <nav className="shrink-0 sm:w-48 border-b sm:border-b-0 sm:border-r border-border p-2 sm:p-3 flex sm:flex-col gap-1 overflow-x-auto">
+                {sections.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setActiveSubTab(id)}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                      activeSubTab === id ? 'bg-brand-strong/15 text-ink' : 'text-ink-muted hover:text-ink hover:bg-surface-hover'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="flex-1 text-left">{label}</span>
+                    {statusDot(id)}
+                  </button>
+                ))}
+              </nav>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Twilio Account SID
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      value={formData.twilioAccountSid || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, twilioAccountSid: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Twilio Auth Token
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="••••••••••••••••••••••••••••••••"
-                      value={formData.twilioAuthToken || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, twilioAuthToken: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Twilio WhatsApp Sender Number (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="+14155238886 (Default Twilio Sandbox)"
-                      value={formData.twilioFromNumber || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, twilioFromNumber: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                    <p className="text-[10px] text-ink-muted mt-1">
-                      💡 Tip: For free Twilio Sandbox testing, join the sandbox by sending the code to <code className="bg-surface-hover px-1 rounded">+1 415 523 8886</code> on WhatsApp.
-                    </p>
-                  </div>
-
-                  <div className="pt-3 border-t border-border space-y-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-ink mb-1.5">
-                        Message Mode
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, whatsappMessageMode: 'text' })}
-                          className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
-                            (formData.whatsappMessageMode || 'text') === 'text'
-                              ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold'
-                              : 'bg-surface border-border-strong text-ink-secondary'
-                          }`}
-                        >
-                          Free-form Text
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, whatsappMessageMode: 'template' })}
-                          className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
-                            formData.whatsappMessageMode === 'template'
-                              ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold'
-                              : 'bg-surface border-border-strong text-ink-secondary'
-                          }`}
-                        >
-                          Approved Template
-                        </button>
+              <div className="flex-1 min-w-0 flex flex-col">
+                <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+                  {activeSubTab === 'whatsapp' && (
+                    <SetupSection
+                      title="WhatsApp"
+                      description="Send campaign messages and let the AI reply to customers on WhatsApp."
+                      {...sectionProps('whatsapp')}
+                    >
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <ChoiceCard
+                          selected={formData.whatsAppProvider === 'cloud_api'}
+                          onClick={() => setFormData({ ...formData, whatsAppProvider: 'cloud_api' })}
+                          title="WhatsApp Business API"
+                          description="Official Meta API. Sends automatically and the AI replies."
+                          badge="Recommended"
+                        />
+                        <ChoiceCard
+                          selected={formData.whatsAppProvider === 'web_direct'}
+                          onClick={() => setFormData({ ...formData, whatsAppProvider: 'web_direct' })}
+                          title="WhatsApp app (manual)"
+                          description="Opens each chat in your own WhatsApp. No setup, no AI replies."
+                        />
+                        {whatsappMoreOpen && (
+                          <>
+                            <ChoiceCard
+                              selected={formData.whatsAppProvider === 'twilio'}
+                              onClick={() => setFormData({ ...formData, whatsAppProvider: 'twilio' })}
+                              title="Twilio"
+                              description="Send through your Twilio WhatsApp account."
+                            />
+                            <ChoiceCard
+                              selected={formData.whatsAppProvider === 'webhook'}
+                              onClick={() => setFormData({ ...formData, whatsAppProvider: 'webhook' })}
+                              title="Custom webhook / BSP"
+                              description="Route sends through n8n or a provider like 360dialog or Gupshup."
+                            />
+                          </>
+                        )}
                       </div>
-                      <p className="text-[10px] text-ink-muted mt-1">
-                        Free-form text only works within 24h of the recipient last messaging you. For <strong>cold outreach</strong> (first contact), you must use an approved template — otherwise sends will fail with a "re-engagement" error.
-                      </p>
-                    </div>
+                      {!whatsappMoreOpen && (
+                        <button type="button" onClick={() => setWhatsappMoreOpen(true)} className="text-[11px] font-medium text-ink-muted hover:text-ink underline">
+                          Other providers (Twilio, custom webhook)
+                        </button>
+                      )}
 
-                    {formData.whatsappMessageMode === 'template' && (
-                      <div className="space-y-3 p-3 bg-surface rounded-lg border border-border">
-                        <div>
-                          <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                            Twilio Content SID
-                          </label>
+                      {formData.whatsAppProvider === 'cloud_api' && (
+                        <>
+                          <Card title="Connect your number" step={1}>
+                            <Field label="Access token">
+                              <SecretInput
+                                saved={!!formData.savedSecrets?.whatsappCloudApiKey}
+                                placeholder="EAAxxxxxxxx…"
+                                value={formData.whatsappCloudApiKey}
+                                onChange={(v) => setSecret('whatsappCloudApiKey', v)}
+                                className={`${inputClass} font-mono`}
+                              />
+                            </Field>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <Field label="Phone number ID">
+                                <input
+                                  type="text"
+                                  placeholder="1234567890123456"
+                                  value={formData.whatsappCloudPhoneId || ''}
+                                  onChange={(e) => setFormData({ ...formData, whatsappCloudPhoneId: e.target.value })}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                              <Field label="Business account ID">
+                                <input
+                                  type="text"
+                                  placeholder="Next to Phone number ID"
+                                  value={formData.whatsappBusinessAccountId || ''}
+                                  onChange={(e) => setFormData({ ...formData, whatsappBusinessAccountId: e.target.value })}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                            </div>
+                            <p className="text-[10px] text-ink-muted">
+                              All three are on your Meta app's{' '}
+                              <a href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer" className="text-ink-secondary underline">
+                                WhatsApp → API Setup
+                              </a>{' '}
+                              page. Use a permanent token (System User) — the temporary one expires in 24 hours.
+                            </p>
+                          </Card>
+
+                          <Card title="Receive replies" step={2}>
+                            <Field label={<>App secret <span className="text-rose-400">· required for replies</span></>}>
+                              <SecretInput
+                                saved={!!formData.savedSecrets?.whatsappAppSecret}
+                                placeholder="Meta app → Settings → Basic → App secret"
+                                value={formData.whatsappAppSecret}
+                                onChange={(v) => setSecret('whatsappAppSecret', v)}
+                                className={`${inputClass} font-mono`}
+                              />
+                            </Field>
+                            {!hasSecret('whatsappAppSecret') && (
+                              <Note tone="warn">Without the app secret, incoming WhatsApp messages are rejected and the AI won't reply.</Note>
+                            )}
+                            <p className="text-[11px] text-ink-muted">
+                              In your Meta app → WhatsApp → Configuration → Webhook, paste these two values and subscribe to <strong className="text-ink-secondary">messages</strong>:
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <CopyRow
+                                label="Callback URL"
+                                value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook`}
+                                copied={copiedField === 'url'}
+                                onCopy={() => copyToClipboard(`${window.location.origin}/api/whatsapp/webhook`, 'url')}
+                              />
+                              <CopyRow
+                                label="Verify token"
+                                value={verifyToken === null ? 'Loading…' : verifyToken || 'Not configured on the server'}
+                                copied={copiedField === 'token'}
+                                onCopy={() => verifyToken && copyToClipboard(verifyToken, 'token')}
+                                disabled={!verifyToken}
+                              />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button type="button" onClick={handleSubscribeApp} disabled={subscribeStatus === 'loading'} className={secondaryButtonClass}>
+                                {subscribeStatus === 'loading' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                <span>Subscribe app to my WhatsApp account</span>
+                              </button>
+                              <span className="text-[10px] text-ink-muted">Last step — Meta has no button for this.</span>
+                            </div>
+                            {resultNote(subscribeStatus, subscribeMsg)}
+                          </Card>
+
+                          {messageModeEditor(
+                            <>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <Field label="Template name">
+                                  <input
+                                    type="text"
+                                    placeholder="outreach_intro"
+                                    value={formData.whatsappTemplateName || ''}
+                                    onChange={(e) => setFormData({ ...formData, whatsappTemplateName: e.target.value })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                                <Field label="Language code">
+                                  <input
+                                    type="text"
+                                    placeholder="en_US"
+                                    value={formData.whatsappTemplateLanguage || ''}
+                                    onChange={(e) => setFormData({ ...formData, whatsappTemplateLanguage: e.target.value })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                              </div>
+                              <p className="text-[10px] text-ink-muted">
+                                Create templates in{' '}
+                                <a href="https://business.facebook.com/wa/manage/message-templates/" target="_blank" rel="noreferrer" className="text-ink-secondary underline">
+                                  WhatsApp Manager
+                                </a>{' '}
+                                and use the exact name and language once approved.
+                              </p>
+                              {renderTemplateVariableEditor('whatsappTemplateVariables')}
+                              <AdvancedSection label="Follow-up template (optional)">
+                                <p className="text-[10px] text-ink-muted">
+                                  Lets campaign follow-ups also go out on WhatsApp — WhatsApp only allows an approved template once 24 hours pass without a reply. Without one, follow-ups go by email only.
+                                </p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <Field label="Follow-up template name">
+                                    <input
+                                      type="text"
+                                      placeholder="outreach_followup"
+                                      value={formData.whatsappFollowupTemplateName || ''}
+                                      onChange={(e) => setFormData({ ...formData, whatsappFollowupTemplateName: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                  <Field label="Language code">
+                                    <input
+                                      type="text"
+                                      placeholder={formData.whatsappTemplateLanguage || 'en_US'}
+                                      value={formData.whatsappFollowupTemplateLanguage || ''}
+                                      onChange={(e) => setFormData({ ...formData, whatsappFollowupTemplateLanguage: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                </div>
+                                {formData.whatsappFollowupTemplateName && renderTemplateVariableEditor('whatsappFollowupTemplateVariables')}
+                              </AdvancedSection>
+                            </>
+                          )}
+
+                          <AdvancedSection label="Sending limits">
+                            <Field
+                              label="Safe daily send limit"
+                              hint="New numbers usually start at 250 conversations a day and grow as quality improves. Bigger batches are spread across days automatically."
+                            >
+                              <input
+                                type="number"
+                                min={1}
+                                value={formData.safeDailyWhatsAppLimit ?? 250}
+                                onChange={(e) => setFormData({ ...formData, safeDailyWhatsAppLimit: Math.max(1, parseInt(e.target.value, 10) || 1) })}
+                                className={`${inputClass} !w-40 font-mono`}
+                              />
+                            </Field>
+                          </AdvancedSection>
+                          {testWhatsAppBox}
+                          <AdvancedSection label="Sent, but nothing arrives?">
+                            <ul className="list-disc pl-4 space-y-1 text-[11px] text-ink-muted leading-relaxed">
+                              <li>Test apps can only message up to 5 numbers verified under WhatsApp → API Setup.</li>
+                              <li>The temporary access token expires after 24 hours — use a permanent System User token.</li>
+                              <li>Brand-new numbers may be held by Meta for quality review before delivering.</li>
+                              <li>Outside the 24-hour reply window, only approved templates are delivered.</li>
+                            </ul>
+                          </AdvancedSection>
+                        </>
+                      )}
+
+                      {formData.whatsAppProvider === 'twilio' && (
+                        <>
+                          <Card title="Twilio account">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <Field label="Account SID">
+                                <input
+                                  type="text"
+                                  placeholder="ACxxxxxxxx…"
+                                  value={formData.twilioAccountSid || ''}
+                                  onChange={(e) => setFormData({ ...formData, twilioAccountSid: e.target.value })}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                              <Field label="Auth token">
+                                <SecretInput
+                                  saved={!!formData.savedSecrets?.twilioAuthToken}
+                                  placeholder="••••••••"
+                                  value={formData.twilioAuthToken}
+                                  onChange={(v) => setSecret('twilioAuthToken', v)}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                            </div>
+                            <Field label="WhatsApp sender number" hint="Leave blank to use the Twilio sandbox (+1 415 523 8886).">
+                              <input
+                                type="text"
+                                placeholder="+14155238886"
+                                value={formData.twilioFromNumber || ''}
+                                onChange={(e) => setFormData({ ...formData, twilioFromNumber: e.target.value })}
+                                className={`${inputClass} font-mono`}
+                              />
+                            </Field>
+                            <Note>Twilio sends campaign messages only — AI replies need the WhatsApp Business API.</Note>
+                          </Card>
+                          {messageModeEditor(
+                            <>
+                              <Field
+                                label="Content SID"
+                                hint={
+                                  <>
+                                    From the{' '}
+                                    <a href="https://console.twilio.com/us1/develop/sms/content-template-builder" target="_blank" rel="noreferrer" className="text-ink-secondary underline">
+                                      Twilio Content Template Builder
+                                    </a>
+                                    , once WhatsApp approves it (starts with "HX").
+                                  </>
+                                }
+                              >
+                                <input
+                                  type="text"
+                                  placeholder="HXxxxxxxxx…"
+                                  value={formData.twilioContentSid || ''}
+                                  onChange={(e) => setFormData({ ...formData, twilioContentSid: e.target.value })}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                              {renderTemplateVariableEditor('twilioContentVariables')}
+                              <AdvancedSection label="Follow-up template (optional)">
+                                <Field
+                                  label="Follow-up Content SID"
+                                  hint="A second approved template for campaign follow-ups on WhatsApp. Without one, follow-ups go by email only."
+                                >
+                                  <input
+                                    type="text"
+                                    placeholder="HXxxxxxxxx…"
+                                    value={formData.twilioFollowupContentSid || ''}
+                                    onChange={(e) => setFormData({ ...formData, twilioFollowupContentSid: e.target.value })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                                {formData.twilioFollowupContentSid && renderTemplateVariableEditor('twilioFollowupContentVariables')}
+                              </AdvancedSection>
+                            </>
+                          )}
+                          {testWhatsAppBox}
+                        </>
+                      )}
+
+                      {formData.whatsAppProvider === 'webhook' && (
+                        <Card title="Custom webhook / BSP">
+                          <p className="text-[11px] text-ink-muted leading-relaxed">
+                            Each WhatsApp send posts the lead and message to your webhook (set under Integrations). Point it at a
+                            workflow that delivers through your provider — 360dialog, Gupshup, Infobip, WATI…
+                          </p>
+                          {!formData.n8nWebhookUrl && (
+                            <Note tone="warn">
+                              No webhook URL yet —{' '}
+                              <button type="button" onClick={() => setActiveSubTab('integrations')} className="underline">
+                                add one under Integrations
+                              </button>
+                              .
+                            </Note>
+                          )}
+                          {testWhatsAppBox}
+                        </Card>
+                      )}
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'email' && (
+                    <SetupSection title="Email" description="How campaign emails and AI replies are sent." {...sectionProps('email')}>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <ChoiceCard
+                          selected={emailMethod === 'auto'}
+                          onClick={() => {
+                            // 'resend' with no org key is the automatic platform-sent path (lib/emailSender.ts).
+                            setFormData({ ...formData, emailProvider: 'resend' });
+                            setEmailAdvancedOpen(false);
+                          }}
+                          title="Automatic"
+                          description="We send for you. Nothing to set up."
+                          badge="Recommended"
+                        />
+                        <ChoiceCard
+                          selected={emailMethod === 'gmail'}
+                          onClick={() => {
+                            setFormData({ ...formData, emailProvider: 'gmail' });
+                            setEmailAdvancedOpen(false);
+                          }}
+                          title="Gmail"
+                          description="Send from your Gmail or Google Workspace mailbox."
+                        />
+                        <ChoiceCard
+                          selected={emailMethod === 'outlook'}
+                          onClick={() => {
+                            setFormData({ ...formData, emailProvider: 'outlook' });
+                            setEmailAdvancedOpen(false);
+                          }}
+                          title="Outlook"
+                          description="Send from your Outlook or Microsoft 365 mailbox."
+                        />
+                        <ChoiceCard
+                          selected={emailMethod === 'other'}
+                          onClick={() => {
+                            setEmailAdvancedOpen(true);
+                            if (!['smtp', 'sendgrid', 'mailgun'].includes(formData.emailProvider)) setFormData({ ...formData, emailProvider: 'smtp' });
+                          }}
+                          title="Other"
+                          description="SMTP (Zoho, cPanel…) or an email API key."
+                        />
+                      </div>
+
+                      {emailMethod === 'auto' && (
+                        <>
+                          {userId && ownDomainPanel}
+                          {testEmailBox}
+                        </>
+                      )}
+
+                      {(emailMethod === 'gmail' || emailMethod === 'outlook') && emailOAuthPanel}
+
+                      {emailMethod === 'other' && (
+                        <Card title="Provider">
+                          <Segmented
+                            value={otherEmailProvider}
+                            onChange={(v) => setFormData({ ...formData, emailProvider: v })}
+                            options={[
+                              { value: 'smtp', label: 'SMTP' },
+                              { value: 'resend', label: 'Resend' },
+                              { value: 'sendgrid', label: 'SendGrid' },
+                              { value: 'mailgun', label: 'Mailgun' },
+                            ]}
+                          />
+
+                          {formData.emailProvider === 'smtp' ? (
+                            <>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div className="sm:col-span-2">
+                                  <Field label="SMTP host">
+                                    <input
+                                      type="text"
+                                      placeholder="smtp.zoho.com"
+                                      value={formData.smtpHost || ''}
+                                      onChange={(e) => setFormData({ ...formData, smtpHost: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                </div>
+                                <Field label="Port">
+                                  <input
+                                    type="number"
+                                    placeholder="587"
+                                    value={formData.smtpPort ?? ''}
+                                    onChange={(e) => setFormData({ ...formData, smtpPort: e.target.value ? Number(e.target.value) : undefined })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <Field label="Username">
+                                  <input
+                                    type="text"
+                                    placeholder="you@company.com"
+                                    value={formData.smtpUser || ''}
+                                    onChange={(e) => setFormData({ ...formData, smtpUser: e.target.value })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                                <Field label="Password / app password">
+                                  <SecretInput
+                                    saved={!!formData.savedSecrets?.smtpPass}
+                                    placeholder="••••••••"
+                                    value={formData.smtpPass}
+                                    onChange={(v) => setSecret('smtpPass', v)}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                                <Field label="From address (optional)">
+                                  <input
+                                    type="email"
+                                    placeholder="Defaults to the username"
+                                    value={formData.smtpFromEmail || ''}
+                                    onChange={(e) => setFormData({ ...formData, smtpFromEmail: e.target.value })}
+                                    className={`${inputClass} font-mono`}
+                                  />
+                                </Field>
+                                <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary pb-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!formData.smtpSecure}
+                                    onChange={(e) => setFormData({ ...formData, smtpSecure: e.target.checked })}
+                                    className="accent-[#128C7E]"
+                                  />
+                                  Use SSL (port 465)
+                                </label>
+                              </div>
+                              <AdvancedSection label="Settings for common providers">
+                                <ul className="space-y-1 text-[11px] text-ink-muted leading-relaxed">
+                                  <li>
+                                    <strong className="text-ink-secondary">Zoho:</strong> smtp.zoho.com (EU: smtp.zoho.eu), port 587, with an{' '}
+                                    <a href="https://accounts.zoho.com/home#security/app-password" target="_blank" rel="noreferrer" className="underline">
+                                      app password
+                                    </a>
+                                    .
+                                  </li>
+                                  <li>
+                                    <strong className="text-ink-secondary">Office 365:</strong> smtp.office365.com, port 587 — or just use Outlook above.
+                                  </li>
+                                  <li>
+                                    <strong className="text-ink-secondary">Gmail:</strong> smtp.gmail.com, port 587, with an{' '}
+                                    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="underline">
+                                      app password
+                                    </a>{' '}
+                                    — or just use Gmail above.
+                                  </li>
+                                </ul>
+                              </AdvancedSection>
+                            </>
+                          ) : (
+                            <>
+                              <Field
+                                label="API key"
+                                hint={
+                                  formData.emailProvider === 'resend'
+                                    ? 'From resend.com → API Keys.'
+                                    : formData.emailProvider === 'sendgrid'
+                                      ? 'From app.sendgrid.com, with Mail Send permission.'
+                                      : 'From app.mailgun.com → Settings → API Keys.'
+                                }
+                              >
+                                <SecretInput
+                                  saved={!!formData.savedSecrets?.emailApiKey}
+                                  placeholder={formData.emailProvider === 'resend' ? 're_…' : formData.emailProvider === 'sendgrid' ? 'SG.…' : 'key-…'}
+                                  value={formData.emailApiKey}
+                                  onChange={(v) => setSecret('emailApiKey', v)}
+                                  className={`${inputClass} font-mono`}
+                                />
+                              </Field>
+                              {formData.emailProvider === 'mailgun' && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <Field label="Sending domain">
+                                    <input
+                                      type="text"
+                                      placeholder="mg.yourdomain.com"
+                                      value={formData.mailgunDomain || ''}
+                                      onChange={(e) => setFormData({ ...formData, mailgunDomain: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                  <Field label="Region">
+                                    <select
+                                      value={formData.mailgunRegion || 'us'}
+                                      onChange={(e) => setFormData({ ...formData, mailgunRegion: e.target.value as 'us' | 'eu' })}
+                                      className={inputClass}
+                                    >
+                                      <option value="us">US</option>
+                                      <option value="eu">EU</option>
+                                    </select>
+                                  </Field>
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {testEmailBox}
+                        </Card>
+                      )}
+
+                      {health?.emailReplyTracking && !health.emailReplyTracking.ok && (
+                        <Note tone="warn">Reply tracking: {health.emailReplyTracking.message}</Note>
+                      )}
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'voice' && (
+                    <SetupSection
+                      title="AI Voice Agent"
+                      description="An AI that calls your leads and answers your phone line, then books meetings."
+                      {...sectionProps('voice')}
+                    >
+                      <Card
+                        title="Phone number"
+                        aside={
+                          orgVoice.voice?.inboundEnabled && (
+                            <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                              Answers incoming calls
+                            </span>
+                          )
+                        }
+                      >
+                        {hasVoiceNumber ? (
+                          <>
+                            <p className="text-xs text-ink-secondary">
+                              {orgVoice.voice?.phoneNumber ? (
+                                <>
+                                  Your number: <strong className="font-mono text-ink">{orgVoice.voice.phoneNumber}</strong>
+                                </>
+                              ) : (
+                                'Using the number on your own Vapi account.'
+                              )}
+                            </p>
+                            {!orgVoice.voice?.inboundEnabled && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button type="button" onClick={orgVoice.enableInbound} disabled={orgVoice.enabling || !userId} className={secondaryButtonClass}>
+                                  {orgVoice.enabling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                                  <span>Let the AI answer incoming calls</span>
+                                </button>
+                                <span className="text-[10px] text-ink-muted">It picks up, helps the caller and can book a meeting.</span>
+                              </div>
+                            )}
+                            <Field
+                              label="Daily call limit"
+                              hint="The most calls your number makes in 24 hours. Too many calls from one number gets it marked as spam — new numbers should stay around 100–150."
+                            >
+                              <select
+                                value={formData.voiceDailyCallLimit ?? 150}
+                                onChange={(e) => setFormData({ ...formData, voiceDailyCallLimit: Number(e.target.value) })}
+                                className={`${inputClass} !w-40`}
+                              >
+                                {[50, 100, 150, 200, 300, 500].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n} calls / day
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field
+                              label="Greeting for incoming calls (optional)"
+                              hint={
+                                formData.vapiLanguage && !formData.vapiLanguage.startsWith('en')
+                                  ? 'Leave blank and the agent greets callers in your call language.'
+                                  : 'Saved with Save Settings below.'
+                              }
+                            >
+                              <input
+                                type="text"
+                                placeholder={`Hi, thanks for calling${campaignSettings?.companyName ? ` ${campaignSettings.companyName}` : ''}! How can I help you today?`}
+                                value={formData.vapiInboundFirstMessage || ''}
+                                onChange={(e) => setFormData({ ...formData, vapiInboundFirstMessage: e.target.value })}
+                                className={inputClass}
+                              />
+                            </Field>
+                          </>
+                        ) : (
+                          <Note tone="warn">No phone number is assigned to your workspace yet — contact support to get your own number.</Note>
+                        )}
+                        {orgVoice.error && <Note tone="error">{orgVoice.error}</Note>}
+                      </Card>
+
+                      <Card
+                        title="Voice agent"
+                        aside={
+                          isLoadingVapiPrompt && (
+                            <span className="text-[11px] text-ink-muted flex items-center gap-1">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              Loading…
+                            </span>
+                          )
+                        }
+                      >
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="sm:col-span-2">
+                            <Field label="Language">
+                              <select
+                                value={formData.vapiLanguage || ''}
+                                onChange={(e) => setFormData({ ...formData, vapiLanguage: e.target.value || undefined })}
+                                className={inputClass}
+                              >
+                                <option value="">English — default voice</option>
+                                {(['Auto', 'Americas', 'Europe', 'India', 'Middle East & Asia'] as const).map((region) => (
+                                  <optgroup key={region} label={region === 'Auto' ? 'Any language' : region}>
+                                    {VOICE_LANGUAGES.filter((l) => l.region === region).map((l) => (
+                                      <option key={l.code} value={l.code}>
+                                        {l.label}
+                                      </option>
+                                    ))}
+                                  </optgroup>
+                                ))}
+                              </select>
+                            </Field>
+                          </div>
+                          <Field label="Voice">
+                            <select
+                              value={formData.vapiVoiceGender || 'female'}
+                              disabled={!formData.vapiLanguage}
+                              onChange={(e) => setFormData({ ...formData, vapiVoiceGender: e.target.value as 'female' | 'male' })}
+                              className={`${inputClass} disabled:opacity-50`}
+                            >
+                              <option value="female">Female</option>
+                              <option value="male">Male</option>
+                            </select>
+                          </Field>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <Field
+                            label="Say it's an AI"
+                            hint="Required by law for people in the EU and the US. Not required in India or the Gulf today."
+                          >
+                            <select
+                              value={formData.voiceAiDisclosureMode || (formData.voiceAiDisclosure === false ? 'never' : 'required')}
+                              onChange={(e) => setFormData({ ...formData, voiceAiDisclosureMode: e.target.value as 'required' | 'always' | 'never' })}
+                              className={inputClass}
+                            >
+                              <option value="required">Only where required (EU, US)</option>
+                              <option value="always">On every call</option>
+                              <option value="never">Never — I have legal advice</option>
+                            </select>
+                          </Field>
+                          <Field
+                            label="Recording notice"
+                            hint="Calls are recorded. Telling people is required in the UAE, India (DPDP Act), the UK, the EU and many US states."
+                          >
+                            <select
+                              value={formData.voiceRecordingNotice === false ? 'off' : 'on'}
+                              onChange={(e) => setFormData({ ...formData, voiceRecordingNotice: e.target.value === 'on' })}
+                              className={inputClass}
+                            >
+                              <option value="on">Say "this call may be recorded"</option>
+                              <option value="off">Don't say it</option>
+                            </select>
+                          </Field>
+                          <div className="sm:col-span-2">
+                            <Field
+                              label="US numbers"
+                              hint={'US law (TCPA) requires a lead\'s prior written consent before AI marketing calls. Mark leads "Agreed to be called" on the Leads page, or add a Consent column to your spreadsheet.'}
+                            >
+                              <select
+                                value={formData.voiceUsConsentRequired === false ? 'off' : 'on'}
+                                onChange={(e) => setFormData({ ...formData, voiceUsConsentRequired: e.target.value === 'on' })}
+                                className={inputClass}
+                              >
+                                <option value="on">Only call US leads who agreed to be called</option>
+                                <option value="off">Don't check — I have legal advice</option>
+                              </select>
+                            </Field>
+                          </div>
+                        </div>
+                        <Field
+                          label="First message"
+                          hint={
+                            voiceLanguage && voiceLanguage.code !== 'auto'
+                              ? `Write this in ${voiceLanguage.label}. The instructions below can stay in English.`
+                              : 'What the agent says when the lead picks up.'
+                          }
+                        >
                           <input
                             type="text"
-                            placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                            value={formData.twilioContentSid || ''}
-                            onChange={(e) => setFormData({ ...formData, twilioContentSid: e.target.value })}
-                            className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
+                            placeholder="Hi! This is Alex calling from…"
+                            value={formData.vapiFirstMessage || ''}
+                            onChange={(e) => setFormData({ ...formData, vapiFirstMessage: e.target.value })}
+                            className={inputClass}
                           />
-                          <p className="text-[10px] text-ink-muted mt-1">
-                            Create a WhatsApp Content Template in the{' '}
-                            <a
-                              href="https://console.twilio.com/us1/develop/sms/content-template-builder"
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-[#1967D2] font-medium hover:underline"
-                            >
-                              Twilio Content Template Builder
-                            </a>
-                            , submit it for WhatsApp approval, then paste its Content SID (starts with "HX") here once approved.
-                          </p>
+                        </Field>
+                        <Field label="Instructions">
+                          <textarea
+                            rows={8}
+                            placeholder="You are Alex, a friendly sales rep for … Your goal is to book a 30-minute intro call."
+                            value={formData.vapiSystemPrompt || ''}
+                            onChange={(e) => setFormData({ ...formData, vapiSystemPrompt: e.target.value })}
+                            className={`${inputClass} font-mono resize-y`}
+                          />
+                        </Field>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSyncVapiAssistant}
+                            disabled={isSyncingVapi || !formData.vapiSystemPrompt || !formData.vapiFirstMessage}
+                            className={primaryButtonClass}
+                          >
+                            {isSyncingVapi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                            <span>{isSyncingVapi ? 'Saving…' : 'Save voice agent'}</span>
+                          </button>
+                          <span className="text-[10px] text-ink-muted">Goes live right away — language and voice included.</span>
                         </div>
-                        {renderTemplateVariableEditor('twilioContentVariables')}
-                      </div>
-                    )}
-                  </div>
+                        {vapiSyncResult && <Note tone={vapiSyncResult.ok ? 'success' : 'error'}>{vapiSyncResult.message}</Note>}
+                      </Card>
 
-                  {testWhatsAppBox}
-                </div>
-              )}
-
-              {formData.whatsAppProvider === 'cloud_api' && (
-                <div className="space-y-3 p-4 bg-canvas rounded-xl border border-border">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">WhatsApp Cloud API Credentials</span>
-                    <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                      Live Server Sending
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Temporary or Permanent Access Token
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="EAAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      value={formData.whatsappCloudApiKey || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, whatsappCloudApiKey: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Phone Number ID
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="1234567890123456"
-                      value={formData.whatsappCloudPhoneId || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, whatsappCloudPhoneId: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-
-                  <p className="text-[10px] text-ink-muted leading-relaxed">
-                    💡 Create a Meta app and WhatsApp Business Platform product at{' '}
-                    <a
-                      href="https://developers.facebook.com/apps"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-[#1967D2] font-medium hover:underline"
-                    >
-                      developers.facebook.com/apps
-                    </a>
-                    . The Access Token and Phone Number ID are shown on the WhatsApp → API Setup page.
-                  </p>
-
-                  <div className="p-2.5 bg-surface rounded-lg border border-border space-y-2">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        WhatsApp Business Account ID
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="shown right next to Phone Number ID on the same page"
-                        value={formData.whatsappBusinessAccountId || ''}
-                        onChange={(e) => setFormData({ ...formData, whatsappBusinessAccountId: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-                    <p className="text-[10px] text-ink-secondary leading-relaxed">
-                      One more required step Meta doesn't surface in its dashboard: subscribe this app to your WhatsApp Business Account, or replies will never reach the AI booking bot.
-                    </p>
-
-                    <div className="pt-1.5 border-t border-border">
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        App Secret <span className="font-normal text-ink-muted">(recommended)</span>
-                      </label>
-                      <input
-                        type="password"
-                        placeholder="from Meta App Dashboard → Settings → Basic → App Secret"
-                        value={formData.whatsappAppSecret || ''}
-                        onChange={(e) => setFormData({ ...formData, whatsappAppSecret: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                      <p className="text-[10px] text-ink-secondary mt-1 leading-relaxed">
-                        Verifies inbound webhook calls really come from your Meta App — without it, anyone who finds this app's webhook URL could send forged messages pretending to be your customers.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleSubscribeApp}
-                      disabled={subscribeStatus === 'loading'}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg text-white bg-[#1967D2] hover:bg-[#1554AE] disabled:opacity-50 transition-colors"
-                    >
-                      {subscribeStatus === 'loading' ? (
-                        <>
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          <span>Subscribing...</span>
-                        </>
-                      ) : (
-                        <span>Subscribe App to WABA</span>
-                      )}
-                    </button>
-                    {subscribeStatus === 'success' && (
-                      <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span>{subscribeMsg}</span>
-                      </div>
-                    )}
-                    {subscribeStatus === 'error' && (
-                      <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] flex items-start gap-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-                        <span>{subscribeMsg}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-300 leading-relaxed space-y-1">
-                    <p className="font-semibold text-amber-200">⚠️ "Sent" but nothing arrives on the phone? Meta's API accepting the request isn't the same as delivering it. Check:</p>
-                    <ul className="list-disc list-inside space-y-0.5">
-                      <li>The recipient number is added as a <strong>verified test recipient</strong> under your app's WhatsApp → API Setup page (test/dev apps can only message up to 5 verified numbers).</li>
-                      <li>Your <strong>access token hasn't expired</strong> — the default temporary token from API Setup lasts only 24 hours; generate a permanent one via a System User for real use.</li>
-                      <li>Meta isn't <strong>holding the message for quality assessment</strong> — brand-new test numbers/business accounts often have no quality rating yet, so Meta silently queues messages without delivering them. This app now detects that case and reports it as failed with an explanation, instead of a false "delivered."</li>
-                      <li>You're inside the <strong>24-hour customer service window</strong> (the recipient messaged your number recently) — outside it, only pre-approved message templates can be delivered, not free-form text.</li>
-                    </ul>
-                  </div>
-
-                  <div className="pt-3 border-t border-border space-y-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-ink mb-1.5">
-                        Message Mode
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, whatsappMessageMode: 'text' })}
-                          className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
-                            (formData.whatsappMessageMode || 'text') === 'text'
-                              ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold'
-                              : 'bg-surface border-border-strong text-ink-secondary'
-                          }`}
-                        >
-                          Free-form Text
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setFormData({ ...formData, whatsappMessageMode: 'template' })}
-                          className={`p-2 rounded-lg border text-[11px] font-medium transition-all ${
-                            formData.whatsappMessageMode === 'template'
-                              ? 'bg-[#128C7E]/10 border-[#25D366] text-emerald-300 font-semibold'
-                              : 'bg-surface border-border-strong text-ink-secondary'
-                          }`}
-                        >
-                          Approved Template
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-ink-muted mt-1">
-                        Free-form text only works within 24h of the recipient last messaging you. For <strong>cold outreach</strong> (first contact), you must use an approved template — otherwise sends will fail with error 131047 ("re-engagement message").
-                      </p>
-                    </div>
-
-                    {formData.whatsappMessageMode === 'template' && (
-                      <div className="space-y-3 p-3 bg-surface rounded-lg border border-border">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                              Approved Template Name
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="e.g. outreach_intro"
-                              value={formData.whatsappTemplateName || ''}
-                              onChange={(e) => setFormData({ ...formData, whatsappTemplateName: e.target.value })}
-                              className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                              Language Code
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="en_US"
-                              value={formData.whatsappTemplateLanguage || ''}
-                              onChange={(e) => setFormData({ ...formData, whatsappTemplateLanguage: e.target.value })}
-                              className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                            />
-                          </div>
+                      <Card title="If they don't answer">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <Field label="Call attempts">
+                            <select
+                              value={formData.voiceRetryAttempts ?? 3}
+                              onChange={(e) => setFormData({ ...formData, voiceRetryAttempts: Number(e.target.value) })}
+                              className={inputClass}
+                            >
+                              <option value={1}>1 — don't call again</option>
+                              <option value={2}>2 tries</option>
+                              <option value={3}>3 tries</option>
+                              <option value={4}>4 tries</option>
+                              <option value={5}>5 tries</option>
+                            </select>
+                          </Field>
+                          <Field label="Time between tries">
+                            <select
+                              value={formData.voiceRetryHours ?? 3}
+                              disabled={(formData.voiceRetryAttempts ?? 3) <= 1}
+                              onChange={(e) => setFormData({ ...formData, voiceRetryHours: Number(e.target.value) })}
+                              className={`${inputClass} disabled:opacity-50`}
+                            >
+                              {[1, 2, 3, 4, 6, 24].map((h) => (
+                                <option key={h} value={h}>
+                                  {h === 24 ? 'Next day' : `${h} hour${h === 1 ? '' : 's'}`}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="Then">
+                            <select
+                              value={formData.voiceFallback ?? 'whatsapp_email'}
+                              onChange={(e) => setFormData({ ...formData, voiceFallback: e.target.value as 'whatsapp_email' | 'email' | 'none' })}
+                              className={inputClass}
+                            >
+                              <option value="whatsapp_email">Message on WhatsApp (or email)</option>
+                              <option value="email">Send an email</option>
+                              <option value="none">Do nothing</option>
+                            </select>
+                          </Field>
                         </div>
                         <p className="text-[10px] text-ink-muted">
-                          Create and submit a template for approval under WhatsApp Manager → Message Templates in{' '}
-                          <a
-                            href="https://business.facebook.com/wa/manage/message-templates/"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[#1967D2] font-medium hover:underline"
-                          >
-                            business.facebook.com/wa/manage/message-templates
-                          </a>
-                          . Use the exact template name and language code once approved (usually within minutes to a day).
+                          Retries only happen during the lead's local business hours. A call that fails to connect is retried after 10 minutes.
                         </p>
-                        {renderTemplateVariableEditor('whatsappTemplateVariables')}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="pt-3 border-t border-border">
-                    <label className="block text-[11px] font-semibold text-ink mb-1.5">
-                      Safe Daily Send Limit
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={formData.safeDailyWhatsAppLimit ?? 250}
-                      onChange={(e) =>
-                        setFormData({ ...formData, safeDailyWhatsAppLimit: Math.max(1, parseInt(e.target.value, 10) || 1) })
-                      }
-                      className="w-full sm:w-40 bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                    <p className="text-[10px] text-ink-muted mt-1 leading-relaxed">
-                      Meta caps unique conversations per 24h based on your number's messaging tier — new numbers
-                      usually start at 250, scaling to 1,000 / 10,000+ as quality rating improves (check Meta
-                      Business Manager → WhatsApp Manager → Phone Numbers). A batch larger than this is
-                      automatically split across days instead of sent all at once, to protect your number.
-                    </p>
-                  </div>
-
-                  {testWhatsAppBox}
-                </div>
-              )}
-
-              {formData.whatsAppProvider === 'webhook' && (
-                <div className="space-y-3 p-4 bg-canvas rounded-xl border border-border">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">Custom Webhook / BSP</span>
-                    <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                      Live Server Sending
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-ink-secondary leading-relaxed">
-                    Each WhatsApp send will POST the lead and message text to the webhook URL configured under the <strong>n8n / Webhook</strong> tab. Point that at an n8n workflow (or any endpoint) that actually delivers the message through your BSP of choice — e.g. 360dialog, Gupshup, Infobip, or WATI — and returns a success status.
-                  </p>
-                  {!formData.n8nWebhookUrl && (
-                    <div className="flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                      <span>No webhook URL set yet — switch to the n8n / Webhook tab to add one.</span>
-                    </div>
-                  )}
-
-                  {testWhatsAppBox}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeSubTab === 'email' && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-[11px] text-emerald-300 flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold">Email sending is automatic</span> — every campaign email
-                  goes out through OmniReach's own delivery infrastructure. No setup needed here.
-                </div>
-              </div>
-
-              {!emailAdvancedOpen ? (
-                <button
-                  type="button"
-                  onClick={() => setEmailAdvancedOpen(true)}
-                  className="text-[11px] font-semibold text-[#1967D2] hover:underline"
-                >
-                  Advanced: send from your own email account instead
-                </button>
-              ) : (
-              <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-semibold text-ink">
-                    Email Dispatch Method
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmailAdvancedOpen(false);
-                      // 'resend' (not 'mailto_direct') is what actually triggers the
-                      // automatic platform-sent path in sendEmailViaOrgProvider — this
-                      // button was previously setting 'mailto_direct' instead, which is
-                      // fully manual mailto: links, the opposite of "automatic".
-                      setFormData({ ...formData, emailProvider: 'resend' });
-                    }}
-                    className="text-[11px] text-ink-muted hover:underline"
-                  >
-                    Use automatic sending instead
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, emailProvider: 'smtp' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.emailProvider === 'smtp'
-                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold">⚡ SMTP (Gmail, Zoho, Outlook...)</div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Use any mailbox you already own — Gmail App Password, Zoho Mail, Office 365, or custom business email.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, emailProvider: 'resend' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.emailProvider === 'resend'
-                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold">⚡ Resend API</div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Automated background inbox delivery. Free 100/day.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, emailProvider: 'sendgrid' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.emailProvider === 'sendgrid'
-                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold">⚡ SendGrid API</div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Transactional high-volume delivery.
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, emailProvider: 'mailgun' })
-                    }
-                    className={`p-3 rounded-xl border text-left text-xs transition-all ${
-                      formData.emailProvider === 'mailgun'
-                        ? 'bg-[#4285F4]/10 border-[#4285F4] text-[#1967D2] font-semibold shadow-xs'
-                        : 'bg-canvas border-border-strong text-ink-secondary'
-                    }`}
-                  >
-                    <div className="font-bold">⚡ Mailgun API</div>
-                    <div className="text-[11px] text-ink-muted mt-0.5">
-                      Pay-as-you-go transactional delivery, EU or US region.
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {formData.emailProvider === 'smtp' && (
-                <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">SMTP Credentials</span>
-                    <span className="text-[10px] text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
-                      Live Server Sending
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        SMTP Host
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="smtp.gmail.com / smtp.zoho.com / smtp.office365.com"
-                        value={formData.smtpHost || ''}
-                        onChange={(e) => setFormData({ ...formData, smtpHost: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        Port
-                      </label>
-                      <input
-                        type="number"
-                        placeholder="587"
-                        value={formData.smtpPort ?? ''}
-                        onChange={(e) =>
-                          setFormData({ ...formData, smtpPort: e.target.value ? Number(e.target.value) : undefined })
-                        }
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-
-                    <div className="flex items-end pb-1.5">
-                      <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-ink-secondary">
-                        <input
-                          type="checkbox"
-                          checked={!!formData.smtpSecure}
-                          onChange={(e) => setFormData({ ...formData, smtpSecure: e.target.checked })}
-                          className="accent-[#4285F4]"
-                        />
-                        Use SSL (port 465)
-                      </label>
-                    </div>
-
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        Username
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="you@gmail.com"
-                        value={formData.smtpUser || ''}
-                        onChange={(e) => setFormData({ ...formData, smtpUser: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        Password / App Password
-                      </label>
-                      <input
-                        type="password"
-                        placeholder="••••••••••••••••"
-                        value={formData.smtpPass || ''}
-                        onChange={(e) => setFormData({ ...formData, smtpPass: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                        From Email (optional, defaults to Username)
-                      </label>
-                      <input
-                        type="email"
-                        placeholder="alex@yourbusiness.com"
-                        value={formData.smtpFromEmail || ''}
-                        onChange={(e) => setFormData({ ...formData, smtpFromEmail: e.target.value })}
-                        className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <p className="text-[10px] text-ink-muted leading-relaxed">
-                    💡 Gmail: you need an <strong>App Password</strong>, not your normal Gmail password (Gmail requires 2-Step Verification to be turned on first). Generate one at{' '}
-                    <a
-                      href="https://myaccount.google.com/apppasswords"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-[#1967D2] font-medium hover:underline"
-                    >
-                      myaccount.google.com/apppasswords
-                    </a>{' '}
-                    → name it (e.g. "OmniReach"), copy the 16-character password into the field above. Host <code className="bg-surface-hover px-1 rounded">smtp.gmail.com</code>, port <code className="bg-surface-hover px-1 rounded">587</code>.
-                    <br />
-                    💡 Zoho Mail: enable an app-specific password at{' '}
-                    <a
-                      href="https://accounts.zoho.com/home#security/app-password"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-[#1967D2] font-medium hover:underline"
-                    >
-                      accounts.zoho.com → Security → App Passwords
-                    </a>
-                    . Host <code className="bg-surface-hover px-1 rounded">smtp.zoho.com</code> (or <code className="bg-surface-hover px-1 rounded">smtp.zoho.eu</code> for EU accounts), port <code className="bg-surface-hover px-1 rounded">587</code>.
-                    <br />
-                    💡 Outlook/Office 365: host <code className="bg-surface-hover px-1 rounded">smtp.office365.com</code>, port <code className="bg-surface-hover px-1 rounded">587</code>. If your organization enforces MFA, generate an app password under Microsoft Account → Security instead of using your normal password.
-                  </p>
-
-                  {testEmailBox}
-                </div>
-              )}
-
-              {(formData.emailProvider === 'resend' || formData.emailProvider === 'sendgrid' || formData.emailProvider === 'mailgun') && (
-                <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">
-                      {formData.emailProvider === 'resend'
-                        ? 'Resend API Key'
-                        : formData.emailProvider === 'sendgrid'
-                          ? 'SendGrid API Key'
-                          : 'Mailgun API Key'}
-                    </span>
-                    <span className="text-[10px] text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
-                      Live Server Sending
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      API Key
-                    </label>
-                    <input
-                      type="password"
-                      placeholder={
-                        formData.emailProvider === 'resend'
-                          ? 're_1234567890abcdef...'
-                          : formData.emailProvider === 'sendgrid'
-                            ? 'SG.xxxxxxxxxxxxxxxx...'
-                            : 'key-xxxxxxxxxxxxxxxx... or a Mailgun Private API key'
-                      }
-                      value={formData.emailApiKey || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, emailApiKey: e.target.value })
-                      }
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                    <p className="text-[10px] text-ink-muted mt-1">
-                      {formData.emailProvider === 'resend'
-                        ? '💡 Free tier: Grab an API key from resend.com to send automated emails directly to inboxes.'
-                        : formData.emailProvider === 'sendgrid'
-                          ? '💡 Obtain your API key from app.sendgrid.com with Mail Send permissions.'
-                          : '💡 Obtain your Private API key from app.mailgun.com → Settings → API Keys.'}
-                    </p>
-                  </div>
-
-                  {formData.emailProvider === 'mailgun' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                          Sending Domain
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="mg.yourdomain.com"
-                          value={formData.mailgunDomain || ''}
-                          onChange={(e) => setFormData({ ...formData, mailgunDomain: e.target.value })}
-                          className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                          Region
-                        </label>
-                        <select
-                          value={formData.mailgunRegion || 'us'}
-                          onChange={(e) =>
-                            setFormData({ ...formData, mailgunRegion: e.target.value as 'us' | 'eu' })
+                        {(formData.voiceFallback ?? 'whatsapp_email') !== 'none' && (
+                          <Field
+                            label="Follow-up message"
+                            hint={
+                              <>
+                                Sent after the last try. {'{{first_name}}'}, {'{{company_name}}'} and {'{{sender_name}}'} are filled in. When they reply,
+                                the AI takes over and books the meeting.
+                                {formData.whatsAppProvider === 'cloud_api' && formData.whatsappMessageMode === 'template'
+                                  ? ' On WhatsApp your approved template is sent instead, since WhatsApp requires one for first contact.'
+                                  : ''}
+                              </>
+                            }
+                          >
+                            <textarea
+                              rows={3}
+                              placeholder={DEFAULT_VOICE_FALLBACK_MESSAGE}
+                              value={formData.voiceFallbackMessage || ''}
+                              onChange={(e) => setFormData({ ...formData, voiceFallbackMessage: e.target.value })}
+                              className={`${inputClass} resize-y`}
+                            />
+                          </Field>
+                        )}
+                        <Field
+                          label="Voicemail message (optional)"
+                          hint={
+                            formData.vapiLanguage && !formData.vapiLanguage.startsWith('en')
+                              ? 'If voicemail picks up, the agent leaves this. Leave blank to hang up without a message.'
+                              : 'If voicemail picks up, the agent leaves this short message. Leave blank for a friendly default.'
                           }
-                          className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs"
                         >
-                          <option value="us">US</option>
-                          <option value="eu">EU</option>
-                        </select>
-                      </div>
-                    </div>
+                          <input
+                            type="text"
+                            placeholder="Hi, sorry I missed you — I'll send you a quick message, or call me back on this number."
+                            value={formData.voicemailMessage || ''}
+                            onChange={(e) => setFormData({ ...formData, voicemailMessage: e.target.value })}
+                            className={inputClass}
+                          />
+                        </Field>
+                      </Card>
+
+                      <AdvancedSection label="Use your own Vapi account">
+                        <p className="text-[11px] text-ink-muted leading-relaxed">
+                          Only if you want separate Vapi billing and numbers. Leave blank to use ours. The assistant and phone
+                          number IDs are only used together with your own API key.
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <Field label="Private API key">
+                            <SecretInput
+                              saved={!!formData.savedSecrets?.vapiApiKey}
+                              placeholder="Vapi → API Keys → Private"
+                              value={formData.vapiApiKey}
+                              onChange={(v) => setSecret('vapiApiKey', v)}
+                              className={`${inputClass} font-mono`}
+                            />
+                          </Field>
+                          <Field label="Public key" hint="Powers the in-browser live demo.">
+                            <input
+                              type="text"
+                              placeholder="Vapi → API Keys → Public"
+                              value={formData.vapiPublicKey || ''}
+                              onChange={(e) => setFormData({ ...formData, vapiPublicKey: e.target.value })}
+                              className={`${inputClass} font-mono`}
+                            />
+                          </Field>
+                          <Field label="Assistant ID" hint="Filled in automatically when you save the voice agent.">
+                            <input
+                              type="text"
+                              placeholder="c75e06e1-…"
+                              value={formData.vapiAssistantId || ''}
+                              onChange={(e) => {
+                                setVapiPromptLoaded(false);
+                                setFormData({ ...formData, vapiAssistantId: e.target.value });
+                              }}
+                              className={`${inputClass} font-mono`}
+                            />
+                          </Field>
+                          <Field label="Phone number ID" hint="Vapi's ID for the number, not the number itself.">
+                            <input
+                              type="text"
+                              placeholder="Vapi → Phone Numbers"
+                              value={formData.vapiPhoneNumberId || ''}
+                              onChange={(e) => setFormData({ ...formData, vapiPhoneNumberId: e.target.value })}
+                              className={`${inputClass} font-mono`}
+                            />
+                          </Field>
+                        </div>
+                      </AdvancedSection>
+                    </SetupSection>
                   )}
 
-                  {testEmailBox}
-                </div>
-              )}
-              </div>
-              )}
-            </div>
-          )}
-
-          {activeSubTab === 'bot' && (
-            <div className="space-y-4">
-              <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-ink">Google Calendar Connection</span>
-                  {googleCalendar.status.connected && (
-                    <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" />
-                      Connected
-                    </span>
-                  )}
-                </div>
-
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  When a WhatsApp prospect confirms a meeting time with the AI booking bot, it creates a real event with a
-                  Google Meet link on this calendar. Requires WhatsApp Cloud API to be configured above (the bot replies via
-                  the same phone number).
-                </p>
-
-                {microsoftCalendar.status.connected && !googleCalendar.status.connected && (
-                  <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-                    Outlook Calendar is currently connected and in use. Connecting Google here will switch the booking bot
-                    over to Google instead.
-                  </p>
-                )}
-
-                {!userId ? (
-                  <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-                    Sign in to a workspace to connect Google Calendar for the AI booking bot.
-                  </p>
-                ) : googleCalendar.status.connected ? (
-                  <div className="flex items-center justify-between p-2.5 bg-surface rounded-lg border border-border">
-                    <span className="text-xs text-ink-secondary">{googleCalendar.status.connectedEmail || 'Connected'}</span>
-                    <button
-                      type="button"
-                      onClick={googleCalendar.connect}
-                      className="text-[11px] text-ink-muted hover:text-ink underline"
+                  {activeSubTab === 'calendar' && (
+                    <SetupSection
+                      title="Calendar"
+                      description="Where the AI books meetings — with a Google Meet or Teams link sent to the lead."
+                      {...sectionProps('calendar')}
                     >
-                      Reconnect
+                      {!userId ? (
+                        <Note tone="warn">Sign in to a workspace to connect a calendar.</Note>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Card
+                              title="Google Calendar"
+                              aside={googleCalendar.status.connected && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                            >
+                              {googleCalendar.status.connected ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs text-ink-secondary truncate">{googleCalendar.status.connectedEmail || 'Connected'}</span>
+                                  <button type="button" onClick={googleCalendar.connect} className="text-[11px] text-ink-muted hover:text-ink underline shrink-0">
+                                    Reconnect
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <p className="text-[11px] text-ink-muted">Books meetings with a Google Meet link.</p>
+                                  <button type="button" onClick={googleCalendar.connect} disabled={googleCalendar.connecting} className={primaryButtonClass}>
+                                    <Calendar className="w-3.5 h-3.5" />
+                                    {googleCalendar.connecting ? 'Redirecting…' : 'Connect Google'}
+                                    <ExternalLink className="w-3 h-3" />
+                                  </button>
+                                </>
+                              )}
+                              {googleCalendar.error && <Note tone="error">{googleCalendar.error}</Note>}
+                            </Card>
+
+                            <Card
+                              title="Outlook Calendar"
+                              aside={microsoftCalendar.status.connected && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                            >
+                              {googleCalendar.status.connected ? (
+                                <p className="text-[11px] text-ink-muted">Google Calendar is in use. Only one calendar can be connected.</p>
+                              ) : microsoftCalendar.status.connected ? (
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs text-ink-secondary truncate">{microsoftCalendar.status.connectedEmail || 'Connected'}</span>
+                                  <button type="button" onClick={microsoftCalendar.connect} className="text-[11px] text-ink-muted hover:text-ink underline shrink-0">
+                                    Reconnect
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <p className="text-[11px] text-ink-muted">Books meetings with a Microsoft Teams link.</p>
+                                  <button type="button" onClick={microsoftCalendar.connect} disabled={microsoftCalendar.connecting} className={primaryButtonClass}>
+                                    <Calendar className="w-3.5 h-3.5" />
+                                    {microsoftCalendar.connecting ? 'Redirecting…' : 'Connect Outlook'}
+                                    <ExternalLink className="w-3 h-3" />
+                                  </button>
+                                </>
+                              )}
+                              {microsoftCalendar.error && <Note tone="error">{microsoftCalendar.error}</Note>}
+                            </Card>
+                          </div>
+                          {microsoftCalendar.status.connected && !googleCalendar.status.connected && (
+                            <Note>Connecting Google switches the AI over to Google Calendar.</Note>
+                          )}
+                        </>
+                      )}
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'crm' && (
+                    <SetupSection
+                      title="CRM"
+                      description="Keep your CRM up to date automatically — and import your contacts from it."
+                      {...sectionProps('crm')}
+                    >
+                      {!accessToken ? (
+                        <Note tone="warn">Sign in to a workspace to connect a CRM.</Note>
+                      ) : !crm ? (
+                        <Note>Loading…</Note>
+                      ) : crm.connection ? (
+                        <>
+                          <Card title={CRM_NAMES[crm.connection.provider]} aside={<CheckCircle2 className="w-4 h-4 text-emerald-400" />}>
+                            <ul className="text-[11px] text-ink-muted space-y-1 list-disc pl-4">
+                              <li>Every lead OmniReach contacts is created or updated in {CRM_NAMES[crm.connection.provider]}.</li>
+                              <li>Call outcomes and summaries, replies and opt-outs are added as notes/activities.</li>
+                              <li>Meetings the AI books are added to the lead.</li>
+                            </ul>
+                            {(crm.pending > 0 || crm.failed > 0) && (
+                              <p className="text-[11px] text-ink-muted">
+                                {crm.pending} waiting to sync{crm.failed ? ` · ${crm.failed} couldn't be synced after several tries` : ''}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={!!crmBusy}
+                                onClick={async () => {
+                                  setCrmBusy('sync');
+                                  const r = await dncCall('crm-sync', {});
+                                  if (r) setCrm(r);
+                                  setCrmBusy(null);
+                                }}
+                                className={secondaryButtonClass}
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${crmBusy === 'sync' ? 'animate-spin' : ''}`} />
+                                <span>Sync now</span>
+                              </button>
+                              {onImportLeads && (
+                                <button type="button" disabled={!!crmBusy} onClick={importCrm} className={primaryButtonClass}>
+                                  {crmBusy === 'import' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+                                  <span>Import leads from {CRM_NAMES[crm.connection.provider]}</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={!!crmBusy}
+                                onClick={async () => {
+                                  if (!window.confirm(`Disconnect ${CRM_NAMES[crm.connection!.provider]}? Nothing already in it is changed.`)) return;
+                                  const r = await dncCall('crm-disconnect', {});
+                                  if (r && !r.ok) setCrmNote({ ok: false, text: r.error });
+                                  await loadCrm();
+                                }}
+                                className="text-[11px] text-ink-muted hover:text-rose-400 underline"
+                              >
+                                Disconnect
+                              </button>
+                            </div>
+                          </Card>
+                        </>
+                      ) : crm.available.length === 0 ? (
+                        <Note tone="warn">No CRM is set up on the platform yet — contact support.</Note>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {crm.available.map((id) => (
+                            <Card key={id} title={CRM_NAMES[id]}>
+                              <p className="text-[11px] text-ink-muted">
+                                {id === 'hubspot' ? 'Contacts, notes and meetings.' : id === 'zoho' ? 'Leads, notes and events — any Zoho data centre.' : 'Leads, activities and events.'}
+                              </p>
+                              <button type="button" disabled={!!crmBusy || !userId} onClick={() => connectCrm(id)} className={primaryButtonClass}>
+                                {crmBusy === id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                                <span>Connect</span>
+                              </button>
+                            </Card>
+                          ))}
+                        </div>
+                      )}
+                      {crmNote && <Note tone={crmNote.ok ? 'success' : 'error'}>{crmNote.text}</Note>}
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'compliance' && (
+                    <SetupSection
+                      title="Do not contact"
+                      description="People on this list are never messaged or called — even if they're imported again as a new lead."
+                      {...sectionProps('compliance')}
+                    >
+                      <Note>
+                        Everyone who replies STOP, clicks unsubscribe, or asks the AI not to call again is added automatically.
+                        Add your own suppression lists here too (for example a do-not-call list you've already been given).
+                      </Note>
+                      <Card title="Add numbers or email addresses">
+                        <textarea
+                          rows={4}
+                          placeholder={'+971 50 123 4567\nname@company.com'}
+                          value={dncInput}
+                          onChange={(e) => setDncInput(e.target.value)}
+                          className={`${inputClass} font-mono resize-y`}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={dncBusy || !dncInput.trim()}
+                            onClick={async () => {
+                              setDncBusy(true);
+                              const r = await dncCall('do-not-contact-add', { values: dncInput });
+                              setDncNote(r?.ok ? `Added ${r.added}${r.ignored ? ` · ${r.ignored} line${r.ignored === 1 ? '' : 's'} weren't a phone number or email` : ''}.` : r?.error || 'Could not add them.');
+                              if (r?.ok) setDncInput('');
+                              await loadDnc();
+                              setDncBusy(false);
+                            }}
+                            className={primaryButtonClass}
+                          >
+                            {dncBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                            <span>Add to list</span>
+                          </button>
+                          <span className="text-[10px] text-ink-muted">One per line, or separated by commas.</span>
+                        </div>
+                        {dncNote && <p className="text-[11px] text-ink-muted">{dncNote}</p>}
+                      </Card>
+                      {dnc && dnc.entries.length > 0 && (
+                        <Card title={`On your list${dnc.total > dnc.entries.length ? ` (latest ${dnc.entries.length} of ${dnc.total})` : ''}`}>
+                          <ul className="divide-y divide-border max-h-64 overflow-y-auto -mx-1">
+                            {dnc.entries.map((e) => (
+                              <li key={e.id} className="flex items-center justify-between gap-2 px-1 py-1.5 text-xs">
+                                <span className="font-mono text-ink-secondary truncate">{e.kind === 'phone' ? `+${e.value}` : e.value}</span>
+                                <span className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[10px] text-ink-muted">{e.reason}</span>
+                                  <button
+                                    type="button"
+                                    title="Remove — they can be contacted again"
+                                    onClick={async () => {
+                                      if (!window.confirm(`Remove ${e.value}? Campaigns will be able to contact them again.`)) return;
+                                      const r = await dncCall('do-not-contact-remove', { id: e.id });
+                                      if (r && !r.ok) setDncNote(r.error);
+                                      await loadDnc();
+                                    }}
+                                    className="p-1 text-ink-muted hover:text-rose-400"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </Card>
+                      )}
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'notifications' && (
+                    <SetupSection
+                      title="Notifications"
+                      description="Get a Slack message the moment the AI books a meeting."
+                      {...sectionProps('notifications')}
+                    >
+                      <Card title="Slack">
+                        <Field
+                          label="Incoming webhook URL"
+                          hint={
+                            <>
+                              Create one at{' '}
+                              <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-ink-secondary underline">
+                                api.slack.com/apps
+                              </a>{' '}
+                              → your app → Incoming Webhooks → Add New Webhook.
+                            </>
+                          }
+                        >
+                          <input
+                            type="password"
+                            placeholder="https://hooks.slack.com/services/…"
+                            value={formData.slackWebhookUrl || ''}
+                            onChange={(e) => setFormData({ ...formData, slackWebhookUrl: e.target.value })}
+                            className={`${inputClass} font-mono`}
+                          />
+                        </Field>
+                        <button type="button" onClick={handleTestSlack} disabled={testSlackStatus === 'sending'} className={secondaryButtonClass}>
+                          {testSlackStatus === 'sending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Slack className="w-3.5 h-3.5" />}
+                          <span>{testSlackStatus === 'sending' ? 'Sending…' : 'Send test notification'}</span>
+                        </button>
+                        {resultNote(testSlackStatus, testSlackResultMsg)}
+                      </Card>
+                    </SetupSection>
+                  )}
+
+                  {activeSubTab === 'integrations' && (
+                    <SetupSection
+                      title="Integrations"
+                      description="Send every message, booking and lead update to your own automation."
+                      {...sectionProps('integrations')}
+                    >
+                      <Card title="n8n / Zapier webhook">
+                        <Field label="Webhook URL" hint="We POST a JSON payload here for each outreach message, booking and lead interaction.">
+                          <input
+                            type="url"
+                            placeholder="https://n8n.yourcompany.com/webhook/outreach"
+                            value={formData.n8nWebhookUrl || ''}
+                            onChange={(e) => setFormData({ ...formData, n8nWebhookUrl: e.target.value })}
+                            className={`${inputClass} font-mono`}
+                          />
+                        </Field>
+                      </Card>
+                    </SetupSection>
+                  )}
+                </div>
+
+                <div className="shrink-0 flex items-center justify-between gap-3 px-4 sm:px-6 py-3 border-t border-border bg-canvas/60">
+                  <span className="text-[11px] text-ink-muted hidden sm:block">Changes apply when you save.</span>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button type="button" onClick={onClose} className={secondaryButtonClass}>
+                      Cancel
+                    </button>
+                    <button type="submit" className={primaryButtonClass}>
+                      {savedSuccess ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Saved</span>
+                        </>
+                      ) : (
+                        <span>Save Settings</span>
+                      )}
                     </button>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={googleCalendar.connect}
-                    disabled={googleCalendar.connecting}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl text-white bg-[#4285F4] hover:bg-[#3367D6] shadow-sm transition-all disabled:opacity-60"
-                  >
-                    <Calendar className="w-3.5 h-3.5" />
-                    {googleCalendar.connecting ? 'Redirecting to Google…' : 'Connect Google Calendar'}
-                    <ExternalLink className="w-3 h-3" />
-                  </button>
-                )}
-
-                {googleCalendar.error && (
-                  <p className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
-                    {googleCalendar.error}
-                  </p>
-                )}
+                </div>
               </div>
-
-              {!googleCalendar.status.connected && (
-                <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-ink">Outlook / Microsoft 365 Calendar</span>
-                    {microsoftCalendar.status.connected && (
-                      <span className="text-[10px] text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" />
-                        Connected
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="text-[11px] text-ink-muted leading-relaxed">
-                    Same as Google Calendar above, but books onto Outlook/Microsoft 365 with a Microsoft Teams link instead
-                    of Google Meet. Connect one or the other, not both — whichever's connected is what the booking bot uses.
-                  </p>
-
-                  {!userId ? (
-                    <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-                      Sign in to a workspace to connect Outlook Calendar for the AI booking bot.
-                    </p>
-                  ) : microsoftCalendar.status.connected ? (
-                    <div className="flex items-center justify-between p-2.5 bg-surface rounded-lg border border-border">
-                      <span className="text-xs text-ink-secondary">{microsoftCalendar.status.connectedEmail || 'Connected'}</span>
-                      <button
-                        type="button"
-                        onClick={microsoftCalendar.connect}
-                        className="text-[11px] text-ink-muted hover:text-ink underline"
-                      >
-                        Reconnect
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={microsoftCalendar.connect}
-                      disabled={microsoftCalendar.connecting}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl text-white bg-[#0078D4] hover:bg-[#006abc] shadow-sm transition-all disabled:opacity-60"
-                    >
-                      <Calendar className="w-3.5 h-3.5" />
-                      {microsoftCalendar.connecting ? 'Redirecting to Microsoft…' : 'Connect Outlook Calendar'}
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                  )}
-
-                  {microsoftCalendar.error && (
-                    <p className="text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
-                      {microsoftCalendar.error}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div className="p-4 bg-canvas rounded-xl border border-border space-y-3">
-                <span className="text-xs font-bold text-ink">WhatsApp Webhook (one-time Meta setup)</span>
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  Four steps, done once when you connect a new WhatsApp number:
-                </p>
-
-                <div className="space-y-2">
-                  <div>
-                    <label className="block text-[10px] font-semibold text-ink-muted mb-1">
-                      1. Callback URL — paste into Meta App → WhatsApp → Configuration → Webhook
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <code className="flex-1 bg-surface px-2 py-1.5 rounded-lg border border-border text-[10px] truncate">
-                        {typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          copyToClipboard(`${typeof window !== 'undefined' ? window.location.origin : ''}/api/whatsapp/webhook`, 'url')
-                        }
-                        className="p-1.5 rounded-lg border border-border bg-surface text-ink-secondary hover:text-ink shrink-0"
-                        title="Copy"
-                      >
-                        {copiedField === 'url' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-semibold text-ink-muted mb-1">
-                      2. Verify Token — same field, right below the Callback URL
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                      <code className="flex-1 bg-surface px-2 py-1.5 rounded-lg border border-border text-[10px] truncate">
-                        {verifyToken === null ? 'Loading…' : verifyToken || 'Not configured yet'}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => verifyToken && copyToClipboard(verifyToken, 'token')}
-                        disabled={!verifyToken}
-                        className="p-1.5 rounded-lg border border-border bg-surface text-ink-secondary hover:text-ink shrink-0 disabled:opacity-40"
-                        title="Copy"
-                      >
-                        {copiedField === 'token' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  3. Subscribe to the <strong>messages</strong> field, right below where you pasted those two values.
-                  <br />
-                  4. Back on the <strong>WhatsApp Dispatch</strong> tab, click <strong>Subscribe App to WABA</strong> — the one Meta step with no dashboard UI of its own.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {activeSubTab === 'n8n' && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-ink mb-1">
-                  Live n8n / Webhook URL (Optional)
-                </label>
-                <input
-                  type="url"
-                  placeholder="https://n8n.yourdomain.com/webhook/outreach-trigger"
-                  value={formData.n8nWebhookUrl || ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, n8nWebhookUrl: e.target.value })
-                  }
-                  className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-xs text-ink font-mono"
-                />
-                <p className="text-[11px] text-ink-muted mt-1.5 leading-relaxed">
-                  When configured, every automated batch message, calendar booking, and lead interaction will automatically post an HTTP payload to your n8n workflow or Zapier webhook.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {activeSubTab === 'voice' && (
-            <div className="space-y-4">
-              <p className="text-[11px] text-ink-muted leading-relaxed">
-                Just write how you want your AI Voice Agent to talk — we handle the account and
-                billing behind it. The first time you save, we automatically set up a dedicated
-                assistant for you; every save after that updates it in place.
-              </p>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-semibold text-ink">Assistant Prompt</h4>
-                  {isLoadingVapiPrompt && (
-                    <span className="text-[11px] text-ink-muted flex items-center gap-1">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Loading current prompt…
-                    </span>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                    First Message
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Hey! This is ... calling on behalf of ..."
-                    value={formData.vapiFirstMessage || ''}
-                    onChange={(e) => setFormData({ ...formData, vapiFirstMessage: e.target.value })}
-                    className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                    System Prompt
-                  </label>
-                  <textarea
-                    rows={10}
-                    placeholder="You are ... an AI sales development rep for ..."
-                    value={formData.vapiSystemPrompt || ''}
-                    onChange={(e) => setFormData({ ...formData, vapiSystemPrompt: e.target.value })}
-                    className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-2 text-xs text-ink font-mono resize-y"
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleSyncVapiAssistant}
-                  disabled={isSyncingVapi || !formData.vapiSystemPrompt || !formData.vapiFirstMessage}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-gradient-to-r from-[#4285F4] to-[#128C7E] hover:opacity-95 shadow-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isSyncingVapi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
-                  <span>{isSyncingVapi ? 'Saving…' : formData.vapiAssistantId ? 'Save Changes' : 'Save & Activate Voice Agent'}</span>
-                </button>
-                <p className="text-[10px] text-ink-muted">
-                  This saves your prompt straight to your live AI Voice Agent — no Vapi account or API key needed on your end.
-                </p>
-                {vapiSyncResult && (
-                  <p className={`text-[11px] ${vapiSyncResult.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{vapiSyncResult.message}</p>
-                )}
-              </div>
-
-              <AdvancedSection label="Advanced: bring your own Vapi account" className="pt-2 border-t border-border">
-                <p className="text-[11px] text-ink-muted leading-relaxed">
-                  Only needed if you want your own separate Vapi account and billing instead of ours.
-                  Leave these blank to keep using the managed voice service above.
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Vapi Private API Key
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="Dashboard -> API Keys -> Private key"
-                      value={formData.vapiApiKey || ''}
-                      onChange={(e) => {
-                        setVapiPromptLoaded(false);
-                        setFormData({ ...formData, vapiApiKey: e.target.value });
-                      }}
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                    <p className="text-[10px] text-ink-muted mt-1">Used server-side to trigger calls and sync your prompt — never sent to the browser.</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Vapi Public Key
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Dashboard -> API Keys -> Public key"
-                      value={formData.vapiPublicKey || ''}
-                      onChange={(e) => setFormData({ ...formData, vapiPublicKey: e.target.value })}
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                    <p className="text-[10px] text-ink-muted mt-1">Safe to expose in the browser — powers the in-browser Live Voice Demo.</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Assistant ID <span className="font-normal text-ink-muted">(auto-filled once you save above)</span>
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. c75e06e1-5770-440d-a4c9-4be6ea3b6181"
-                      value={formData.vapiAssistantId || ''}
-                      onChange={(e) => {
-                        setVapiPromptLoaded(false);
-                        setFormData({ ...formData, vapiAssistantId: e.target.value });
-                      }}
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                      Phone Number ID <span className="font-normal text-ink-muted">(for real outbound calls)</span>
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Vapi phone number's internal id, not the number itself"
-                      value={formData.vapiPhoneNumberId || ''}
-                      onChange={(e) => setFormData({ ...formData, vapiPhoneNumberId: e.target.value })}
-                      className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                    />
-                  </div>
-                </div>
-              </AdvancedSection>
-            </div>
-          )}
-
-          {activeSubTab === 'slack' && (
-            <div className="space-y-4">
-              <p className="text-[11px] text-ink-muted leading-relaxed">
-                Get a Slack message the moment the AI books a meeting via WhatsApp or Email — no
-                need to keep checking the dashboard.
-              </p>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-ink-muted mb-1">
-                  Slack Incoming Webhook URL
-                </label>
-                <input
-                  type="password"
-                  placeholder="https://hooks.slack.com/services/..."
-                  value={formData.slackWebhookUrl || ''}
-                  onChange={(e) => setFormData({ ...formData, slackWebhookUrl: e.target.value })}
-                  className="w-full bg-surface border border-border-strong rounded-lg px-3 py-1.5 text-xs font-mono"
-                />
-                <p className="text-[11px] text-ink-muted mt-1.5 leading-relaxed">
-                  Create one at{' '}
-                  <a
-                    href="https://api.slack.com/apps"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[#128C7E] hover:underline inline-flex items-center gap-0.5"
-                  >
-                    api.slack.com/apps
-                    <ExternalLink className="w-3 h-3" />
-                  </a>{' '}
-                  → your app → Incoming Webhooks → Add New Webhook to Workspace, then paste the
-                  URL it gives you here. No Slack app review needed.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleTestSlack}
-                disabled={testSlackStatus === 'sending'}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg text-white bg-[#4A154B] hover:opacity-90 shadow-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {testSlackStatus === 'sending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Slack className="w-3.5 h-3.5" />}
-                <span>{testSlackStatus === 'sending' ? 'Sending…' : 'Send Test Notification'}</span>
-              </button>
-              {testSlackResultMsg && (
-                <p className={`text-[11px] ${testSlackStatus === 'success' ? 'text-emerald-300' : 'text-rose-400'}`}>{testSlackResultMsg}</p>
-              )}
-            </div>
-          )}
-
-          {/* Footer Buttons */}
-          <div className="flex items-center justify-end gap-2 pt-4 border-t border-border">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3.5 py-2 text-xs font-medium text-ink-muted hover:bg-canvas rounded-xl border border-border-strong transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-xl text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all"
-            >
-              {savedSuccess ? (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-[#25D366]" />
-                  <span>Settings Saved!</span>
-                </>
-              ) : (
-                <span>Save Channel Settings</span>
-              )}
-            </button>
-          </div>
-        </form>
-      </motion.div>
+            </form>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>

@@ -11,6 +11,8 @@ import { runConversationTurn, ConversationTurn } from './conversationEngine.js';
 import { getConnectedCalendar, bookMeeting, cancelMeeting, meetingLinkLabel } from './calendarProvider.js';
 import { getGeminiClient } from './geminiClient.js';
 import { OPT_OUT_PATTERN, OPT_OUT_REPLY } from './compliance.js';
+import { addToSuppression } from './suppression.js';
+import { emitCrmEvent } from './crm/index.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
@@ -24,15 +26,16 @@ import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
  *
  * The secret is passed in rather than read from a single env var, because each org brings
  * their own separate Meta App with its own App Secret — see resolveWhatsAppSignatureSecret.
- * Fails OPEN (returns true) when no secret is available for this specific org yet, so this
- * doesn't break an org's traffic before they've configured theirs — but their traffic stays
- * unverified until they do. Each org sets theirs from Settings -> WhatsApp Cloud API,
- * copied from their own Meta App Dashboard -> Settings -> Basic -> App Secret.
+ * Fails CLOSED: with no App Secret saved for the org that owns the number (or an unknown
+ * number), nothing can be verified, so the payload is rejected — the AI never replies to an
+ * unverified message. Each org sets theirs from Settings -> WhatsApp Cloud API, copied from
+ * their own Meta App Dashboard -> Settings -> Basic -> App Secret, and Channel Setup marks it
+ * required.
  */
 export function verifyWhatsAppSignature(rawBody: string, signatureHeader: string | undefined, secret: string | undefined): boolean {
   if (!secret) {
-    console.warn('[WhatsApp Webhook] No App Secret configured for this org yet — accepting unverified payload.');
-    return true;
+    console.warn('[WhatsApp Webhook] No App Secret saved for the org that owns this number — rejecting unverified payload. Add it in Channel Setup → WhatsApp.');
+    return false;
   }
   if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false;
 
@@ -281,6 +284,8 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
 
   if (OPT_OUT_PATTERN.test(incomingText.trim())) {
     history.push({ role: 'assistant', text: OPT_OUT_REPLY, timestamp: new Date().toISOString() });
+    await addToSuppression(orgId, { phone: fromPhone }, 'replied STOP on WhatsApp');
+    await emitCrmEvent(orgId, existing?.client_id, { kind: 'note', title: 'OmniReach: opted out', text: 'Replied STOP on WhatsApp — do not contact.', stage: 'opted_out' });
 
     // Mark the client opted-out — prefer the id already linked to this conversation
     // (set whenever a campaign contacted them); fall back to matching by phone.
@@ -469,6 +474,27 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
       orgChannelSettings?.slackWebhookUrl,
       `📅 *Meeting booked* via WhatsApp — ${leadName} (${fromPhone}) confirmed for ${whenStr}.${meetLink ? ` <${meetLink}|Join on Google Meet>` : ''}`
     );
+  }
+
+  // The org's CRM (if connected) gets the booking, or the outcome when they decline or ask for a person.
+  if (finalStatus !== existing?.status) {
+    if (finalStatus === 'confirmed' && meetingDateTimeIso) {
+      await emitCrmEvent(orgId, existing?.client_id, {
+        kind: 'meeting',
+        title: `Discovery call with ${existing?.lead_name || contactName || fromPhone}`,
+        startIso: meetingDateTimeIso,
+        durationMinutes: result.meeting?.durationMinutes || 30,
+        link: meetLink,
+        notes: 'Booked by OmniReach AI over WhatsApp.',
+      });
+    } else if (finalStatus === 'declined' || finalStatus === 'handoff') {
+      await emitCrmEvent(orgId, existing?.client_id, {
+        kind: 'note',
+        title: finalStatus === 'declined' ? 'OmniReach: not interested (WhatsApp)' : 'OmniReach: needs a person (WhatsApp)',
+        text: `Their last message: "${incomingText.slice(0, 500)}"`,
+        stage: 'replied',
+      });
+    }
   }
 
   const sendResult = await sendWhatsAppText(

@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from '../lib/supabaseAdmin.js';
 import { getOrgIdFromAuthHeader } from '../lib/supabaseServerAuth.js';
 import { reconcileStaleVoiceCalls } from '../lib/voiceCalls.js';
 import { handleLearningRequest } from '../lib/aiLearning.js';
+import { buildAnalytics } from '../lib/analytics.js';
 
 interface ApiRequest {
   method?: string;
@@ -25,6 +26,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
     const result = await handleLearningRequest(orgId, req.method, req.body);
     return res.status(result.httpStatus).json(result.body);
+  }
+
+  // ?action=analytics — the Reports page (lib/analytics.ts).
+  if (req.query?.action === 'analytics') {
+    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    return res.status(200).json(await buildAnalytics(orgId));
   }
 
   if (req.method !== 'GET') {

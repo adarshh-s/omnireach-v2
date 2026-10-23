@@ -1,3 +1,4 @@
+import { PageHeader, headerPrimaryButton } from './PageHeader';
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -158,39 +159,23 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Settings Header */}
-      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold text-ink">
-                AI Copywriter & Outreach Sequence Studio
-              </h1>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#25D366]/15 text-[#128C7E]">
-                Gemini 3.7 Powered
-              </span>
-            </div>
-            <p className="text-xs text-ink-muted mt-0.5">
-              Customize WhatsApp message copies and Cold Outreach emails with dynamic spreadsheet placeholder variables.
-            </p>
-          </div>
-
-          <button
-            id="tpl-ai-generate-btn"
-            onClick={handleGenerateWithAi}
-            disabled={isGeneratingWithAi}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:opacity-95 shadow-xs transition-all active:scale-[0.98] disabled:opacity-50"
-          >
+      <PageHeader
+        title="Templates"
+        description={<>The WhatsApp messages and emails your campaigns send. Use variables like {'{{name}}'} to personalise each one.</>}
+        actions={
+          <button id="tpl-ai-generate-btn" onClick={handleGenerateWithAi} disabled={isGeneratingWithAi} className={headerPrimaryButton}>
             <Sparkles className={`w-3.5 h-3.5 ${isGeneratingWithAi ? 'animate-spin' : ''}`} />
-            <span>{isGeneratingWithAi ? 'AI Generating Copy...' : 'AI Rewrite Active Template'}</span>
+            <span>{isGeneratingWithAi ? 'Rewriting…' : 'Rewrite with AI'}</span>
           </button>
-        </div>
+        }
+      />
 
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border px-5 py-4 shadow-card">
         {aiError && (
-          <p className="mt-2 text-xs font-medium text-rose-400">{aiError}</p>
+          <p className="mb-2 text-xs font-medium text-rose-400">{aiError}</p>
         )}
 
-        <AdvancedSection label="Sender details & AI tone" className="mt-4 pt-4 border-t border-border">
+        <AdvancedSection label="Sender details & AI tone">
           {/* Sender & Company Settings Strip */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div>
@@ -248,6 +233,22 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
                 className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-ink-muted mb-1">
+              Business Address
+            </label>
+            <input
+              type="text"
+              value={campaignSettings.businessAddress || ''}
+              onChange={(e) => onUpdateSettings({ ...campaignSettings, businessAddress: e.target.value })}
+              placeholder="e.g. 12 Market Street, Suite 4, Dubai, UAE"
+              className="w-full bg-canvas border border-border-strong rounded-lg px-3 py-1.5 text-xs text-ink"
+            />
+            <p className="text-[10px] text-ink-muted mt-1">
+              Shown at the bottom of outreach emails with an unsubscribe link — US law (CAN-SPAM) requires a real postal address.
+            </p>
           </div>
 
           <div>
@@ -328,7 +329,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
             {/* Variable Insertion Pills */}
             <div className="mt-5 pt-4 border-t border-border">
               <div className="text-[11px] font-semibold text-ink-muted uppercase tracking-wider mb-2">
-                Click to Copy Spreadsheet Variables
+                Variables — click to copy
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {variables.map((v) => (
@@ -419,7 +420,7 @@ export const TemplateManagerView: React.FC<TemplateManagerViewProps> = ({
               <div className="pt-4 border-t border-border space-y-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-ink">
                   <Eye className="w-3.5 h-3.5 text-ink-muted" />
-                  <span>Live Render Preview (Sample Contact: {sampleLead.name})</span>
+                  <span>Preview for {sampleLead.name}</span>
                 </div>
                 <div className="p-3.5 bg-canvas rounded-xl border border-border text-xs text-ink-secondary whitespace-pre-line font-sans">
                   {interpolateTemplate(

@@ -1,10 +1,13 @@
 import type { IncomingMessage } from 'http';
 import { parseInboundEmailFields } from '../../lib/parseMultipart.js';
 import { verifyEmailWebhookToken, processInboundEmail } from '../../lib/emailWebhookHandler.js';
+import { handleUnsubscribe } from '../../lib/emailCompliance.js';
 
 interface ApiResponse {
   status: (code: number) => ApiResponse;
   json: (data: unknown) => void;
+  setHeader: (name: string, value: string) => void;
+  send: (data: unknown) => void;
 }
 
 /**
@@ -14,6 +17,15 @@ interface ApiResponse {
  *   https://<your-domain>/api/email/inbound?token=<EMAIL_INBOUND_WEBHOOK_SECRET>
  */
 export default async function handler(req: IncomingMessage & { method?: string; query?: Record<string, unknown> }, res: ApiResponse) {
+  // The unsubscribe link in outreach emails (and the inbox's one-click unsubscribe) — kept
+  // on this route to stay under Vercel Hobby's 12-function cap. See lib/emailCompliance.ts.
+  const params = new URL(req.url || '', 'http://localhost').searchParams;
+  if (params.get('action') === 'unsubscribe') {
+    const result = await handleUnsubscribe(req.method, params.get('t') || undefined);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(result.status).send(result.html);
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }

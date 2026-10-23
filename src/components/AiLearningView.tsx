@@ -1,6 +1,6 @@
+import { PageHeader, headerSecondaryButton } from './PageHeader';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Sparkles,
   RefreshCw,
   Check,
   X,
@@ -385,35 +385,32 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
 
   return (
     <div className="space-y-6">
-      <div className={`${card} flex flex-col sm:flex-row sm:items-center justify-between gap-4`}>
-        <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
-            <Sparkles className="w-3.5 h-3.5 text-[#128C7E]" />
-            <span>Self-improving AI</span>
-          </div>
-          <h2 className="text-xl font-bold text-ink">AI Learning</h2>
-          <p className="text-xs sm:text-sm text-ink-secondary mt-0.5 max-w-2xl">
-            Runs by itself. Every time a conversation or call finishes, the AI reviews how it ended (booked, declined,
-            went quiet) and updates these lessons, and the very next message or call uses them. Quiet threads are also
-            swept once a day. Nothing to click.
-          </p>
-          <div className="flex items-center gap-1.5 mt-2 text-[11px] text-ink-muted">
-            <span className={`w-1.5 h-1.5 rounded-full ${mode === 'off' ? 'bg-ink-muted' : 'bg-[#25D366] animate-pulse'}`} />
-            {mode === 'off'
-              ? 'Learning is off'
-              : `Learning automatically${lastReviewedAt ? ` · last review ${new Date(lastReviewedAt).toLocaleString()}` : ' · waiting for the first finished conversation'}`}
-          </div>
-        </div>
-        <button
-          onClick={analyze}
-          disabled={analyzing || mode === 'off'}
-          title="Optional — reviews happen automatically. Use this only to process finished conversations right now."
-          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-lg border border-border text-ink-secondary hover:bg-surface-hover disabled:opacity-50 shrink-0"
-        >
-          {analyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-          {analyzing ? 'Reviewing…' : 'Run now (optional)'}
-        </button>
-      </div>
+      <PageHeader
+        title="AI Learning"
+        description={
+          <>
+            After each finished conversation the AI reviews what worked and updates these lessons — the next message or
+            call uses them. It runs on its own.
+            <span className="flex items-center gap-1.5 mt-1.5 text-[11px]">
+              <span className={`w-1.5 h-1.5 rounded-full ${mode === 'off' ? 'bg-ink-muted' : 'bg-[#25D366] animate-pulse'}`} />
+              {mode === 'off'
+                ? 'Learning is off'
+                : `Learning automatically${lastReviewedAt ? ` · last review ${new Date(lastReviewedAt).toLocaleString()}` : ' · waiting for the first finished conversation'}`}
+            </span>
+          </>
+        }
+        actions={
+          <button
+            onClick={analyze}
+            disabled={analyzing || mode === 'off'}
+            title="Reviews happen automatically. Use this only to process finished conversations right now."
+            className={headerSecondaryButton}
+          >
+            {analyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {analyzing ? 'Reviewing…' : 'Review now'}
+          </button>
+        }
+      />
 
       {(analyzeNote || error) && (
         <div
@@ -447,11 +444,11 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
         <h3 className="text-sm font-semibold text-ink mb-3">Where active lessons are applied</h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] leading-relaxed">
           <div className="p-3 rounded-xl border border-border">
-            <div className="text-xs font-semibold text-ink mb-0.5">WhatsApp &amp; Email replies (Gemini)</div>
+            <div className="text-xs font-semibold text-ink mb-0.5">WhatsApp &amp; Email replies</div>
             <div className="text-ink-muted">Added to the reply prompt on every incoming message, so the next reply already uses them.</div>
           </div>
           <div className="p-3 rounded-xl border border-border">
-            <div className="text-xs font-semibold text-ink mb-0.5">Outreach copy (Gemini)</div>
+            <div className="text-xs font-semibold text-ink mb-0.5">Outreach copy</div>
             <div className="text-ink-muted">Added alongside your AI Tone &amp; Focus Instructions when first messages are generated.</div>
           </div>
           <div className="p-3 rounded-xl border border-border">
@@ -483,7 +480,7 @@ export const AiLearningView: React.FC<AiLearningViewProps> = ({ accessToken, cam
         <p className="text-xs text-ink-muted mb-3">
           {previewChannel === 'voice'
             ? 'Your saved Vapi prompt as it is now. The highlighted section is kept up to date automatically; the rest is your own text from Channel Setup.'
-            : 'The exact prompt Gemini receives, shown for a sample incoming message (“Hi, what is this about?”). The highlighted section is what AI Learning adds.'}
+            : 'The exact prompt the AI receives, shown for a sample incoming message (“Hi, what is this about?”). The highlighted section is what AI Learning adds.'}
         </p>
         {(() => {
           if (previewLoading && !preview) {

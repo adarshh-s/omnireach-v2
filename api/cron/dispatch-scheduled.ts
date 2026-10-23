@@ -5,6 +5,12 @@ import { sendEmailViaOrgProvider } from '../../lib/emailSender.js';
 import { seedConversationFromLead } from '../../lib/whatsappWebhookHandler.js';
 import { seedEmailConversationFromLead, buildEmailReplyToAddress } from '../../lib/emailWebhookHandler.js';
 import { reviewAllOrgs } from '../../lib/aiLearning.js';
+import { processCallQueue } from '../../lib/callQueue.js';
+import { processMessageQueue } from '../../lib/messageQueue.js';
+import { processCrmEvents } from '../../lib/crm/index.js';
+import { getOrgProfile } from '../../lib/orgSettings.js';
+import { withComplianceFooter, unsubscribeHeaders } from '../../lib/emailCompliance.js';
+import { placeOrgVoiceCall, getPublicBaseUrl } from '../../lib/voiceCalls.js';
 import type { ChannelApiSettings } from '../../src/types.js';
 
 interface ApiRequest {
@@ -62,134 +68,44 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(200).json({ processed: 0, note: 'Supabase not configured' });
   }
 
-  const nowIso = new Date().toISOString();
+  // ?only=voice runs just the AI call queue (campaign calls and missed-call retries) — for
+  // testing it without also sending whatever campaign messages happen to be due.
+  if (req.query?.only === 'voice') {
+    const voiceCalls = await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall);
+    return res.status(200).json({ only: 'voice', voiceCalls });
+  }
+
   const backoffCutoffIso = new Date(Date.now() - RETRY_BACKOFF_MS).toISOString();
 
-  const [{ data: due, error }, { data: retryable, error: retryError }] = await Promise.all([
-    supabase
-      .from('campaign_recipients')
-      .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, retry_count, campaigns(status), clients(*)')
-      .lte('scheduled_for', nowIso)
-      .or('whatsapp_status.eq.Queued,email_status.eq.Queued')
-      .limit(BATCH_SIZE),
-    // Failed sends, past their backoff window and under the retry cap — see the
-    // Retry/backoff schema comment in supabase/schema.sql. Kept as a separate query
-    // (rather than one combined OR filter) since eligibility rules genuinely differ
-    // per set: Queued rows key off scheduled_for, Failed rows off updated_at + retry_count.
-    supabase
-      .from('campaign_recipients')
-      .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, retry_count, campaigns(status), clients(*)')
-      .or('whatsapp_status.eq.Failed,email_status.eq.Failed')
-      .lt('updated_at', backoffCutoffIso)
-      .lt('retry_count', MAX_RETRIES)
-      .limit(BATCH_SIZE),
-  ]);
+  // Due campaign messages: sent at each campaign's pace until the time budget runs out
+  // (lib/messageQueue.ts) — scheduled sends and server-run campaigns alike.
+  const messages = await processMessageQueue({ budgetMs: 30000 });
 
-  if (error || retryError) {
-    return res.status(500).json({ error: error?.message || retryError?.message });
+  // Failed sends, past their backoff window and under the retry cap — see the
+  // Retry/backoff schema comment in supabase/schema.sql.
+  const { data: retryable, error: retryError } = await supabase
+    .from('campaign_recipients')
+    .select('id, org_id, campaign_id, client_id, whatsapp_status, email_status, payload, retry_count, campaigns(status), clients(*)')
+    .or('whatsapp_status.eq.Failed,email_status.eq.Failed')
+    .lt('updated_at', backoffCutoffIso)
+    .lt('retry_count', MAX_RETRIES)
+    .limit(BATCH_SIZE);
+
+  if (retryError) {
+    return res.status(500).json({ error: retryError.message });
   }
 
-  let sent = 0;
-  let failed = 0;
-  let skipped = 0;
+  let sent = messages.sent;
+  let failed = messages.failed;
+  let skipped = messages.skipped;
   let retried = 0;
   const settingsCache = new Map<string, ChannelApiSettings | null>();
-
-  for (const row of due || []) {
-    const campaign: any = Array.isArray((row as any).campaigns) ? (row as any).campaigns[0] : (row as any).campaigns;
-    const client: any = Array.isArray((row as any).clients) ? (row as any).clients[0] : (row as any).clients;
-    if (!campaign || campaign.status !== 'running' || !client) {
-      skipped++;
-      continue;
-    }
-
-    if (!settingsCache.has(row.org_id)) {
-      settingsCache.set(row.org_id, await getOrgChannelSettings(row.org_id));
-    }
-    const channelSettings = settingsCache.get(row.org_id);
-    const payload: DuePayload = row.payload || {};
-
-    if (row.whatsapp_status === 'Queued') {
-      const { data: claimed } = await supabase
-        .from('campaign_recipients')
-        .update({ whatsapp_status: 'Sending' })
-        .eq('id', row.id)
-        .eq('whatsapp_status', 'Queued')
-        .select('id');
-
-      if (claimed && claimed.length > 0) {
-        const result = await sendCampaignWhatsAppMessage(channelSettings, {
-          toPhone: client.phone || '',
-          messageText: payload.whatsappMessage || '',
-          templateParams: payload.templateParams,
-        });
-        await supabase
-          .from('campaign_recipients')
-          .update({
-            whatsapp_status: result.delivered ? 'Sent' : 'Failed',
-            error_detail: result.errorDetail || null,
-            ...(result.delivered && (result.providerResponse as any)?.messageId
-              ? { whatsapp_message_id: (result.providerResponse as any).messageId }
-              : {}),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', row.id);
-
-        if (result.delivered) {
-          sent++;
-          if (result.provider === 'cloud_api') {
-            seedConversationFromLead(row.org_id, client, row.id).catch(() => {});
-          }
-        } else {
-          failed++;
-        }
-      }
-    }
-
-    if (row.email_status === 'Queued') {
-      const { data: claimed } = await supabase
-        .from('campaign_recipients')
-        .update({ email_status: 'Sending' })
-        .eq('id', row.id)
-        .eq('email_status', 'Queued')
-        .select('id');
-
-      if (claimed && claimed.length > 0) {
-        const replyTo = buildEmailReplyToAddress(row.id) || undefined;
-        const result = await sendEmailViaOrgProvider(channelSettings, {
-          to: client.email || '',
-          toName: client.name,
-          subject: payload.emailSubject || 'Meeting Request',
-          body: payload.emailBody || '',
-          fromName: payload.senderName || 'OmniReach AI',
-          fromAddress: payload.senderEmail,
-          replyTo,
-        });
-        await supabase
-          .from('campaign_recipients')
-          .update({
-            email_status: result.ok ? 'Sent' : 'Failed',
-            error_detail: result.error || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', row.id);
-
-        if (result.ok) {
-          sent++;
-          if (replyTo) {
-            seedEmailConversationFromLead(row.org_id, client, row.id, payload.emailSubject).catch(() => {});
-          }
-        } else {
-          failed++;
-        }
-      }
-    }
-  }
 
   for (const row of retryable || []) {
     const campaign: any = Array.isArray((row as any).campaigns) ? (row as any).campaigns[0] : (row as any).campaigns;
     const client: any = Array.isArray((row as any).clients) ? (row as any).clients[0] : (row as any).clients;
-    if (!campaign || campaign.status !== 'running' || !client) {
+    // Never re-send to someone who opted out or already booked since the first attempt.
+    if (!campaign || campaign.status !== 'running' || !client || client.opted_out || client.status === 'Meeting Scheduled') {
       skipped++;
       continue;
     }
@@ -255,11 +171,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
       if (claimed && claimed.length > 0) {
         const replyTo = buildEmailReplyToAddress(row.id) || undefined;
+        const compliant = withComplianceFooter(row.org_id, client.email || '', payload.emailBody || '', await getOrgProfile(row.org_id));
         const result = await sendEmailViaOrgProvider(channelSettings, {
           to: client.email || '',
           toName: client.name,
           subject: payload.emailSubject || 'Meeting Request',
-          body: payload.emailBody || '',
+          body: compliant.body,
+          headers: unsubscribeHeaders(compliant.unsubscribeUrl),
           fromName: payload.senderName || 'OmniReach AI',
           fromAddress: payload.senderEmail,
           replyTo,
@@ -286,10 +204,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
   }
 
+  // Activity waiting to go to connected CRMs (lib/crm/index.ts).
+  const crm = await processCrmEvents({ budgetMs: 8000 });
+
+  // Queued AI calls — campaign batches and missed-call retries that are due (lib/callQueue.ts).
+  const voiceCalls = await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall);
+
   // Once a day (Vercel's own cron fires at 06:00 UTC; an external pinger also lands in this
   // hour), sweep every org for finished conversations to learn from — mainly text threads
   // that went quiet, which no webhook ever signals. A no-op for orgs with nothing pending.
   const learning = new Date().getUTCHours() === 6 ? await reviewAllOrgs(25000) : undefined;
 
-  return res.status(200).json({ processed: (due || []).length + (retryable || []).length, sent, failed, skipped, retried, learning });
+  return res.status(200).json({ processed: sent + failed + skipped + retried, sent, failed, skipped, retried, voiceCalls, crm, learning });
 }

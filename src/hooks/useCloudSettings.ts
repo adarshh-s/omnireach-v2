@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
+import { CHANNEL_SECRET_KEYS } from '../types';
+
+/** With accounts configured, channel secrets live only server-side (the database moves them
+ * out of every write — see divert_org_channel_secrets), so they're never cached in this
+ * browser either. Standalone mode has no server copy, so there they stay in localStorage. */
+function withoutSecrets<T>(table: string, value: T): T {
+  if (!isSupabaseBrowserConfigured || table !== 'org_channel_settings' || !value) return value;
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const key of CHANNEL_SECRET_KEYS) delete copy[key];
+  delete copy.savedSecrets;
+  return copy as T;
+}
 
 /**
  * Persists a settings object either to Supabase (scoped to the signed-in org, via RLS)
@@ -19,7 +31,7 @@ export function useCloudSettings<T>(
       const saved = localStorage.getItem(localStorageKey);
       if (saved) {
         try {
-          return { ...defaultValue, ...JSON.parse(saved) };
+          return { ...defaultValue, ...withoutSecrets(table, JSON.parse(saved)) };
         } catch {}
       }
     }
@@ -36,26 +48,28 @@ export function useCloudSettings<T>(
     loadedForUser.current = userId;
 
     setLoading(true);
-    supabase
-      .from(table)
-      .select('settings')
-      .eq('org_id', userId)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data?.settings) {
-          setValue({ ...defaultValue, ...data.settings });
-        }
-        setLoading(false);
-      });
+    Promise.all([
+      supabase.from(table).select('settings').eq('org_id', userId).maybeSingle(),
+      table === 'org_channel_settings' ? supabase.rpc('get_channel_secret_status') : Promise.resolve({ data: null }),
+    ]).then(([{ data }, { data: savedSecrets }]) => {
+      if (data?.settings || savedSecrets) {
+        setValue({
+          ...defaultValue,
+          ...(data?.settings || {}),
+          ...(table === 'org_channel_settings' ? { savedSecrets: savedSecrets || {} } : {}),
+        });
+      }
+      setLoading(false);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, table]);
 
   // Mirror to localStorage always (instant reload / offline fallback / pre-auth cache).
   useEffect(() => {
     try {
-      localStorage.setItem(localStorageKey, JSON.stringify(value));
+      localStorage.setItem(localStorageKey, JSON.stringify(withoutSecrets(table, value)));
     } catch {}
-  }, [value, localStorageKey]);
+  }, [value, localStorageKey, table]);
 
   // Persist to Supabase (debounced) whenever signed in.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);

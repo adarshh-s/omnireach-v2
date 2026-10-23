@@ -4,6 +4,7 @@ import { getConnectedCalendar } from './calendarProvider.js';
 import { checkCalendarAccess as checkGoogleCalendarAccess } from './googleCalendar.js';
 import { checkCalendarAccess as checkMicrosoftCalendarAccess } from './microsoftCalendar.js';
 import { sanitizeInboundDomain } from './emailWebhookHandler.js';
+import { resolveOrgVoiceSetup } from './orgSettings.js';
 
 export interface HealthStatus {
   ok: boolean;
@@ -78,7 +79,12 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
       if (data.quality_rating && data.quality_rating === 'RED') {
         return { ok: false, message: `Number ${data.display_phone_number || phoneId} has a RED quality rating — Meta is restricting its delivery.` };
       }
-      return { ok: true, message: `Sending as ${data.display_phone_number || phoneId}${data.quality_rating ? ` (quality: ${data.quality_rating})` : ''}.` };
+      const sendingAs = `Sending as ${data.display_phone_number || phoneId}${data.quality_rating ? ` (quality: ${data.quality_rating})` : ''}`;
+      // Inbound webhooks are rejected without it (see verifyWhatsAppSignature).
+      if (!settings!.whatsappAppSecret) {
+        return { ok: false, message: `${sendingAs}, but replies won't reach the AI bot until you add your Meta App Secret.` };
+      }
+      return { ok: true, message: `${sendingAs}.` };
     } catch (err: any) {
       return { ok: false, message: err.message || 'Failed to verify the Phone Number ID with Meta.' };
     }
@@ -95,8 +101,21 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
 
   const emailCheck = (async (): Promise<HealthStatus> => {
     const provider = settings?.emailProvider || 'resend';
+    if (provider === 'gmail' || provider === 'outlook') {
+      const label = provider === 'gmail' ? 'Gmail' : 'Outlook';
+      const address = provider === 'gmail' ? settings?.gmailAddress : settings?.outlookAddress;
+      const token = provider === 'gmail' ? settings?.gmailRefreshToken : settings?.outlookRefreshToken;
+      if (!token) return { ok: false, message: `${label} isn't connected — click Connect ${label} below.` };
+      return { ok: true, message: `Sending from ${address || `your ${label} account`}.` };
+    }
+    if (provider === 'resend' && !settings?.emailApiKey?.trim()) {
+      // The platform's shared account holds every org's domain — only ever report this org's own.
+      if (!process.env.RESEND_API_KEY?.trim()) return { ok: false, message: 'Platform email is not set up on the server yet.' };
+      if (settings?.verifiedFromAddress) return { ok: true, message: `Sending from your own domain as ${settings.verifiedFromAddress}.` };
+      return { ok: true, message: `Using the platform sender (${process.env.RESEND_FROM_ADDRESS?.trim() || 'onboarding@resend.dev'}). Add your own domain below to send as your company.` };
+    }
     if (provider === 'resend') {
-      const resendKey = settings?.emailApiKey?.trim() || process.env.RESEND_API_KEY?.trim();
+      const resendKey = settings?.emailApiKey?.trim();
       if (!resendKey) return { ok: true, message: 'Using the platform shared sender (no setup needed).' };
       try {
         const res = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${resendKey}` } });
@@ -180,16 +199,15 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
     return { ok: true, message: `Replies route back via reply+...@${domain}.` };
   })();
 
-  // Same bring-your-own-account fallback as startVapiCall (lib/vapiClient.ts): the org's own
-  // keys win field-by-field, the platform's shared VAPI_* env vars fill in the rest.
+  // Same resolution as real calls (lib/orgSettings.ts's resolveOrgVoiceSetup): the org's own
+  // Vapi account if it brought one, otherwise its assistant and admin-assigned number on ours.
   const voiceCheck = (async (): Promise<HealthStatus> => {
-    const apiKey = settings?.vapiApiKey?.trim() || process.env.VAPI_API_KEY;
-    const assistantId = settings?.vapiAssistantId?.trim() || process.env.VAPI_ASSISTANT_ID;
-    const phoneNumberId = settings?.vapiPhoneNumberId?.trim() || process.env.VAPI_PHONE_NUMBER_ID;
+    const { creds, ownAccount, voice } = await resolveOrgVoiceSetup(orgId);
+    const apiKey = creds.apiKey || process.env.VAPI_API_KEY;
+    const assistantId = creds.assistantId;
 
-    if (!apiKey || !assistantId) {
-      return { ok: false, message: 'Not configured — add your Vapi API Key and Assistant ID in Channel Setup.' };
-    }
+    if (!apiKey) return { ok: false, message: 'Voice calling is not set up on the platform yet.' };
+    if (!assistantId) return { ok: false, message: 'Not set up — write and save your voice agent prompt below.' };
     try {
       const res = await fetch(`https://api.vapi.ai/assistant/${assistantId}`, {
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -198,10 +216,21 @@ export async function checkChannelHealth(orgId: string): Promise<ChannelHealthRe
       if (!res.ok) {
         return { ok: false, message: data?.message || `Vapi rejected this Assistant ID or API Key (${res.status}).` };
       }
-      if (!phoneNumberId) {
-        return { ok: true, message: `Assistant "${data?.name || assistantId}" is reachable. Add a Phone Number ID to place real outbound calls (the in-browser Live Voice Demo works either way).` };
+      if (!creds.phoneNumberId) {
+        return {
+          ok: false,
+          message: ownAccount
+            ? `Assistant "${data?.name || assistantId}" is reachable. Add your Vapi Phone Number ID to place calls.`
+            : `Assistant "${data?.name || assistantId}" is ready, but no phone number is assigned to your workspace yet — contact support.`,
+        };
       }
-      return { ok: true, message: `Assistant "${data?.name || assistantId}" is reachable and ready for outbound calls.` };
+      const number = voice?.phoneNumber ? ` on ${voice.phoneNumber}` : '';
+      return {
+        ok: true,
+        message: voice?.inboundEnabled
+          ? `Ready${number} — places outbound calls and answers incoming ones.`
+          : `Ready for outbound calls${number}. Incoming calls aren't answered by the AI yet — turn that on below.`,
+      };
     } catch (err: any) {
       return { ok: false, message: err.message || 'Failed to reach Vapi.' };
     }

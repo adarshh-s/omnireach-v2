@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, RefreshCw, Lock, Unlock, Loader2 } from 'lucide-react';
+import { RefreshCw, Lock, Unlock, Loader2, Phone } from 'lucide-react';
+import { PageHeader, headerSecondaryButton } from './PageHeader';
 
 interface OrgSummary {
   orgId: string;
@@ -7,6 +8,15 @@ interface OrgSummary {
   companyName: string | null;
   createdAt: string;
   status: 'active' | 'locked';
+  memberCount: number;
+  voicePhoneNumberId: string | null;
+  voicePhoneNumber: string | null;
+}
+
+interface VapiNumber {
+  id: string;
+  number: string | null;
+  name: string | null;
 }
 
 interface AdminDashboardProps {
@@ -17,12 +27,67 @@ interface AdminDashboardProps {
  * (cosmetic gating; the actual enforcement is server-side in api/whatsapp/subscribe-app.ts's
  * ?action=admin-* routes, which check ADMIN_EMAIL against the caller's verified token). Lists
  * every org and lets the owner flip a workspace active/locked after a deal is agreed outside
- * the app — there's no self-serve subscription checkout by design. */
+ * the app — there's no self-serve subscription checkout by design — and give each org its own
+ * phone number from the platform's Vapi account (there's no shared number). */
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) => {
   const [orgs, setOrgs] = useState<OrgSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pendingOrgId, setPendingOrgId] = useState<string | null>(null);
+  const [numbers, setNumbers] = useState<VapiNumber[] | null>(null);
+  const [numbersError, setNumbersError] = useState<string | null>(null);
+  const [assigningOrgId, setAssigningOrgId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const loadNumbers = () => {
+    if (!accessToken) return;
+    fetch('/api/whatsapp/subscribe-app?action=admin-list-voice-numbers', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ok) {
+          setNumbers(data.numbers || []);
+          setNumbersError(null);
+        } else setNumbersError(data?.error || 'Could not load phone numbers.');
+      })
+      .catch(() => setNumbersError('Failed to reach the server.'));
+  };
+
+  const assignNumber = async (org: OrgSummary, phoneNumberId: string) => {
+    if (!accessToken) return;
+    setAssigningOrgId(org.orgId);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/whatsapp/subscribe-app?action=admin-assign-voice-number', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ orgId: org.orgId, phoneNumberId: phoneNumberId || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        const number = numbers?.find((n) => n.id === phoneNumberId);
+        setOrgs(
+          (prev) =>
+            prev?.map((o) =>
+              o.orgId === org.orgId
+                ? { ...o, voicePhoneNumberId: phoneNumberId || null, voicePhoneNumber: phoneNumberId ? data.phoneNumber || number?.number || null : null }
+                : o
+            ) || prev
+        );
+        if (phoneNumberId && data.inboundEnabled === false) {
+          setNotice(`Number assigned, but incoming calls aren't set up yet: ${data.inboundError}. The org can retry from Channel Setup → Voice.`);
+        }
+      } else {
+        setError(data?.error || 'Could not assign that number.');
+      }
+    } catch {
+      setError('Failed to reach the server.');
+    } finally {
+      setAssigningOrgId(null);
+    }
+  };
 
   const loadOrgs = () => {
     if (!accessToken) return;
@@ -42,6 +107,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
 
   useEffect(() => {
     loadOrgs();
+    loadNumbers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
 
@@ -70,38 +136,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
 
   return (
     <div className="space-y-6">
-      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#4285F4]/15 flex items-center justify-center text-[#4285F4] shrink-0">
-            <ShieldCheck className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-ink">Admin — Organizations</h1>
-            <p className="text-xs text-ink-muted mt-0.5">
-              Every signed-up workspace. Flip access on after a deal is agreed and paid outside the app.
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={loadOrgs}
-          disabled={loading}
-          className="p-2 rounded-full text-ink-muted hover:text-ink bg-surface-hover border border-border transition-colors disabled:opacity-50"
-          title="Refresh"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
+      <PageHeader
+        title="Admin"
+        description="Every workspace on the platform. Unlock access once a client has paid, and give each one its own phone number."
+        actions={
+          <button
+            onClick={() => {
+              loadOrgs();
+              loadNumbers();
+            }}
+            disabled={loading}
+            className={headerSecondaryButton}
+            title="Refresh"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        }
+      />
 
       {error && (
         <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300">{error}</div>
       )}
+      {notice && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300">{notice}</div>
+      )}
+      {numbersError && (
+        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300">
+          Phone numbers: {numbersError}
+        </div>
+      )}
 
       <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl shadow-card overflow-hidden">
+        <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border text-left text-ink-muted uppercase tracking-wider text-[10px]">
               <th className="px-5 py-3 font-semibold">Email</th>
               <th className="px-5 py-3 font-semibold">Company</th>
+              <th className="px-5 py-3 font-semibold">Team</th>
+              <th className="px-5 py-3 font-semibold">Phone Number</th>
               <th className="px-5 py-3 font-semibold">Signed Up</th>
               <th className="px-5 py-3 font-semibold">Status</th>
               <th className="px-5 py-3 font-semibold text-right">Action</th>
@@ -110,7 +184,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
           <tbody className="divide-y divide-border">
             {orgs === null && !error && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-ink-muted">
+                <td colSpan={7} className="px-5 py-8 text-center text-ink-muted">
                   <Loader2 className="w-4 h-4 animate-spin inline-block mr-2" />
                   Loading organizations…
                 </td>
@@ -118,13 +192,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
             )}
             {orgs?.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-ink-muted">No organizations yet.</td>
+                <td colSpan={7} className="px-5 py-8 text-center text-ink-muted">No organizations yet.</td>
               </tr>
             )}
             {orgs?.map((org) => (
               <tr key={org.orgId} className="hover:bg-surface-hover transition-colors">
                 <td className="px-5 py-3 text-ink font-medium">{org.email || '—'}</td>
                 <td className="px-5 py-3 text-ink-secondary">{org.companyName || '—'}</td>
+                <td className="px-5 py-3 text-ink-muted">{org.memberCount + 1}</td>
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-1.5">
+                    {assigningOrgId === org.orgId ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-ink-muted" />
+                    ) : (
+                      <Phone className="w-3 h-3 text-ink-muted" />
+                    )}
+                    <select
+                      value={org.voicePhoneNumberId || ''}
+                      disabled={assigningOrgId === org.orgId || numbers === null}
+                      onChange={(e) => assignNumber(org, e.target.value)}
+                      className="bg-canvas border border-border-strong rounded-lg px-2 py-1 text-[11px] font-mono max-w-[180px]"
+                    >
+                      <option value="">— None —</option>
+                      {org.voicePhoneNumberId && !numbers?.some((n) => n.id === org.voicePhoneNumberId) && (
+                        <option value={org.voicePhoneNumberId}>{org.voicePhoneNumber || org.voicePhoneNumberId}</option>
+                      )}
+                      {numbers?.map((n) => {
+                        const takenBy = orgs?.find((o) => o.voicePhoneNumberId === n.id && o.orgId !== org.orgId);
+                        return (
+                          <option key={n.id} value={n.id} disabled={!!takenBy}>
+                            {n.number || n.name || n.id}
+                            {takenBy ? ` (${takenBy.companyName || takenBy.email})` : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </td>
                 <td className="px-5 py-3 text-ink-muted">{new Date(org.createdAt).toLocaleDateString()}</td>
                 <td className="px-5 py-3">
                   {org.status === 'active' ? (
@@ -161,6 +265,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

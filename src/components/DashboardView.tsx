@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Users, Send, MessageCircle, CalendarCheck2, Clock, TrendingUp, Mail, Calendar, Download } from 'lucide-react';
+import { Users, Send, MessageCircle, CalendarCheck2, Mail, Calendar, Download, Upload } from 'lucide-react';
 import { Lead } from '../types';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { ChannelHealthPanel } from './ChannelHealthPanel';
@@ -10,6 +10,7 @@ import { useLiveHistory } from '../hooks/useLiveHistory';
 import { useChannelHealth } from '../hooks/useChannelHealth';
 import { getWhatsAppStats, getEmailStats, getCalendarStats } from '../utils/channelStats';
 import { downloadAnalyticsCsv } from '../utils/exportAnalytics';
+import { PageHeader, headerPrimaryButton, headerSecondaryButton } from './PageHeader';
 
 interface DashboardViewProps {
   leads: Lead[];
@@ -88,10 +89,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
   const emailStats = useMemo(() => getEmailStats(leads), [leads]);
   const calendarStats = useMemo(() => getCalendarStats(leads), [leads]);
 
-  const healthStatusFor = (ok: boolean | undefined): 'ok' | 'attention' | 'checking' => {
-    if (!health) return healthLoading ? 'checking' : 'attention';
+  const healthStatusFor = (ok: boolean | undefined): 'ok' | 'attention' | 'checking' | 'unknown' => {
+    if (!health) return healthLoading ? 'checking' : 'unknown';
     return ok ? 'ok' : 'attention';
   };
+  const notCheckedMessage = accessToken ? 'Couldn’t check this channel right now.' : 'Sign in to check this channel.';
 
   const handleDownloadReport = () => {
     downloadAnalyticsCsv(leads, {
@@ -116,7 +118,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
 
   const tiles = [
     {
-      label: 'Total Clients',
+      label: 'Total Leads',
       value: totalClients,
       icon: Users,
       accent: 'text-[#4285F4] bg-[#4285F4]/10',
@@ -151,38 +153,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
 
   return (
     <div className="space-y-6">
-      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2 text-xs font-semibold uppercase tracking-wider text-ink-muted mb-1">
-            <TrendingUp className="w-3.5 h-3.5 text-[#4285F4]" />
-            <span>Overview</span>
-          </div>
-          <h2 className="text-xl font-bold text-ink">Control Center</h2>
-          <p className="text-xs sm:text-sm text-ink-secondary mt-0.5">
-            How many clients need attention, how campaigns are performing, and how many meetings are booked.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {totalClients > 0 && (
-            <button
-              onClick={handleDownloadReport}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-surface-hover hover:bg-border-strong border border-border-strong text-ink text-xs font-semibold shadow-sm transition-all"
-              title="Download a CSV of current stats and every lead"
-            >
+      <PageHeader
+        title="Dashboard"
+        description="Your leads, conversations and booked meetings at a glance."
+        actions={
+          totalClients > 0 ? (
+            <button onClick={handleDownloadReport} className={headerSecondaryButton} title="Download a CSV of current stats and every lead">
               <Download className="w-3.5 h-3.5" />
               <span>Download Report</span>
             </button>
-          )}
-          {totalClients === 0 && (
-            <button
-              onClick={onOpenExcelUpload}
-              className="px-4 py-2 rounded-full bg-brand-strong hover:bg-[#0d6e62] text-white text-xs font-semibold shadow-sm transition-all"
-            >
-              Import your first clients
+          ) : (
+            <button onClick={onOpenExcelUpload} className={headerPrimaryButton}>
+              <Upload className="w-3.5 h-3.5" />
+              <span>Import your first leads</span>
             </button>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {tiles.map((tile, i) => (
@@ -213,7 +200,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
               { label: 'Replied', value: waStats.replied },
               { label: 'Failed', value: waStats.failed },
             ]}
-            description={health?.whatsapp.message || 'Checking WhatsApp Cloud API status…'}
+            description={health?.whatsapp.message || (healthLoading ? 'Checking…' : notCheckedMessage)}
             scatterPoints={waStats.scatter}
             delay={0.1}
           />
@@ -228,14 +215,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
               { label: 'Replied', value: emailStats.replied },
               { label: 'Failed', value: emailStats.failed },
             ]}
-            description={health?.email.message || 'Checking email provider status…'}
+            description={health?.email.message || (healthLoading ? 'Checking…' : notCheckedMessage)}
             scatterPoints={emailStats.scatter}
             delay={0.15}
           />
           <ChannelCard
             icon={Calendar}
             iconClassName="bg-[#4285F4]/15 text-[#4285F4]"
-            name="Google Calendar"
+            name="Calendar"
             mode="Auto-booking"
             status={healthStatusFor(health?.calendar.ok)}
             stats={[
@@ -243,21 +230,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
               { label: 'In Progress', value: calendarStats.inProgress },
               { label: 'Declined', value: calendarStats.declined },
             ]}
-            description={health?.calendar.message || 'Checking Google Calendar connection…'}
+            description={health?.calendar.message || (healthLoading ? 'Checking…' : notCheckedMessage)}
             scatterPoints={calendarStats.scatter}
             delay={0.2}
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25, delay: 0.25, ease: 'easeOut' }}
           className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
         >
-          <h3 className="font-semibold text-sm text-ink mb-3">Client Pipeline</h3>
+          <h3 className="font-semibold text-sm text-ink mb-3">Pipeline</h3>
           <div className="space-y-2.5 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-ink-secondary">Contacted</span>
@@ -272,7 +259,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
               <span className="font-semibold text-ink">{meetingConversionRate}%</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-ink-secondary">Failed dispatches</span>
+              <span className="text-ink-secondary">Failed sends</span>
               <span className="font-semibold text-rose-400">{failedCount}</span>
             </div>
             {followUpsDueCount > 0 && (
@@ -284,28 +271,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ leads, userId, acc
           </div>
         </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25, delay: 0.3, ease: 'easeOut' }}
-          className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-6 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-[box-shadow,transform] duration-200"
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <Clock className="w-4 h-4 text-ink-muted" />
-            <h3 className="font-semibold text-sm text-ink">Pending Follow-ups</h3>
-          </div>
-          <p className="text-xs text-ink-muted leading-relaxed">
-            Replies are handled live the moment a client messages back — the AI booking bot responds instantly via
-            WhatsApp or Email and books a meeting automatically once a time is confirmed.
-          </p>
-        </motion.div>
-
         <ChannelHealthPanel accessToken={accessToken} health={health} loading={healthLoading} error={healthError} onRefresh={reloadHealth} />
       </div>
 
       {!isSupabaseBrowserConfigured && (
         <p className="text-[11px] text-ink-muted text-center">
-          Running in local/standalone mode — connect Supabase for org-wide campaign and conversation metrics.
+          Running in local mode — sign in to a workspace for live campaign and conversation numbers.
         </p>
       )}
     </div>

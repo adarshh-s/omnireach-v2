@@ -12,6 +12,10 @@
       "destination": "/api/auth/google/callback?provider=microsoft"
     },
     {
+      "source": "/api/auth/crm/callback",
+      "destination": "/api/auth/google/callback?provider=crm"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

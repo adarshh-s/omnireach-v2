@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import type { ChannelApiSettings } from '../src/types.js';
+import { sendViaGmail, sendViaOutlook } from './emailOAuth.js';
 
 export interface SendEmailResult {
   ok: boolean;
@@ -17,6 +18,9 @@ export interface SendEmailParams {
   /** Preferred from-address for resend/sendgrid/mailgun (falls back to settings.smtpFromEmail, then a safe default). Ignored for smtp, which always uses settings.smtpFromEmail. */
   fromAddress?: string;
   replyTo?: string;
+  /** Extra headers, e.g. one-click unsubscribe (lib/emailCompliance.ts). Outlook (Graph)
+   * only accepts X- headers, so it relies on the footer link instead. */
+  headers?: Record<string, string>;
   /** Only used when settings.emailProvider === 'webhook'. */
   webhookUrl?: string;
   webhookContext?: unknown;
@@ -24,6 +28,10 @@ export interface SendEmailParams {
 
 function isUsableAddress(addr: string | undefined | null): addr is string {
   return Boolean(addr && addr.includes('@') && !addr.includes('.example'));
+}
+
+function domainOf(addr: string): string {
+  return addr.split('@').pop()!.trim().toLowerCase();
 }
 
 /**
@@ -44,6 +52,7 @@ export async function sendEmailViaOrgProvider(
     settings?.emailProvider && settings.emailProvider !== 'mailto_direct' ? settings.emailProvider : undefined;
   const provider = orgConfiguredProvider || (process.env.RESEND_API_KEY ? 'resend' : 'mailto_direct');
   const { to, toName, subject, body, fromName, replyTo, webhookUrl, webhookContext } = params;
+  const headers = params.headers && Object.keys(params.headers).length ? params.headers : undefined;
   const html = body.replace(/\n/g, '<br/>');
 
   const preferredFrom = isUsableAddress(params.fromAddress)
@@ -52,10 +61,27 @@ export async function sendEmailViaOrgProvider(
       ? settings!.smtpFromEmail!.trim()
       : undefined;
 
-  const resendApiKey = settings?.emailApiKey?.trim() || process.env.RESEND_API_KEY?.trim();
+  if (provider === 'gmail' || provider === 'outlook') {
+    const refreshToken = provider === 'gmail' ? settings?.gmailRefreshToken : settings?.outlookRefreshToken;
+    if (!refreshToken) {
+      return { ok: false, provider, error: `${provider === 'gmail' ? 'Gmail' : 'Outlook'} isn't connected — connect it in Channel Setup → Email.` };
+    }
+    const mail = { to, toName, subject, text: body, html, fromName, replyTo, headers };
+    const result = provider === 'gmail' ? await sendViaGmail(refreshToken, settings?.gmailAddress, mail) : await sendViaOutlook(refreshToken, mail);
+    return result.ok ? { ok: true, provider, providerResponse: { id: (result as any).id } } : { ok: false, provider, error: result.error };
+  }
+
+  const orgResendKey = settings?.emailApiKey?.trim();
+  const resendApiKey = orgResendKey || process.env.RESEND_API_KEY?.trim();
   if (provider === 'resend' && resendApiKey) {
     const apiKey = resendApiKey;
     const platformFromAddress = process.env.RESEND_FROM_ADDRESS?.trim() || 'onboarding@resend.dev';
+    // On the platform's shared Resend account every org's domain is verified side by side, so
+    // a requested From is only honoured on this org's own verified domain — otherwise any org
+    // could send as another org's domain (or the platform's own).
+    const verified = settings?.verifiedFromAddress;
+    const fromOnPlatform =
+      verified && preferredFrom && domainOf(preferredFrom) === domainOf(verified) ? preferredFrom : verified || platformFromAddress;
     const sendResend = async (fromAddr: string) => {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -67,6 +93,7 @@ export async function sendEmailViaOrgProvider(
           text: body,
           html,
           ...(replyTo ? { reply_to: replyTo } : {}),
+          ...(headers ? { headers } : {}),
         }),
       });
       const text = await res.text();
@@ -80,7 +107,7 @@ export async function sendEmailViaOrgProvider(
     };
 
     try {
-      const firstFrom = preferredFrom || platformFromAddress;
+      const firstFrom = orgResendKey ? preferredFrom || platformFromAddress : fromOnPlatform;
       let { res, data } = await sendResend(firstFrom);
 
       // Automatic fallback: if a custom domain is unverified, retry with onboarding@resend.dev
@@ -110,6 +137,7 @@ export async function sendEmailViaOrgProvider(
           subject,
           content: [{ type: 'text/plain', value: body }],
           ...(replyTo ? { reply_to: { email: replyTo } } : {}),
+          ...(headers ? { headers } : {}),
         }),
       });
       const text = await res.text();
@@ -143,6 +171,7 @@ export async function sendEmailViaOrgProvider(
         text: body,
         html,
         ...(replyTo ? { replyTo } : {}),
+        ...(headers ? { headers } : {}),
       });
       return { ok: true, provider, providerResponse: { messageId: info.messageId } };
     } catch (err: any) {
@@ -162,6 +191,7 @@ export async function sendEmailViaOrgProvider(
       form.append('text', body);
       form.append('html', html);
       if (replyTo) form.append('h:Reply-To', replyTo);
+      for (const [k, v] of Object.entries(headers || {})) form.append(`h:${k}`, v);
 
       const res = await fetch(`https://${apiHost}/v3/${domain}/messages`, {
         method: 'POST',

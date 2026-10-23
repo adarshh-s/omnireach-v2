@@ -102,6 +102,7 @@ export function autoDetectColumns(headers: string[]): ColumnMapping {
     '';
 
   const countryCol = findMatch(['country', 'nation', 'countryname']) || '';
+  const consentCol = findMatch(['consent', 'callconsent', 'optin', 'optedin', 'permission', 'tcpaconsent']) || '';
 
   return {
     name: nameCol,
@@ -110,6 +111,7 @@ export function autoDetectColumns(headers: string[]): ColumnMapping {
     email: emailCol,
     notes: notesCol,
     country: countryCol,
+    consent: consentCol,
   };
 }
 
@@ -197,6 +199,8 @@ export function convertRowsToLeads(
     const rawEmail = String(row[mapping.email] || '').trim();
     const rawNotes = String(row[mapping.notes] || '').trim();
     const rawCountry = String(row[mapping.country] || '').trim();
+    // Anything that reads as "yes" counts as recorded consent to calls (needed for US numbers).
+    const hasConsent = mapping.consent ? /^(y|yes|true|1|written|express|opted ?in|agreed)\b/i.test(String(row[mapping.consent] || '').trim()) : false;
 
     const { formatted, isValid: isPhoneValid } = sanitizePhoneNumber(rawPhone, defaultCountryCode);
     const isEmailValid = Boolean(rawEmail && rawEmail.includes('@') && rawEmail.includes('.'));
@@ -224,6 +228,7 @@ export function convertRowsToLeads(
       lastContacted: '',
       isValidPhone: isPhoneValid,
       isValidEmail: isEmailValid,
+      ...(hasConsent ? { callConsent: true } : {}),
     });
   });
 
@@ -246,6 +251,7 @@ export function exportLeadsToExcel(leads: Lead[], filename: string = 'OmniReach_
     'Meeting Date': l.meetingDate || 'N/A',
     'Meeting Time': l.meetingTime || 'N/A',
     'Notes / Remarks': l.notes || '',
+    'Consent to calls': l.callConsent ? 'Yes' : '',
     'Last Contacted At': l.lastContacted || 'Not yet contacted',
     'Original Phone': l.rawPhone || l.phone,
   }));

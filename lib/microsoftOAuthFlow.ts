@@ -5,10 +5,10 @@ import { saveOrgMicrosoftCalendarToken } from './orgSettings.js';
 // the Azure app registration being set to "Any Microsoft Entra ID tenant + personal
 // accounts" rather than "My organization only" (which would reject every client outside the
 // platform owner's own tenant).
-const AUTHORITY = 'https://login.microsoftonline.com/common';
+export const MICROSOFT_AUTHORITY = 'https://login.microsoftonline.com/common';
 const SCOPES = ['offline_access', 'Calendars.ReadWrite', 'User.Read', 'openid', 'email', 'profile'].join(' ');
 
-function getCredentials() {
+export function getMicrosoftOAuthCredentials() {
   const clientId = process.env.MICROSOFT_CLIENT_ID;
   const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
   const redirectUri = process.env.MICROSOFT_OAUTH_REDIRECT_URI;
@@ -17,11 +17,11 @@ function getCredentials() {
 }
 
 export function isMicrosoftOAuthConfigured(): boolean {
-  return !!getCredentials();
+  return !!getMicrosoftOAuthCredentials();
 }
 
 export function buildMicrosoftAuthUrl(orgId: string): string | null {
-  const creds = getCredentials();
+  const creds = getMicrosoftOAuthCredentials();
   if (!creds) return null;
   const params = new URLSearchParams({
     client_id: creds.clientId,
@@ -32,7 +32,7 @@ export function buildMicrosoftAuthUrl(orgId: string): string | null {
     state: signOAuthState(orgId),
     prompt: 'consent', // forces a fresh consent so a refresh_token is actually issued every time
   });
-  return `${AUTHORITY}/oauth2/v2.0/authorize?${params.toString()}`;
+  return `${MICROSOFT_AUTHORITY}/oauth2/v2.0/authorize?${params.toString()}`;
 }
 
 export interface MicrosoftOAuthCallbackResult {
@@ -50,13 +50,13 @@ export async function handleMicrosoftOAuthCallback(code: string | undefined, sta
     return { ok: false, error: 'Microsoft did not return an authorization code.' };
   }
 
-  const creds = getCredentials();
+  const creds = getMicrosoftOAuthCredentials();
   if (!creds) {
     return { ok: false, error: 'Outlook Calendar OAuth is not configured on the server.' };
   }
 
   try {
-    const tokenRes = await fetch(`${AUTHORITY}/oauth2/v2.0/token`, {
+    const tokenRes = await fetch(`${MICROSOFT_AUTHORITY}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -98,10 +98,10 @@ export async function handleMicrosoftOAuthCallback(code: string | undefined, sta
  * short-lived (~1hr), so every Graph API call needs this first. Also returns a possibly-new
  * refresh token (Microsoft sometimes rotates it), which callers should persist if present. */
 export async function getMicrosoftAccessToken(refreshToken: string): Promise<{ accessToken: string; newRefreshToken?: string } | null> {
-  const creds = getCredentials();
+  const creds = getMicrosoftOAuthCredentials();
   if (!creds) return null;
   try {
-    const res = await fetch(`${AUTHORITY}/oauth2/v2.0/token`, {
+    const res = await fetch(`${MICROSOFT_AUTHORITY}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({

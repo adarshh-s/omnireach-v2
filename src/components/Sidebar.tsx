@@ -15,11 +15,14 @@ import {
   LogOut,
   ShieldCheck,
   Sparkles,
+  Users,
+  BarChart3,
 } from 'lucide-react';
 import { NotificationBell } from './NotificationBell';
 
 export type ActiveTab =
   | 'dashboard'
+  | 'reports'
   | 'campaign'
   | 'sheets'
   | 'simulator'
@@ -27,6 +30,7 @@ export type ActiveTab =
   | 'calendar'
   | 'inbox'
   | 'learning'
+  | 'team'
   | 'admin';
 
 interface SidebarProps {
@@ -48,7 +52,6 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: string;
-  isSpecial?: boolean;
 }
 
 interface NavGroup {
@@ -74,20 +77,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const groups: NavGroup[] = [
     {
       label: 'Overview',
-      items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }],
+      items: [
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'reports', label: 'Reports', icon: BarChart3 },
+      ],
     },
     {
       label: 'Outreach',
       items: [
         {
           id: 'campaign',
-          label: 'Batch Outreach',
+          label: 'Campaigns',
           icon: Send,
-          badge: pendingCount > 0 ? `${pendingCount} Ready` : undefined,
-          isSpecial: true,
+          badge: pendingCount > 0 ? `${pendingCount} ready` : undefined,
         },
-        { id: 'sheets', label: 'Spreadsheet & Leads', icon: Table },
-        { id: 'templates', label: 'AI Copy & Templates', icon: Settings2 },
+        { id: 'sheets', label: 'Leads', icon: Table },
+        { id: 'templates', label: 'Templates', icon: Settings2 },
       ],
     },
     {
@@ -97,18 +102,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'inbox',
           label: 'AI Inbox',
           icon: Bot,
-          badge: inboxCount && inboxCount > 0 ? `${inboxCount} Live` : undefined,
+          badge: inboxCount && inboxCount > 0 ? `${inboxCount} live` : undefined,
         },
         { id: 'learning', label: 'AI Learning', icon: Sparkles },
-        { id: 'simulator', label: 'Chat & Email Preview', icon: MessageSquare },
+        { id: 'simulator', label: 'Message Preview', icon: MessageSquare },
         {
           id: 'calendar',
-          label: 'Google Calendar',
+          label: 'Meetings',
           icon: Calendar,
-          badge: scheduledCount > 0 ? `${scheduledCount} Booked` : undefined,
+          badge: scheduledCount > 0 ? `${scheduledCount} booked` : undefined,
         },
       ],
     },
+    ...(userId
+      ? [
+          {
+            label: 'Workspace',
+            items: [{ id: 'team' as const, label: 'Team', icon: Users }],
+          },
+        ]
+      : []),
     ...(isAdmin
       ? [
           {
@@ -121,12 +134,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const navButtonClass = (item: NavItem) => {
     const isActive = activeTab === item.id;
-    if (!isActive) {
-      return 'text-ink-muted hover:text-ink hover:bg-surface-hover';
-    }
-    return item.isSpecial
-      ? 'bg-brand/10 text-emerald-300 font-semibold border border-brand/30'
-      : 'bg-brand-strong text-white';
+    return isActive ? 'bg-brand-strong text-white' : 'text-ink-muted hover:text-ink hover:bg-surface-hover';
   };
 
   const Logo = ({ compact }: { compact?: boolean }) => (
@@ -139,10 +147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-2">
             <span className="font-semibold text-base text-ink tracking-tight">OmniReach AI</span>
           </div>
-          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-brand/10 text-emerald-300 border border-brand/30 inline-flex items-center gap-1 mt-0.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#25D366] animate-pulse"></span>
-            WhatsApp + Email
-          </span>
+          <span className="block text-[10px] text-ink-muted mt-0.5">AI outreach & booking</span>
         </div>
       )}
     </div>
@@ -171,18 +176,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 >
                   <Icon
                     className={`w-3.5 h-3.5 shrink-0 ${
-                      isActive ? (item.isSpecial ? 'text-[#128C7E]' : 'text-white') : 'text-ink-muted'
+                      isActive ? 'text-white' : 'text-ink-muted'
                     }`}
                   />
                   <span className="flex-1 text-left truncate">{item.label}</span>
                   {item.badge && (
                     <span
                       className={`text-[10px] px-1.5 py-0.2 rounded-full font-medium shrink-0 ${
-                        isActive
-                          ? item.isSpecial
-                            ? 'bg-[#25D366] text-white'
-                            : 'bg-surface/20 text-white'
-                          : 'bg-border-strong text-ink-secondary'
+                        isActive ? 'bg-surface/20 text-white' : 'bg-border-strong text-ink-secondary'
                       }`}
                     >
                       {item.badge}
@@ -223,7 +224,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onNavigate?.();
         }}
         className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-ink-secondary bg-surface-hover/50 backdrop-blur-xl hover:bg-surface-hover border border-border transition-colors"
-        title="Configure WhatsApp & Email API keys"
+        title="Connect WhatsApp, Email, Voice and Calendar"
       >
         <Settings2 className="w-3.5 h-3.5 text-ink-muted" />
         <span>Channel Setup</span>
@@ -237,7 +238,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-lg text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98]"
       >
         <Upload className="w-3.5 h-3.5" />
-        <span>Import Excel / CSV</span>
+        <span>Import Leads</span>
       </button>
     </div>
   );

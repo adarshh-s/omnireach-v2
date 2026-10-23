@@ -1,3 +1,4 @@
+import { PageHeader, headerPrimaryButton, headerSecondaryButton } from './PageHeader';
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -67,6 +68,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
     email: '',
     country: '',
     notes: '',
+    callConsent: false,
   });
 
   const handleAddSubmit = (e: React.FormEvent) => {
@@ -90,13 +92,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
       whatsAppStatus: 'Pending',
       emailStatus: 'Pending',
       notes: newLead.notes || '',
+      callConsent: newLead.callConsent || undefined,
       lastContacted: '',
       isValidPhone: isPhoneValid,
       isValidEmail: Boolean(newLead.email && newLead.email.includes('@') && newLead.email.includes('.')),
     };
 
     onAddLead(lead);
-    setNewLead({ name: '', company: '', phone: '', email: '', country: '', notes: '' });
+    setNewLead({ name: '', company: '', phone: '', email: '', country: '', notes: '', callConsent: false });
     setIsAddingLead(false);
   };
 
@@ -172,65 +175,41 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* Top Toolbar */}
-      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-4 sm:p-5 shadow-card">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-ink">
-                Client Outreach Spreadsheet & Lead Records
-              </h2>
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-canvas border border-border-strong text-ink-muted">
-                {leads.length} Total Rows
-              </span>
-            </div>
-            <p className="text-xs text-ink-muted mt-0.5">
-              Live two-way synced contact records. Ingest Excel sheets, monitor WhatsApp & Email delivery status, and launch targeted sequences.
-            </p>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              id="sheet-add-lead-btn"
-              onClick={() => setIsAddingLead(!isAddingLead)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
-            >
+      <PageHeader
+        title="Leads"
+        description={`${leads.length} ${leads.length === 1 ? 'lead' : 'leads'} — see who's been contacted on each channel and where they are in your pipeline.`}
+        actions={
+          <>
+            <button id="sheet-add-lead-btn" onClick={() => setIsAddingLead(!isAddingLead)} className={headerSecondaryButton}>
               <Plus className="w-3.5 h-3.5" />
               <span>Add Lead</span>
             </button>
-
-            <button
-              id="sheet-import-excel-btn"
-              onClick={onOpenExcelUpload}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5 text-ink-muted" />
-              <span>Import Sheet</span>
+            {leads.length > 0 && (
+              <button id="sheet-export-excel-btn" onClick={() => exportLeadsToExcel(leads)} className={headerSecondaryButton}>
+                <Download className="w-3.5 h-3.5" />
+                <span>Export</span>
+              </button>
+            )}
+            <button id="sheet-import-excel-btn" onClick={onOpenExcelUpload} className={headerPrimaryButton}>
+              <Upload className="w-3.5 h-3.5" />
+              <span>Import Leads</span>
             </button>
-
-            <button
-              id="sheet-export-excel-btn"
-              onClick={() => exportLeadsToExcel(leads)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-canvas hover:bg-surface-hover border border-border-strong text-ink transition-colors"
-            >
-              <Download className="w-3.5 h-3.5 text-ink-muted" />
-              <span>Export Excel</span>
-            </button>
-
             <button
               id="sheet-reset-btn"
               onClick={onResetLeads}
-              className="p-2 text-xs font-semibold rounded-lg text-ink-muted hover:text-ink hover:bg-surface-hover border border-border-strong transition-colors"
-              title="Reset to initial sample leads"
+              className="p-2 rounded-full text-ink-muted hover:text-ink hover:bg-surface-hover border border-border-strong transition-colors"
+              title="Replace all leads with the sample leads"
+              aria-label="Replace all leads with the sample leads"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
-          </div>
-        </div>
+          </>
+        }
+      />
 
+      <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-4 shadow-card">
         {/* Search + Filters */}
-        <div className="mt-4 pt-4 border-t border-border space-y-3">
+        <div className="space-y-3">
           <div className="relative">
             <Search className="w-4 h-4 text-ink-muted absolute left-3 top-2.5" />
             <input
@@ -385,6 +364,16 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             </div>
           </div>
 
+          <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={newLead.callConsent}
+              onChange={(e) => setNewLead({ ...newLead, callConsent: e.target.checked })}
+              className="accent-[#128C7E]"
+            />
+            Agreed to be called <span className="text-ink-muted">— required before AI calls to US numbers</span>
+          </label>
+
           <div className="flex justify-end gap-2">
             <button
               type="button"
@@ -478,6 +467,16 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
             />
           </div>
 
+          <label className="flex items-center gap-2 text-[11px] text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={!!editingLead.callConsent}
+              onChange={(e) => setEditingLead({ ...editingLead, callConsent: e.target.checked })}
+              className="accent-[#128C7E]"
+            />
+            Agreed to be called <span className="text-ink-muted">— required before AI calls to US numbers</span>
+          </label>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-semibold text-ink-muted mb-1">Tags (comma-separated)</label>
@@ -526,7 +525,25 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
         </form>
       )}
 
-      {/* Main Leads Table */}
+      {/* With no leads at all, a wide (horizontally scrolling) empty table only hides the way forward. */}
+      {leads.length === 0 ? (
+        <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border shadow-card py-12 px-4 text-center">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-ink">No leads yet</p>
+            <p className="text-xs text-ink-muted">Import a spreadsheet or add a lead to get started.</p>
+            <div className="flex justify-center gap-2">
+              <button onClick={onOpenExcelUpload} className={headerPrimaryButton}>
+                <Upload className="w-3.5 h-3.5" />
+                <span>Import Leads</span>
+              </button>
+              <button onClick={() => setIsAddingLead(true)} className={headerSecondaryButton}>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Lead</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border shadow-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
@@ -552,7 +569,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 <th className="py-3 px-3">Email Status</th>
                 <th className="py-3 px-3">Lead Status</th>
                 <th className="py-3 px-3">Last Contacted</th>
-                <th className="py-3 px-3 text-right">Quick Dispatch & Actions</th>
+                <th className="py-3 px-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-hover">
@@ -765,8 +782,8 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-xs text-ink-muted">
-                    No contacts found matching the search filter.
+                  <td colSpan={9} className="py-12 text-center">
+                    <p className="text-xs text-ink-muted">No leads match your search or filters.</p>
                   </td>
                 </tr>
               )}
@@ -774,6 +791,7 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 };

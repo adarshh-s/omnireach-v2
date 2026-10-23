@@ -1,12 +1,26 @@
-import { getOrgIdFromAuthHeader, getUserFromAuthHeader, isAdminEmail } from '../../lib/supabaseServerAuth.js';
+import { getCallerFromAuthHeader, getUserFromAuthHeader, isAdminEmail } from '../../lib/supabaseServerAuth.js';
 import { subscribeAppToWaba } from '../../lib/whatsappSubscribe.js';
 import { checkChannelHealth } from '../../lib/channelHealth.js';
-import { adminListOrgs, adminSetOrgAccess } from '../../lib/orgSettings.js';
+import { adminListOrgs, adminSetOrgAccess, getOrgChannelSettings, saveOrgVoice } from '../../lib/orgSettings.js';
+import { listTeam, inviteTeamMember, removeTeamMember } from '../../lib/teamMembers.js';
+import {
+  getOrgEmailDomain,
+  addOrgEmailDomain,
+  verifyOrgEmailDomain,
+  updateOrgEmailFromAddress,
+  removeOrgEmailDomain,
+} from '../../lib/emailDomains.js';
+import { disconnectEmailOAuth } from '../../lib/emailOAuth.js';
+import { listSuppression, addManyToSuppression, removeFromSuppression } from '../../lib/suppression.js';
+import { configuredCrms, disconnectCrm, importFromCrm, processCrmEvents } from '../../lib/crm/index.js';
+import { getSupabaseAdmin } from '../../lib/supabaseAdmin.js';
+import { listPhoneNumbers } from '../../lib/vapiClient.js';
+import { enableInboundCalls, getPublicBaseUrl } from '../../lib/voiceCalls.js';
 
 interface ApiRequest {
   method?: string;
   query?: Record<string, unknown>;
-  body?: { accessToken?: string; wabaId?: string; orgId?: string; status?: string };
+  body?: any;
   headers?: Record<string, string | string[] | undefined>;
 }
 
@@ -15,47 +29,39 @@ interface ApiResponse {
   json: (data: unknown) => void;
 }
 
+/**
+ * The workspace "account" route: WhatsApp app subscription, channel health, team members,
+ * the org's own email domain, and the admin dashboard's actions. One file with ?action=...
+ * branches rather than one route each, to stay under Vercel's Hobby-plan
+ * 12-serverless-function cap. server.ts (local dev) calls this same handler.
+ */
 export default async function handler(req: ApiRequest, res: ApiResponse) {
-  // Admin dashboard actions — reuse this route (rather than adding new ones) to stay under
-  // Vercel's Hobby-plan 12-serverless-function cap. Gated on ADMIN_EMAIL, not just "signed
-  // in" — no self-serve subscription checkout; access is unlocked manually here after a
-  // client contacts the platform owner directly and pays outside the app.
-  if (req.query?.action === 'admin-list-orgs' || req.query?.action === 'admin-set-org-access') {
-    const user = await getUserFromAuthHeader(req.headers?.authorization as string | undefined);
+  const action = (req.query?.action as string | undefined) || '';
+  const authHeader = req.headers?.authorization as string | undefined;
+
+  // Admin dashboard actions — gated on ADMIN_EMAIL, not just "signed in". No self-serve
+  // subscription checkout; access is unlocked manually after a client pays outside the app.
+  if (action.startsWith('admin-')) {
+    const user = await getUserFromAuthHeader(authHeader);
     if (!user) return res.status(401).json({ error: 'Sign in required.' });
     if (!isAdminEmail(user.email)) return res.status(403).json({ error: 'Not authorized.' });
-
-    if (req.query.action === 'admin-list-orgs') {
-      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-      const orgs = await adminListOrgs();
-      return res.status(200).json({ orgs });
-    }
-
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { orgId: targetOrgId, status } = req.body || {};
-    if (!targetOrgId || (status !== 'active' && status !== 'locked')) {
-      return res.status(400).json({ error: 'orgId and a status of "active" or "locked" are required.' });
-    }
-    await adminSetOrgAccess(targetOrgId, status);
-    return res.status(200).json({ ok: true });
+    return handleAdminAction(action, req, res);
   }
 
-  const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
-  if (!orgId) {
+  const caller = await getCallerFromAuthHeader(authHeader);
+  if (!caller) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
-
-  // Reuses this route (rather than adding a new one) to stay under Vercel's Hobby-plan
-  // 12-serverless-function cap. Not a new capability — just the actual value of the
-  // shared WHATSAPP_VERIFY_TOKEN, which orgs need to paste into their own Meta App's
-  // webhook config. Not sensitive: it's Meta's handshake echo string, not a credential —
-  // the real access control is the X-Hub-Signature-256 check (WHATSAPP_APP_SECRET).
-  if (req.method === 'GET' && req.query?.action === 'health') {
-    const health = await checkChannelHealth(orgId);
-    return res.status(200).json(health);
-  }
+  const orgId = caller.orgId;
 
   if (req.method === 'GET') {
+    if (action === 'health') return res.status(200).json(await checkChannelHealth(orgId));
+    if (action === 'team') return res.status(200).json({ members: await listTeam(orgId), myRole: caller.role, myUserId: caller.userId });
+    if (action === 'email-domain') return res.status(200).json({ domain: await getOrgEmailDomain(orgId) });
+    if (action === 'do-not-contact') return res.status(200).json(await listSuppression(orgId));
+    if (action === 'crm') return res.status(200).json(await crmStatus(orgId));
+    // Not a credential — Meta's webhook handshake echo string, which orgs paste into their own
+    // Meta App's webhook config. The real access control is the X-Hub-Signature-256 check.
     return res.status(200).json({ verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null });
   }
 
@@ -63,11 +69,133 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { accessToken, wabaId } = req.body || {};
-  if (!accessToken || !wabaId) {
-    return res.status(400).json({ error: 'accessToken and wabaId are required.' });
+  const body = req.body || {};
+  const respond = (result: { ok: boolean }) => res.status(result.ok ? 200 : 400).json(result);
+
+  switch (action) {
+    case 'team-invite': {
+      const redirectTo = getPublicBaseUrl(req.headers) || process.env.APP_URL?.trim() || undefined;
+      return respond(await inviteTeamMember(caller, body.email, body.role === 'admin' ? 'admin' : 'member', redirectTo));
+    }
+    case 'team-remove':
+      return respond(await removeTeamMember(caller, body.userId));
+    case 'email-domain-add':
+      return respond(await addOrgEmailDomain(orgId, body.domain, body.fromAddress));
+    case 'email-domain-verify':
+      return respond(await verifyOrgEmailDomain(orgId));
+    case 'email-domain-from':
+      return respond(await updateOrgEmailFromAddress(orgId, body.fromAddress));
+    case 'email-domain-remove':
+      return respond(await removeOrgEmailDomain(orgId));
+    case 'do-not-contact-add':
+      return res.status(200).json({ ok: true, ...(await addManyToSuppression(orgId, String(body.values || ''))) });
+    case 'do-not-contact-remove':
+      // Taking someone off the list lets campaigns contact them again — owner/admin only.
+      if (caller.role === 'member') return res.status(403).json({ ok: false, error: 'Only the workspace owner or an admin can remove entries.' });
+      await removeFromSuppression(orgId, String(body.id || ''));
+      return res.status(200).json({ ok: true });
+    case 'crm-disconnect':
+      if (caller.role === 'member') return res.status(403).json({ ok: false, error: 'Only the workspace owner or an admin can disconnect the CRM.' });
+      await disconnectCrm(orgId);
+      return res.status(200).json({ ok: true });
+    case 'crm-sync':
+      await processCrmEvents({ budgetMs: 20000, onlyOrgId: orgId });
+      return res.status(200).json({ ok: true, ...(await crmStatus(orgId)) });
+    case 'crm-import':
+      try {
+        const result = await importFromCrm(orgId, Math.min(2000, Number(body.limit) || 500));
+        return res.status(200).json({ ok: true, ...result });
+      } catch (err: any) {
+        return res.status(400).json({ ok: false, error: err?.message || 'Could not import from the CRM.' });
+      }
+    case 'email-oauth-disconnect':
+      await disconnectEmailOAuth(orgId);
+      return res.status(200).json({ ok: true });
   }
 
+  // Default POST: subscribe this app to the org's WhatsApp Business Account so inbound
+  // webhooks actually deliver — a step Meta requires but doesn't surface in its dashboard.
+  // The token is the one typed into the form if it isn't saved yet, else the saved one
+  // (the browser never gets saved secrets back).
+  const accessToken = body.accessToken || (await getOrgChannelSettings(orgId))?.whatsappCloudApiKey;
+  const { wabaId } = body;
+  if (!accessToken || !wabaId) {
+    return res.status(400).json({ error: 'Save your WhatsApp access token and Business Account ID first.' });
+  }
   const result = await subscribeAppToWaba(accessToken, wabaId);
   return res.status(result.ok ? 200 : 400).json(result);
+}
+
+async function handleAdminAction(action: string, req: ApiRequest, res: ApiResponse) {
+  if (action === 'admin-list-orgs') {
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(200).json({ orgs: await adminListOrgs() });
+  }
+
+  // Numbers on the platform's Vapi account, to pick from when assigning one to an org.
+  if (action === 'admin-list-voice-numbers') {
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+    const apiKey = process.env.VAPI_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: 'VAPI_API_KEY is not set on the server.' });
+    const result = await listPhoneNumbers(apiKey);
+    return res.status(result.ok ? 200 : 400).json(result);
+  }
+
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  const { orgId: targetOrgId, status, phoneNumberId } = req.body || {};
+  if (!targetOrgId) return res.status(400).json({ error: 'orgId is required.' });
+
+  if (action === 'admin-set-org-access') {
+    if (status !== 'active' && status !== 'locked') {
+      return res.status(400).json({ error: 'A status of "active" or "locked" is required.' });
+    }
+    await adminSetOrgAccess(targetOrgId, status);
+    return res.status(200).json({ ok: true });
+  }
+
+  // Gives an org its own number (or takes it away with phoneNumberId: null), then points the
+  // number's incoming calls at the org's AI agent.
+  if (action === 'admin-assign-voice-number') {
+    if (!phoneNumberId) {
+      const cleared = await saveOrgVoice(targetOrgId, { phone_number_id: null, phone_number: null, inbound_enabled: false });
+      return res.status(cleared.error ? 400 : 200).json(cleared.error ? { ok: false, error: cleared.error } : { ok: true });
+    }
+    const apiKey = process.env.VAPI_API_KEY;
+    if (!apiKey) return res.status(400).json({ ok: false, error: 'VAPI_API_KEY is not set on the server.' });
+    const listed = await listPhoneNumbers(apiKey);
+    const number = listed.numbers?.find((n) => n.id === phoneNumberId);
+    if (!number) return res.status(400).json({ ok: false, error: listed.error || "That number isn't on the platform's Vapi account." });
+
+    const saved = await saveOrgVoice(targetOrgId, { phone_number_id: number.id, phone_number: number.number, inbound_enabled: false });
+    if (saved.error) return res.status(400).json({ ok: false, error: saved.error });
+    const inbound = await enableInboundCalls(targetOrgId, getPublicBaseUrl(req.headers));
+    return res.status(200).json({
+      ok: true,
+      phoneNumber: number.number,
+      inboundEnabled: inbound.ok,
+      inboundError: inbound.ok ? undefined : inbound.error,
+    });
+  }
+
+  return res.status(400).json({ error: `Unknown action "${action}".` });
+}
+
+/** The org's CRM connection and sync health, plus which CRMs the platform has set up. */
+async function crmStatus(orgId: string) {
+  const supabase = getSupabaseAdmin();
+  const available = configuredCrms();
+  if (!supabase) return { available, connection: null, pending: 0, failed: 0 };
+  const [{ data: row }, { count: pending }, { count: failed }] = await Promise.all([
+    supabase.from('org_crm').select('provider, connected_account, last_sync_at, last_error').eq('org_id', orgId).maybeSingle(),
+    supabase.from('crm_events').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'pending'),
+    supabase.from('crm_events').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'failed'),
+  ]);
+  return {
+    available,
+    connection: row
+      ? { provider: row.provider, account: row.connected_account, lastSyncAt: row.last_sync_at, lastError: row.last_error }
+      : null,
+    pending: pending || 0,
+    failed: failed || 0,
+  };
 }

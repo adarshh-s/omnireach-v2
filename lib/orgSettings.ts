@@ -1,4 +1,6 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
+import { getOrgIdFromAuthHeader } from './supabaseServerAuth.js';
+import type { VapiCredentials } from './vapiClient.js';
 import type { CampaignSettings, ChannelApiSettings } from '../src/types.js';
 
 export interface OrgSummary {
@@ -7,7 +9,14 @@ export interface OrgSummary {
   companyName: string | null;
   createdAt: string;
   status: 'active' | 'locked';
+  memberCount: number;
+  voicePhoneNumberId: string | null;
+  voicePhoneNumber: string | null;
 }
+
+/** Fields getOrgChannelSettings merges in from server-only tables. Never stored in the
+ * settings row, and never taken from a browser-supplied copy of the settings. */
+const SERVER_ONLY_KEYS = ['savedSecrets', 'gmailRefreshToken', 'gmailAddress', 'outlookRefreshToken', 'outlookAddress', 'verifiedFromAddress'] as const;
 
 /** Every signed-up org, for the admin dashboard's org list. Combines Supabase Auth's user
  * list (email, signup date) with org_profile (company name) and org_access (active/locked) —
@@ -18,22 +27,33 @@ export async function adminListOrgs(): Promise<OrgSummary[]> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return [];
 
-  const [{ data: usersData }, { data: accessRows }, { data: profileRows }] = await Promise.all([
+  const [{ data: usersData }, { data: accessRows }, { data: profileRows }, { data: memberRows }, { data: voiceRows }] = await Promise.all([
     supabase.auth.admin.listUsers({ perPage: 1000 }),
     supabase.from('org_access').select('org_id, status'),
     supabase.from('org_profile').select('org_id, settings'),
+    supabase.from('org_members').select('user_id, org_id'),
+    supabase.from('org_voice').select('org_id, phone_number_id, phone_number'),
   ]);
 
   const statusByOrg = new Map((accessRows || []).map((r: any) => [r.org_id, r.status]));
   const profileByOrg = new Map((profileRows || []).map((r: any) => [r.org_id, r.settings]));
+  const voiceByOrg = new Map((voiceRows || []).map((r: any) => [r.org_id, r]));
+  // Invited teammates are auth users too, but they belong to someone else's org, not their own.
+  const memberUserIds = new Set((memberRows || []).map((r: any) => r.user_id));
+  const memberCountByOrg = new Map<string, number>();
+  for (const r of memberRows || []) memberCountByOrg.set((r as any).org_id, (memberCountByOrg.get((r as any).org_id) || 0) + 1);
 
   return (usersData?.users || [])
+    .filter((u) => !memberUserIds.has(u.id))
     .map((u) => ({
       orgId: u.id,
       email: u.email || null,
       companyName: (profileByOrg.get(u.id) as CampaignSettings | undefined)?.companyName || null,
       createdAt: u.created_at,
       status: (statusByOrg.get(u.id) as 'active' | 'locked' | undefined) || 'active',
+      memberCount: memberCountByOrg.get(u.id) || 0,
+      voicePhoneNumberId: voiceByOrg.get(u.id)?.phone_number_id || null,
+      voicePhoneNumber: voiceByOrg.get(u.id)?.phone_number || null,
     }))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
@@ -65,20 +85,79 @@ export async function saveOrgProfile(orgId: string, settings: CampaignSettings):
   );
 }
 
+/**
+ * An org's channel settings as the server uses them: the browser-editable settings row, plus
+ * the secrets the database keeps out of it (org_channel_secrets), the connected Gmail/Outlook
+ * mailbox (org_email_oauth), and the verified own-domain From address (org_email_domain).
+ * Server-side only — never return this object to a browser.
+ */
 export async function getOrgChannelSettings(orgId: string): Promise<ChannelApiSettings | null> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
-  const { data } = await supabase.from('org_channel_settings').select('settings').eq('org_id', orgId).maybeSingle();
-  return (data?.settings as ChannelApiSettings) || null;
+  const [{ data }, { data: secretsRow }, { data: oauth }, { data: domain }] = await Promise.all([
+    supabase.from('org_channel_settings').select('settings').eq('org_id', orgId).maybeSingle(),
+    supabase.from('org_channel_secrets').select('secrets').eq('org_id', orgId).maybeSingle(),
+    supabase.from('org_email_oauth').select('provider, refresh_token, connected_email').eq('org_id', orgId).maybeSingle(),
+    supabase.from('org_email_domain').select('status, from_address').eq('org_id', orgId).maybeSingle(),
+  ]);
+  if (!data?.settings && !secretsRow && !oauth && !domain) return null;
+
+  const merged: ChannelApiSettings = { ...((data?.settings as ChannelApiSettings) || ({} as ChannelApiSettings)), ...(secretsRow?.secrets || {}) };
+  if (oauth?.provider === 'gmail') {
+    merged.gmailRefreshToken = oauth.refresh_token;
+    merged.gmailAddress = oauth.connected_email || undefined;
+  } else if (oauth?.provider === 'outlook') {
+    merged.outlookRefreshToken = oauth.refresh_token;
+    merged.outlookAddress = oauth.connected_email || undefined;
+  }
+  if (domain?.status === 'verified') merged.verifiedFromAddress = domain.from_address;
+  return merged;
+}
+
+/**
+ * The settings a send request should use: what's stored for the org, overlaid with the
+ * browser's copy of the non-secret fields (they're browser-owned anyway, and the Channel
+ * Setup test buttons send unsaved edits). A secret the browser sends is only used when
+ * non-empty — e.g. one typed into the form but not saved yet. Server-only fields are always
+ * the stored ones, whatever the browser sends.
+ */
+export async function resolveSendSettings(orgId: string, fromBrowser: Partial<ChannelApiSettings> | undefined): Promise<ChannelApiSettings | null> {
+  const stored = await getOrgChannelSettings(orgId);
+  const overlay: Record<string, unknown> = { ...(fromBrowser || {}) };
+  for (const key of SERVER_ONLY_KEYS) delete overlay[key];
+  for (const [key, value] of Object.entries(overlay)) {
+    if (value === undefined || value === null || value === '') delete overlay[key];
+  }
+  if (!stored && !fromBrowser) return null;
+  return { ...(stored || ({} as ChannelApiSettings)), ...(overlay as Partial<ChannelApiSettings>) } as ChannelApiSettings;
+}
+
+/**
+ * Settings for a send request from the browser. With accounts configured, the caller must be
+ * signed in and the org's stored credentials are used (resolveSendSettings) — the request
+ * body's credentials alone were never trustworthy, and with the platform's own Resend key as
+ * the fallback, an unauthenticated route would be an open relay. Without Supabase at all
+ * (standalone single-business mode) the browser's own settings are all there is.
+ */
+export async function settingsForSendRequest(
+  authHeader: string | undefined,
+  fromBrowser: Partial<ChannelApiSettings> | undefined
+): Promise<{ ok: true; orgId: string | null; settings: ChannelApiSettings | null } | { ok: false }> {
+  if (!getSupabaseAdmin()) return { ok: true, orgId: null, settings: (fromBrowser as ChannelApiSettings) || null };
+  const orgId = await getOrgIdFromAuthHeader(authHeader);
+  if (!orgId) return { ok: false };
+  return { ok: true, orgId, settings: await resolveSendSettings(orgId, fromBrowser) };
 }
 
 export async function saveOrgChannelSettings(orgId: string, settings: ChannelApiSettings): Promise<void> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return;
+  const toStore: Record<string, unknown> = { ...settings };
+  for (const key of SERVER_ONLY_KEYS) delete toStore[key];
   await supabase.from('org_channel_settings').upsert(
     {
       org_id: orgId,
-      settings,
+      settings: toStore,
       whatsapp_cloud_phone_id: settings.whatsappCloudPhoneId || null,
       updated_at: new Date().toISOString(),
     },
@@ -100,6 +179,94 @@ export async function getOrgIdByPhoneNumberId(phoneNumberId: string): Promise<st
     .eq('whatsapp_cloud_phone_id', phoneNumberId)
     .maybeSingle();
   return data?.org_id || null;
+}
+
+export interface OrgVoice {
+  assistantId: string | null;
+  phoneNumberId: string | null;
+  phoneNumber: string | null;
+  inboundEnabled: boolean;
+}
+
+export async function getOrgVoice(orgId: string): Promise<OrgVoice | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data } = await supabase
+    .from('org_voice')
+    .select('assistant_id, phone_number_id, phone_number, inbound_enabled')
+    .eq('org_id', orgId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    assistantId: data.assistant_id,
+    phoneNumberId: data.phone_number_id,
+    phoneNumber: data.phone_number,
+    inboundEnabled: !!data.inbound_enabled,
+  };
+}
+
+/** Partial upsert — only the fields passed are changed. */
+export async function saveOrgVoice(
+  orgId: string,
+  fields: { assistant_id?: string | null; phone_number_id?: string | null; phone_number?: string | null; inbound_enabled?: boolean }
+): Promise<{ error: string | null }> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return { error: 'Server database is not configured.' };
+  const { error } = await supabase
+    .from('org_voice')
+    .upsert({ org_id: orgId, ...fields, updated_at: new Date().toISOString() }, { onConflict: 'org_id' });
+  if (error?.code === '23505') return { error: 'That phone number is already assigned to another organization.' };
+  return { error: error?.message || null };
+}
+
+export interface OrgVoiceSetup {
+  creds: VapiCredentials;
+  settings: ChannelApiSettings | null;
+  /** The org is on its own Vapi account (its own API key) rather than the platform's. */
+  ownAccount: boolean;
+  voice: OrgVoice | null;
+}
+
+/**
+ * Which Vapi account, assistant and number an org's calls use. An org on its own Vapi key
+ * uses the assistant and number it entered (its key can only reach its own). Everyone else
+ * is on the platform's account, where the assistant and number come only from org_voice —
+ * auto-provisioned and admin-assigned respectively — never from the browser-editable
+ * settings, so no org can point its calls at another org's number or assistant.
+ */
+export async function resolveOrgVoiceSetup(orgId: string): Promise<OrgVoiceSetup> {
+  const [settings, voice] = await Promise.all([getOrgChannelSettings(orgId), getOrgVoice(orgId)]);
+  const ownKey = settings?.vapiApiKey?.trim();
+  if (ownKey) {
+    return {
+      creds: { apiKey: ownKey, assistantId: settings?.vapiAssistantId || undefined, phoneNumberId: settings?.vapiPhoneNumberId || undefined },
+      ownAccount: true,
+      voice,
+      settings,
+    };
+  }
+  return {
+    creds: { assistantId: voice?.assistantId || undefined, phoneNumberId: voice?.phoneNumberId || undefined },
+    ownAccount: false,
+    voice,
+    settings,
+  };
+}
+
+/** Which org answers calls to a Vapi phone number — used by inbound calls, which arrive with
+ * no auth context, only the number that was dialed. */
+export async function getOrgIdByVoicePhoneNumberId(phoneNumberId: string): Promise<string | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data } = await supabase.from('org_voice').select('org_id').eq('phone_number_id', phoneNumberId).maybeSingle();
+  return data?.org_id || null;
+}
+
+export async function getOrgAccessStatus(orgId: string): Promise<'active' | 'locked'> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return 'active';
+  const { data } = await supabase.from('org_access').select('status').eq('org_id', orgId).maybeSingle();
+  return (data?.status as 'active' | 'locked') || 'active';
 }
 
 export interface OrgGoogleCalendarToken {

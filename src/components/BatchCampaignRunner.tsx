@@ -4,6 +4,7 @@ import {
   Play,
   Pause,
   RotateCcw,
+  Upload,
   Send,
   MessageSquare,
   Mail,
@@ -15,7 +16,6 @@ import {
   Layers,
   ChevronRight,
   AlertCircle,
-  Zap,
   Phone,
   Loader2,
 } from 'lucide-react';
@@ -35,11 +35,16 @@ import {
   generateMailtoLink,
 } from '../utils/outreachEngine';
 import { sendEmailDirectOrBackend } from '../services/emailService';
+import { hasChannelSecret } from '../utils/channelSecrets';
+import { useOrgVoice } from '../hooks/useOrgVoice';
 import { DEFAULT_TEMPLATES } from '../data/sampleTemplates';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 import { computeNextPeakSendTime } from '../../lib/countryTiming';
 import { AdvancedSection } from './AdvancedSection';
 import { VoiceDemoWidget } from './VoiceDemoWidget';
+import { PageHeader, headerPrimaryButton, headerSecondaryButton } from './PageHeader';
+import type { QueueStatus } from '../../lib/callQueue';
+import type { MessageCampaignStatus } from '../../lib/messageQueue';
 import { ErrorBoundary } from './ErrorBoundary';
 
 /**
@@ -51,6 +56,29 @@ import { ErrorBoundary } from './ErrorBoundary';
  * still Queued but scheduled to go out later today (from this or an earlier campaign) —
  * both consume today's budget.
  */
+// Saved secrets never come back to the browser, so "configured" means typed or saved
+// (hasChannelSecret) rather than present in channelSettings.
+function isWhatsAppApiReady(s: ChannelApiSettings): boolean {
+  return (
+    (s.whatsAppProvider === 'twilio' && !!s.twilioAccountSid && hasChannelSecret(s, 'twilioAuthToken')) ||
+    (s.whatsAppProvider === 'cloud_api' && hasChannelSecret(s, 'whatsappCloudApiKey') && !!s.whatsappCloudPhoneId) ||
+    (s.whatsAppProvider === 'webhook' && !!s.n8nWebhookUrl)
+  );
+}
+
+// 'resend' needs no org-supplied key — lib/emailSender.ts falls back to the platform's own
+// shared account. Gmail/Outlook count once picked; the server reports if the mailbox isn't
+// connected (Channel Setup shows the connection itself).
+function isEmailApiReady(s: ChannelApiSettings): boolean {
+  return (
+    s.emailProvider === 'resend' ||
+    s.emailProvider === 'gmail' ||
+    s.emailProvider === 'outlook' ||
+    ((s.emailProvider === 'sendgrid' || s.emailProvider === 'mailgun') && hasChannelSecret(s, 'emailApiKey')) ||
+    (s.emailProvider === 'smtp' && !!s.smtpHost && !!s.smtpUser && hasChannelSecret(s, 'smtpPass'))
+  );
+}
+
 async function fetchTodaysWhatsAppVolumeUsed(userId: string): Promise<number> {
   if (!isSupabaseBrowserConfigured || !supabase) return 0;
   const startOfToday = new Date();
@@ -105,6 +133,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   onOpenExcelUpload,
   onSelectLeadForSimulator,
 }) => {
+  const orgVoice = useOrgVoice(userId, accessToken ?? null);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -124,7 +153,21 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const [currentEmailSubject, setCurrentEmailSubject] = useState<string>('');
   const [currentEmailBody, setCurrentEmailBody] = useState<string>('');
   const [isProcessingStep, setIsProcessingStep] = useState<boolean>(false);
-  const [dispatchLogs, setDispatchLogs] = useState<OutreachDispatchLog[]>([]);
+  // Kept in this browser (per workspace) so a refresh doesn't wipe the run's activity; Reset clears it.
+  const activityStorageKey = `omnireach_campaign_activity_v1_${userId || 'local'}`;
+  const [dispatchLogs, setDispatchLogs] = useState<OutreachDispatchLog[]>(() => {
+    try {
+      const saved = localStorage.getItem(activityStorageKey);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(activityStorageKey, JSON.stringify(dispatchLogs));
+    } catch {}
+  }, [dispatchLogs, activityStorageKey]);
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [showBulkSendConfirm, setShowBulkSendConfirm] = useState(false);
   const [bulkSendInfo, setBulkSendInfo] = useState<{
@@ -224,6 +267,246 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
       setCallResult({ ok: false, message: err?.message || 'Failed to reach the server.' });
     } finally {
       setIsCalling(false);
+    }
+  };
+
+  // ---- Voice campaigns run on the server's call queue (lib/callQueue.ts), not this loop ----
+  // Calls overlap (each lasts minutes), so dialling every few seconds from the browser would
+  // pile up dozens at once and stop if the tab closed. The queue calls in batches, a few at
+  // a time, during each lead's business hours, and keeps going with the browser closed.
+  const [voiceBatchSize, setVoiceBatchSize] = useState(50);
+  const [voiceConcurrency, setVoiceConcurrency] = useState(2);
+  const [voiceBatchGap, setVoiceBatchGap] = useState(30);
+  const [callQueue, setCallQueue] = useState<QueueStatus | null>(null);
+  const [queueNote, setQueueNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+  const queueActive = !!callQueue?.campaign && ['running', 'paused'].includes(callQueue.campaign.status);
+
+  const loadQueueStatus = async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch('/api/voice/vapi?action=queue-status', { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (res.ok) setCallQueue(await res.json());
+    } catch {
+      // Keep the last known status; the next poll tries again.
+    }
+  };
+
+  useEffect(() => {
+    if (channelMode !== 'voice' || !accessToken) return;
+    loadQueueStatus();
+    if (!queueActive) return;
+    const timer = setInterval(loadQueueStatus, 5000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelMode, accessToken, queueActive]);
+
+  // Mirror the queue onto each lead's call status, so the Leads page and progress match it.
+  useEffect(() => {
+    if (!callQueue?.items?.length) return;
+    const desired: Record<string, Lead['voiceCallStatus']> = {
+      queued: 'Queued',
+      calling: 'Sent',
+      done: 'Sent',
+      failed: 'Failed',
+      cancelled: 'Pending',
+    };
+    for (const item of callQueue.items) {
+      const next = desired[item.status];
+      const lead = item.clientId ? leads.find((l) => l.id === item.clientId) : undefined;
+      if (lead && next && lead.voiceCallStatus !== next) onUpdateLead({ ...lead, voiceCallStatus: next });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callQueue]);
+
+  const startVoiceQueue = async () => {
+    if (!accessToken) {
+      setQueueNote({ ok: false, text: 'Sign in to run a call campaign.' });
+      return;
+    }
+    const toCall = pendingLeads.filter((l) => l.isValidPhone && l.phone);
+    if (toCall.length === 0) {
+      setQueueNote({ ok: false, text: 'No leads with a valid phone number are waiting to be called.' });
+      return;
+    }
+    setQueueBusy(true);
+    setQueueNote(null);
+    try {
+      const res = await fetch('/api/voice/vapi?action=queue-calls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          leads: toCall.map((l) => ({ clientId: l.id, name: l.name, phone: l.phone, country: l.country })),
+          batchSize: voiceBatchSize,
+          concurrency: voiceConcurrency,
+          batchGapMinutes: voiceBatchGap,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setQueueNote({ ok: false, text: data.error || 'Could not start the call campaign.' });
+        return;
+      }
+      if (data.status) setCallQueue(data.status);
+      const skipped: { name: string; reason: string }[] = data.skipped || [];
+      const reasons = Object.entries(
+        skipped.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.reason]: (acc[s.reason] || 0) + 1 }), {})
+      )
+        .map(([reason, n]) => `${n} ${reason}`)
+        .join(', ');
+      setQueueNote({
+        ok: data.queued > 0,
+        text:
+          data.queued > 0
+            ? `Queued ${data.queued} call${data.queued === 1 ? '' : 's'}. You can close this page — calls keep going.${skipped.length ? ` Skipped ${skipped.length}: ${reasons}.` : ''}`
+            : `Nothing to call. Skipped ${skipped.length}: ${reasons}.`,
+      });
+    } catch (err: any) {
+      setQueueNote({ ok: false, text: err?.message || 'Failed to reach the server.' });
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  const controlVoiceQueue = async (control: 'pause' | 'resume' | 'cancel') => {
+    if (!accessToken) return;
+    if (control === 'cancel' && !window.confirm('Cancel the remaining calls? Calls already in progress will finish.')) return;
+    setQueueBusy(true);
+    try {
+      const res = await fetch('/api/voice/vapi?action=queue-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ control }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.status) setCallQueue(data.status);
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  // ---- WhatsApp/email campaigns run on the server too (lib/messageQueue.ts) ----
+  // Whenever the server can send them — i.e. not manual WhatsApp, which opens chats in the
+  // user's own app and so has to run here. The open page nudges the queue every few seconds;
+  // with the page closed, the scheduled dispatcher keeps it going.
+  const involvesWhatsAppChannel = channelMode === 'omnichannel' || channelMode === 'whatsapp';
+  const useServerMessages =
+    isSupabaseBrowserConfigured && !!accessToken && channelMode !== 'voice' && (!involvesWhatsAppChannel || isWhatsAppApiReady(channelSettings));
+  const [msgQueue, setMsgQueue] = useState<MessageCampaignStatus | null>(null);
+  const [msgNote, setMsgNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msgBusy, setMsgBusy] = useState(false);
+  // "In progress" means first messages still going out — scheduled follow-ups days later run
+  // on the server and shouldn't block starting the next campaign.
+  const msgActive =
+    !!msgQueue?.campaign &&
+    (msgQueue.campaign.status === 'paused' || (msgQueue.campaign.status === 'running' && (msgQueue.initialWaiting ?? 0) > 0));
+  const [followupDays, setFollowupDays] = useState(0);
+  const [followupTemplateId, setFollowupTemplateId] = useState<string>(
+    () => templates.find((t) => /follow/i.test(t.name))?.id || templates[0]?.id || ''
+  );
+  const pumpInFlight = useRef(false);
+
+  const campaignApi = async (action: string, body?: Record<string, unknown>) => {
+    const res = await fetch(`/api/outreach/send-whatsapp?action=${action}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return { ok: res.ok, data: await res.json().catch(() => ({})) };
+  };
+
+  useEffect(() => {
+    if (channelMode === 'voice' || !accessToken || !isSupabaseBrowserConfigured) return;
+    campaignApi('campaign-status').then(({ ok, data }) => ok && setMsgQueue(data)).catch(() => {});
+    if (!msgActive) return;
+    const timer = setInterval(async () => {
+      if (pumpInFlight.current) return;
+      pumpInFlight.current = true;
+      try {
+        // Paused campaigns only need their status refreshed, not a send.
+        const { ok, data } = await campaignApi(msgQueue?.campaign?.status === 'paused' ? 'campaign-status' : 'campaign-pump', msgQueue?.campaign?.status === 'paused' ? undefined : {});
+        if (ok) setMsgQueue(data);
+      } catch {
+        // Try again on the next tick.
+      } finally {
+        pumpInFlight.current = false;
+      }
+    }, 8000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelMode, accessToken, msgActive, msgQueue?.campaign?.status]);
+
+  // Mirror the server's per-lead statuses onto the leads shown here.
+  useEffect(() => {
+    if (!msgQueue?.items?.length) return;
+    for (const item of msgQueue.items) {
+      const lead = leads.find((l) => l.id === item.clientId);
+      if (!lead) continue;
+      const wa = item.whatsappStatus as Lead['whatsAppStatus'];
+      const em = item.emailStatus as Lead['emailStatus'];
+      if (lead.whatsAppStatus === wa && lead.emailStatus === em) continue;
+      const contacted = ['Sent', 'Delivered', 'Read'].includes(wa) || em === 'Sent';
+      onUpdateLead({ ...lead, whatsAppStatus: wa, emailStatus: em, ...(contacted && lead.status === 'Pending' ? { status: 'Contacted' } : {}) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [msgQueue]);
+
+  const startMessageQueue = async () => {
+    setMsgBusy(true);
+    setMsgNote(null);
+    try {
+      const { ok, data } = await campaignApi('queue-campaign', {
+        clientIds: pendingLeads.map((l) => l.id),
+        channels: channelMode === 'omnichannel' ? ['whatsapp', 'email'] : [channelMode],
+        template: {
+          whatsAppContent: selectedTemplate?.whatsAppContent || '',
+          emailSubject: selectedTemplate?.emailSubject || '',
+          emailBody: selectedTemplate?.emailBody || '',
+        },
+        useAi: !!campaignSettings.useAiCopywriting,
+        peakScheduling: usePeakScheduling,
+        sendGapSeconds: delaySeconds,
+        templateName: selectedTemplate?.name || null,
+        followupDays: followupDays || null,
+        followupTemplate: followupDays
+          ? (({ whatsAppContent, emailSubject, emailBody }) => ({ whatsAppContent, emailSubject, emailBody }))(
+              templates.find((t) => t.id === followupTemplateId) || selectedTemplate || ({} as MessageTemplate)
+            )
+          : null,
+      });
+      if (!ok || !data.ok) {
+        setMsgNote({ ok: false, text: data.error || 'Could not start the campaign.' });
+        return;
+      }
+      if (data.status) setMsgQueue(data.status);
+      const skipped: { name: string; reason: string }[] = data.skipped || [];
+      const reasons = Object.entries(skipped.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.reason]: (acc[s.reason] || 0) + 1 }), {}))
+        .map(([reason, n]) => `${n} ${reason}`)
+        .join(', ');
+      setMsgNote({
+        ok: data.queued > 0,
+        text:
+          data.queued > 0
+            ? `Started for ${data.queued} lead${data.queued === 1 ? '' : 's'} — you can close this page, sending carries on.${
+                data.laterDays ? ` Your daily WhatsApp limit spreads this over ${data.laterDays + 1} days.` : ''
+              }${skipped.length ? ` Skipped ${skipped.length}: ${reasons}.` : ''}`
+            : `Nothing to send. Skipped ${skipped.length}: ${reasons}.`,
+      });
+    } catch (err: any) {
+      setMsgNote({ ok: false, text: err?.message || 'Failed to reach the server.' });
+    } finally {
+      setMsgBusy(false);
+    }
+  };
+
+  const controlMessageQueue = async (control: 'pause' | 'resume' | 'cancel') => {
+    if (control === 'cancel' && !window.confirm('Cancel the messages that haven’t gone out yet?')) return;
+    setMsgBusy(true);
+    try {
+      const { data } = await campaignApi('campaign-control', { control });
+      if (data.status) setMsgQueue(data.status);
+    } finally {
+      setMsgBusy(false);
     }
   };
 
@@ -628,6 +911,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   const executeStart = async () => {
     whatsappVolumeIndexRef.current = todaysWhatsAppVolumeUsedRef.current;
     setShowBulkSendConfirm(false);
+    if (useServerMessages) {
+      await startMessageQueue();
+      return;
+    }
     // Create a persisted campaign + one campaign_recipients row per lead about to be
     // contacted, so progress is trackable on the Dashboard and in Analytics — not just
     // held in this component's in-memory run state.
@@ -657,6 +944,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             channels: channelMode === 'omnichannel' ? ['whatsapp', 'email'] : [channelMode],
             ai_instructions: campaignSettings.customInstructions || null,
             status: 'running',
+            template_name: selectedTemplate?.name || null,
           })
           .select('id')
           .single();
@@ -708,6 +996,10 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
   // across days) or because it's a sizeable batch still in Free-form Text mode (which will
   // fail for anyone who hasn't messaged first — see ChannelConfigModal's Message Mode).
   const handleStart = async () => {
+    if (channelMode === 'voice') {
+      await startVoiceQueue();
+      return;
+    }
     const whatsappPendingCount = leads.filter(
       (l) =>
         (channelMode === 'omnichannel' || channelMode === 'whatsapp') &&
@@ -749,6 +1041,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
     setCurrentIndex(0);
     setCurrentLead(null);
     setIsProcessingStep(false);
+    setDispatchLogs([]);
   };
 
   const handleRestartAll = async () => {
@@ -776,41 +1069,42 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-2xl font-bold text-ink tracking-tight">Batch Outreach</h1>
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#25D366]/15 text-[#128C7E]">
-              <Zap className="w-3 h-3 fill-[#25D366]" />
-              Gemini 3.7 Flash AI Copywriter
+      <PageHeader
+        title="Campaigns"
+        description="Send personalised WhatsApp messages, emails or AI voice calls to your leads — the AI handles the replies."
+        actions={
+        <>
+          {!isRunning && pendingLeads.length > 0 && pendingLeads.length < totalLeadsCount && (
+            <button
+              id="campaign-restart-icon-btn"
+              onClick={handleRestartAll}
+              className={headerSecondaryButton}
+              title="Mark every lead as not contacted and send to all of them again"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Send to all again</span>
+            </button>
+          )}
+          {leads.length > 0 && (
+          <button id="campaign-reset-btn" onClick={handleReset} className={headerSecondaryButton} title="Clear this run's progress and activity log">
+            <span>Reset</span>
+          </button>
+          )}
+
+          {channelMode !== 'voice' && msgActive ? (
+            <span className="text-xs text-ink-muted">
+              {msgQueue?.campaign?.status === 'paused' ? 'Campaign paused' : 'Campaign sending'} — see below
             </span>
-          </div>
-          <p className="text-xs sm:text-sm text-ink-muted mt-1 max-w-2xl">
-            Ingest contacts from Excel spreadsheets and automatically dispatch personalized WhatsApp messages, emails, or AI voice calls with Google Calendar booking links.
-          </p>
-        </div>
-
-        {/* Primary Action */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            id="campaign-restart-icon-btn"
-            onClick={handleRestartAll}
-            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/50 backdrop-blur-3xl hover:bg-surface-hover border border-border transition-colors"
-            title="Start automation again (re-send to all leads)"
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
-          <button
-            id="campaign-reset-btn"
-            onClick={handleReset}
-            className="p-2.5 rounded-full text-ink-muted hover:text-ink bg-surface/50 backdrop-blur-3xl hover:bg-surface-hover border border-border transition-colors"
-            title="Reset campaign state"
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
-
-          {!isRunning ? (
+          ) : channelMode === 'voice' && queueActive ? (
+            <span className="text-xs text-ink-muted">
+              {callQueue?.campaign?.status === 'paused' ? 'Calls paused' : 'Calls running'} — see below
+            </span>
+          ) : !isRunning && leads.length === 0 ? (
+            <button onClick={onOpenExcelUpload} className={headerPrimaryButton}>
+              <Upload className="w-3.5 h-3.5" />
+              <span>Import Leads</span>
+            </button>
+          ) : !isRunning ? (
             pendingLeads.length > 0 ? (
               <button
                 id="campaign-start-btn"
@@ -819,7 +1113,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Play className="w-4 h-4 fill-white" />
-                <span>Launch Campaign ({pendingLeads.length})</span>
+                <span>Start campaign ({pendingLeads.length})</span>
               </button>
             ) : (
               <button
@@ -829,7 +1123,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-full text-white bg-brand-strong hover:bg-[#0d6e62] shadow-sm transition-all active:scale-[0.98]"
               >
                 <RotateCcw className="w-4 h-4" />
-                <span>Start Automation ({totalLeadsCount})</span>
+                <span>Send to all again ({totalLeadsCount})</span>
               </button>
             )
           ) : isPaused ? (
@@ -851,12 +1145,20 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               <span>Pause</span>
             </button>
           )}
-        </div>
-      </div>
+        </>
+        }
+      />
 
+      {/* Only relevant when calling — otherwise it's a big card about a channel not in use. */}
+      {channelMode === 'voice' && (
       <ErrorBoundary label="Live Voice Demo">
-        <VoiceDemoWidget publicKey={channelSettings.vapiPublicKey} assistantId={channelSettings.vapiAssistantId} />
+        <VoiceDemoWidget
+          publicKey={channelSettings.vapiPublicKey}
+          // An org's own public key goes with its own assistant; on ours, the org's assistant is in org_voice.
+          assistantId={channelSettings.vapiPublicKey ? channelSettings.vapiAssistantId : orgVoice.voice?.assistantId || undefined}
+        />
       </ErrorBoundary>
+      )}
 
       <AnimatePresence>
         {persistenceWarning && (
@@ -943,7 +1245,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   Voice Script
                 </label>
                 <div className="p-3 bg-canvas border border-border-strong rounded-lg text-[11px] text-ink-secondary leading-relaxed">
-                  The AI Voice Agent speaks from its own conversational script (configured in your Vapi assistant) — no template needed here. Each contact's company name is passed in automatically.
+                  The agent follows the instructions and first message you set in Channel Setup → Voice — no template needed. Each lead's name and company are passed in automatically.
                 </div>
               </>
             ) : (
@@ -982,11 +1284,73 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                   <Sparkles className="w-3 h-3" />
                   <span>{campaignSettings.useAiCopywriting ? 'AI Copywriting: On' : 'AI Copywriting: Off (send my text as-is)'}</span>
                 </button>
+                {useServerMessages && (
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                    <select
+                      value={followupDays}
+                      disabled={msgActive}
+                      onChange={(e) => setFollowupDays(Number(e.target.value))}
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-2 py-1.5 text-[11px] text-ink disabled:opacity-50"
+                      title="Leads who haven't replied get one follow-up — by email, and on WhatsApp too if a follow-up template is set in Channel Setup. Anyone who replies, books or opts out is skipped."
+                    >
+                      <option value={0}>No follow-up</option>
+                      {[2, 3, 5, 7].map((d) => (
+                        <option key={d} value={d}>
+                          Follow up after {d} days
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={followupTemplateId}
+                      disabled={!followupDays || msgActive}
+                      onChange={(e) => setFollowupTemplateId(e.target.value)}
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-2 py-1.5 text-[11px] text-ink disabled:opacity-50"
+                      aria-label="Follow-up template"
+                    >
+                      {templates.map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>
+                          {tpl.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </>
             )}
           </div>
 
-          {/* Dispatch Interval Slider */}
+          {/* Call pacing (voice) / send pacing (messages) */}
+          {channelMode === 'voice' ? (
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1.5">Call pacing</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: 'Batch size', value: voiceBatchSize, set: setVoiceBatchSize, options: [[10, '10'], [30, '30'], [50, '50'], [100, '100'], [500, 'All']] },
+                  { label: 'At once', value: voiceConcurrency, set: setVoiceConcurrency, options: [[1, '1'], [2, '2'], [3, '3'], [5, '5']] },
+                  { label: 'Pause after batch', value: voiceBatchGap, set: setVoiceBatchGap, options: [[0, 'None'], [15, '15 min'], [30, '30 min'], [60, '1 hour'], [1440, 'Next day']] },
+                ].map((ctl) => (
+                  <label key={ctl.label} className="block">
+                    <span className="block text-[10px] text-ink-muted mb-1">{ctl.label}</span>
+                    <select
+                      value={ctl.value}
+                      disabled={queueActive}
+                      onChange={(e) => ctl.set(Number(e.target.value))}
+                      className="w-full bg-canvas border border-border-strong rounded-lg px-2 py-1.5 text-xs text-ink disabled:opacity-50"
+                    >
+                      {ctl.options.map(([v, l]) => (
+                        <option key={v} value={v}>
+                          {l}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-ink-muted mt-1">
+                Calls run on our servers — you can close this page. Each lead is only called during their local business hours.
+              </p>
+            </div>
+          ) : (
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -1005,10 +1369,11 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               className="w-full accent-[#25D366] cursor-pointer"
             />
             <p className="text-[10px] text-ink-muted mt-1">
-              Sending too fast can get a WhatsApp Business number flagged by Meta — 2-3s is a safe pace for most
-              accounts; slow it down further for large batches on newer numbers.
+              2–3s is safe for most WhatsApp numbers. Go slower for big batches on new numbers.
+              {useServerMessages ? ' Sends run on our servers — you can close this page.' : ''}
             </p>
           </div>
+          )}
         </div>
       </div>
 
@@ -1045,10 +1410,8 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
         <div className="p-3 bg-canvas rounded-xl border border-border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-ink-muted">WhatsApp Dispatch:</span>
-              {(channelSettings.whatsAppProvider === 'twilio' && channelSettings.twilioAccountSid && channelSettings.twilioAuthToken) ||
-              (channelSettings.whatsAppProvider === 'cloud_api' && channelSettings.whatsappCloudApiKey && channelSettings.whatsappCloudPhoneId) ||
-              (channelSettings.whatsAppProvider === 'webhook' && channelSettings.n8nWebhookUrl) ? (
+              <span className="text-[11px] font-semibold text-ink-muted">WhatsApp:</span>
+              {isWhatsAppApiReady(channelSettings) ? (
                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   {channelSettings.whatsAppProvider === 'twilio'
@@ -1056,30 +1419,26 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     : channelSettings.whatsAppProvider === 'cloud_api'
                       ? 'WhatsApp Cloud API'
                       : 'Custom Webhook'}{' '}
-                  (Pure Background)
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted bg-surface-hover px-2 py-0.5 rounded-md">
-                  Web Direct Mode (Click-to-chat)
+                  Manual (opens WhatsApp)
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-ink-muted">Email Dispatch:</span>
-              {/* 'resend' needs no org-supplied key to count as configured — lib/emailSender.ts
-                  falls back to the platform's own shared Resend account (RESEND_FROM_ADDRESS)
-                  whenever the org hasn't set their own emailApiKey, so it's still a fully
-                  automatic, zero-setup send path. This used to require emailApiKey here too,
-                  which mislabeled that valid default as "Mailto Mode (No API key set)". */
-              channelSettings.emailProvider === 'resend' ||
-              ((channelSettings.emailProvider === 'sendgrid' || channelSettings.emailProvider === 'mailgun') && channelSettings.emailApiKey) ||
-              (channelSettings.emailProvider === 'smtp' && channelSettings.smtpHost && channelSettings.smtpUser && channelSettings.smtpPass) ? (
+              <span className="text-[11px] font-semibold text-ink-muted">Email:</span>
+              {isEmailApiReady(channelSettings) ? (
                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-md border border-blue-500/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
                   {channelSettings.emailProvider === 'resend'
                     ? 'Resend API'
-                    : channelSettings.emailProvider === 'sendgrid'
+                    : channelSettings.emailProvider === 'gmail'
+                      ? 'Gmail'
+                      : channelSettings.emailProvider === 'outlook'
+                        ? 'Outlook'
+                        : channelSettings.emailProvider === 'sendgrid'
                       ? 'SendGrid API'
                       : channelSettings.emailProvider === 'mailgun'
                         ? 'Mailgun API'
@@ -1088,23 +1447,14 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted bg-surface-hover px-2 py-0.5 rounded-md">
-                  Mailto Mode (No API key set)
+                  Manual (not connected)
                 </span>
               )}
             </div>
           </div>
 
-          {((channelMode !== 'whatsapp' &&
-              !(
-                ((channelSettings.emailProvider === 'resend' || channelSettings.emailProvider === 'sendgrid' || channelSettings.emailProvider === 'mailgun') && channelSettings.emailApiKey) ||
-                (channelSettings.emailProvider === 'smtp' && channelSettings.smtpHost && channelSettings.smtpUser && channelSettings.smtpPass)
-              )) ||
-            (channelMode !== 'email' &&
-              !(
-                (channelSettings.whatsAppProvider === 'twilio' && channelSettings.twilioAccountSid && channelSettings.twilioAuthToken) ||
-                (channelSettings.whatsAppProvider === 'cloud_api' && channelSettings.whatsappCloudApiKey && channelSettings.whatsappCloudPhoneId) ||
-                (channelSettings.whatsAppProvider === 'webhook' && channelSettings.n8nWebhookUrl)
-              ))) && (
+          {((channelMode !== 'whatsapp' && !isEmailApiReady(channelSettings)) ||
+            (channelMode !== 'email' && !isWhatsAppApiReady(channelSettings))) && (
             <button
               onClick={onOpenChannelConfig}
               className="text-[11px] font-semibold text-[#128C7E] hover:underline flex items-center gap-1 shrink-0"
@@ -1163,7 +1513,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 </div>
                 <div className={`text-[11px] ${failedForChannelCount > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>
                   {failedForChannelCount > 0
-                    ? `${failedForChannelCount} contact${failedForChannelCount === 1 ? '' : 's'} could not be reached via ${channelModeLabel} — see Live Dispatch Activity below for the reason. You can retry after fixing the issue.`
+                    ? `${failedForChannelCount} contact${failedForChannelCount === 1 ? '' : 's'} could not be reached via ${channelModeLabel} — see Activitypatch Activity below for the reason. You can retry after fixing the issue.`
                     : "All contacts in your spreadsheet have been processed. You can start the automated sequence again or send another follow-up round anytime."}
                 </div>
               </div>
@@ -1174,11 +1524,148 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg text-white bg-[#128C7E] hover:bg-[#0E6D62] shadow-sm transition-all whitespace-nowrap active:scale-[0.98]"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Start Automation One More Time</span>
+              <span>Send to all again</span>
             </button>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {channelMode !== 'voice' && (msgNote || msgQueue?.campaign) && (
+        <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card space-y-3">
+          {msgNote && <p className={`text-xs ${msgNote.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{msgNote.text}</p>}
+          {msgQueue?.campaign && (() => {
+            const status = msgQueue.campaign.status;
+            const line = (label: string, c: Record<string, number>) => {
+              const sent = (c.Sent || 0) + (c.Delivered || 0) + (c.Read || 0);
+              const waiting = (c.Queued || 0) + (c.Sending || 0);
+              return `${label}: ${sent} sent · ${waiting} waiting${c.Failed ? ` · ${c.Failed} failed` : ''}${c.Skipped ? ` · ${c.Skipped} skipped` : ''}`;
+            };
+            const tallies = msgQueue.campaign.channels.map((ch) => (ch === 'whatsapp' ? msgQueue.whatsapp : msgQueue.email));
+            const total =
+              tallies.reduce((n, c) => n + Object.entries(c).reduce((m, [k, v]) => (k === 'Pending' ? m : m + Number(v)), 0), 0) || 1;
+            const waiting = tallies.reduce((n, c) => n + (c.Queued || 0) + (c.Sending || 0), 0);
+            return (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-ink">
+                      {status === 'completed'
+                        ? 'Campaign finished'
+                        : status === 'cancelled'
+                          ? 'Campaign cancelled'
+                          : status === 'paused'
+                            ? 'Campaign paused'
+                            : (msgQueue.initialWaiting ?? 0) > 0
+                              ? 'Campaign sending'
+                              : 'First messages sent — follow-ups scheduled'}
+                    </p>
+                    {msgQueue.campaign.channels.map((ch) => (
+                      <p key={ch} className="text-[11px] text-ink-muted mt-0.5">
+                        {line(ch === 'whatsapp' ? 'WhatsApp' : 'Email', ch === 'whatsapp' ? msgQueue.whatsapp : msgQueue.email)}
+                      </p>
+                    ))}
+                    {msgQueue.campaign.followupDays && (
+                      <p className="text-[11px] text-ink-muted mt-0.5">
+                        Follow-ups after {msgQueue.campaign.followupDays} days: {msgQueue.followups.Queued || 0} scheduled ·{' '}
+                        {msgQueue.followups.Sent || 0} sent · {msgQueue.followups.Skipped || 0} skipped (they replied or opted out)
+                        {msgQueue.nextFollowupAt
+                          ? ` · next ${new Date(msgQueue.nextFollowupAt).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`
+                          : ''}
+                      </p>
+                    )}
+                    {status === 'running' && msgQueue.nextScheduledAt && (
+                      <p className="text-[11px] text-ink-muted mt-0.5">
+                        Some are scheduled for later (daily limit or best local time) — next at{' '}
+                        {new Date(msgQueue.nextScheduledAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}
+                      </p>
+                    )}
+                  </div>
+                  {(status === 'running' || status === 'paused') && (
+                    <div className="flex gap-2">
+                      <button onClick={() => controlMessageQueue(status === 'paused' ? 'resume' : 'pause')} disabled={msgBusy} className={headerSecondaryButton}>
+                        {status === 'paused' ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                        <span>{status === 'paused' ? 'Resume' : 'Pause'}</span>
+                      </button>
+                      <button onClick={() => controlMessageQueue('cancel')} disabled={msgBusy} className={headerSecondaryButton}>
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="w-full bg-border-strong rounded-full h-2 overflow-hidden">
+                  <div className="bg-[#128C7E] h-2 rounded-full transition-all" style={{ width: `${Math.round(((total - waiting) / total) * 100)}%` }} />
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
+      {channelMode === 'voice' && (queueNote || callQueue?.campaign) && (
+        <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card space-y-3">
+          {queueNote && (
+            <p className={`text-xs ${queueNote.ok ? 'text-emerald-300' : 'text-rose-400'}`}>{queueNote.text}</p>
+          )}
+          {callQueue?.campaign && (() => {
+            const c = callQueue.counts;
+            const total = callQueue.campaign.total || 1;
+            const finished = (c.done || 0) + (c.failed || 0) + (c.skipped || 0) + (c.cancelled || 0);
+            const status = callQueue.campaign.status;
+            return (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-ink">
+                      {status === 'done'
+                        ? 'Call campaign finished'
+                        : status === 'cancelled'
+                          ? 'Call campaign cancelled'
+                          : status === 'paused'
+                            ? 'Call campaign paused'
+                            : 'Call campaign running'}
+                    </p>
+                    <p className="text-[11px] text-ink-muted mt-0.5">
+                      {callQueue.currentBatch && callQueue.totalBatches > 1 ? `Batch ${callQueue.currentBatch} of ${callQueue.totalBatches} · ` : ''}
+                      {callQueue.callingNow} calling now · {c.queued || 0} waiting · {c.done || 0} called
+                      {c.failed ? ` · ${c.failed} couldn't start` : ''}
+                      {c.skipped ? ` · ${c.skipped} skipped` : ''}
+                    </p>
+                    {status === 'running' && callQueue.nextStartAt && (
+                      <p className="text-[11px] text-ink-muted mt-0.5">
+                        Next calls start {new Date(callQueue.nextStartAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}
+                        {callQueue.waitingForHours ? ` · ${callQueue.waitingForHours} waiting for the lead's business hours` : ''}
+                      </p>
+                    )}
+                  </div>
+                  {(status === 'running' || status === 'paused') && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => controlVoiceQueue(status === 'paused' ? 'resume' : 'pause')}
+                        disabled={queueBusy}
+                        className={headerSecondaryButton}
+                      >
+                        {status === 'paused' ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                        <span>{status === 'paused' ? 'Resume' : 'Pause'}</span>
+                      </button>
+                      <button onClick={() => controlVoiceQueue('cancel')} disabled={queueBusy} className={headerSecondaryButton}>
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="w-full bg-border-strong rounded-full h-2 overflow-hidden">
+                  <div className="bg-[#128C7E] h-2 rounded-full transition-all" style={{ width: `${Math.round((finished / total) * 100)}%` }} />
+                </div>
+                <p className="text-[10px] text-ink-muted">
+                  {callQueue.campaign.batchSize >= total ? 'One batch' : `Batches of ${callQueue.campaign.batchSize}`} · {callQueue.campaign.concurrency} at once
+                  {callQueue.campaign.batchGapMinutes ? ` · ${callQueue.campaign.batchGapMinutes >= 1440 ? 'next batch the next day' : `${callQueue.campaign.batchGapMinutes} min pause between batches`}` : ''}.
+                  Unanswered calls are retried using your settings in Channel Setup → Voice.
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Progress Bar & Status Line */}
       <div className="bg-surface/50 backdrop-blur-3xl rounded-2xl border border-border p-5 shadow-card">
@@ -1210,7 +1697,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
               </div>
               {isRunning && (
                 <span className="text-[11px] font-semibold text-[#128C7E] bg-[#128C7E]/10 px-2 py-0.5 rounded-md border border-[#128C7E]/30">
-                  {isProcessingStep ? (campaignSettings.useAiCopywriting ? 'AI Formatting...' : 'Building Message...') : 'Dispatching...'}
+                  {isProcessingStep ? (campaignSettings.useAiCopywriting ? 'Writing with AI…' : 'Preparing message…') : 'Sending…'}
                 </span>
               )}
             </div>
@@ -1410,8 +1897,8 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     <h3 className="text-sm font-bold text-ink">{failedForChannelCount > 0 ? 'Campaign Finished — Some Failed' : 'Campaign Complete'}</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
                       {failedForChannelCount > 0
-                        ? `${engagedCount} of ${totalLeadsCount} contacts were successfully reached via ${channelModeLabel}; ${failedForChannelCount} failed — check Live Dispatch Activity for the reason before retrying.`
-                        : `All ${totalLeadsCount} contacts in your spreadsheet have been engaged via ${channelModeLabel}. Use "Start Automation One More Time" above to run it again.`}
+                        ? `${engagedCount} of ${totalLeadsCount} contacts were successfully reached via ${channelModeLabel}; ${failedForChannelCount} failed — check Activity for the reason before retrying.`
+                        : `All ${totalLeadsCount} contacts in your spreadsheet have been engaged via ${channelModeLabel}. Use "Send to all again" to run it again.`}
                     </p>
                   </>
                 ) : (
@@ -1419,9 +1906,13 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                     <div className="w-12 h-12 rounded-full bg-canvas border border-border-strong flex items-center justify-center mx-auto text-ink-muted mb-3">
                       <Send className="w-5 h-5 text-ink-muted" />
                     </div>
-                    <h3 className="text-sm font-semibold text-ink">Campaign Ready for Launch</h3>
+                    <h3 className="text-sm font-semibold text-ink">{leads.length === 0 ? 'No leads yet' : 'Ready to start'}</h3>
                     <p className="text-xs text-ink-muted max-w-md mx-auto mt-1">
-                      Import contacts and click "Launch Campaign" to automatically cycle through them{channelMode === 'voice' ? ' and place personalized AI voice calls' : ', generate personalized copy, and dispatch WhatsApp and Email messages'}.
+                      {leads.length === 0
+                        ? 'Import your leads, then start the campaign.'
+                        : channelMode === 'voice'
+                          ? 'Click Start campaign and the AI calls each lead in turn.'
+                          : 'Click Start campaign and each lead gets a personalised message.'}
                     </p>
                   </>
                 )}
@@ -1436,7 +1927,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
             <div className="flex items-center justify-between pb-4 border-b border-border">
               <h2 className="text-sm font-bold text-ink flex items-center gap-2">
                 <Clock className="w-4 h-4 text-ink-muted" />
-                Live Dispatch Activity
+                Activity
               </h2>
               <span className="text-xs text-ink-muted">{dispatchLogs.length} logs</span>
             </div>
@@ -1499,7 +1990,7 @@ export const BatchCampaignRunner: React.FC<BatchCampaignRunnerProps> = ({
                 ))
               ) : (
                 <div className="text-center py-8 text-xs text-ink-muted">
-                  No dispatches yet in this session. Start the campaign to see real-time delivery logs.
+                  Nothing sent yet. Each message shows up here as it goes out.
                 </div>
               )}
             </div>

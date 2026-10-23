@@ -13,7 +13,7 @@ interface ChannelCardProps {
   name: string;
   mode: string;
   identifier?: string;
-  status: 'ok' | 'attention' | 'checking';
+  status: 'ok' | 'attention' | 'checking' | 'unknown';
   stats: ChannelStat[];
   description: string;
   scatterPoints: ScatterPoint[];
@@ -24,12 +24,14 @@ const STATUS_STYLE: Record<ChannelCardProps['status'], string> = {
   ok: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
   attention: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
   checking: 'bg-border-strong text-ink-muted border border-border',
+  unknown: 'bg-border-strong text-ink-muted border border-border',
 };
 
 const STATUS_LABEL: Record<ChannelCardProps['status'], string> = {
   ok: 'Live',
   attention: 'Needs attention',
   checking: 'Checking…',
+  unknown: 'Not checked',
 };
 
 export const ChannelCard: React.FC<ChannelCardProps> = ({
@@ -80,11 +82,14 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
         ))}
       </div>
 
-      <p className="text-[11px] text-ink-muted leading-relaxed mb-4 line-clamp-2">{description}</p>
+      <p className="text-[11px] text-ink-muted leading-relaxed line-clamp-2">{description}</p>
 
-      <div className="mt-auto pt-3 border-t border-border">
-        <ActivityScatter points={scatterPoints} />
-      </div>
+      {/* Only once there's activity to plot — an empty chart is just noise. */}
+      {scatterPoints.length > 0 && (
+        <div className="mt-auto pt-3 border-t border-border">
+          <ActivityScatter points={scatterPoints} />
+        </div>
+      )}
     </motion.div>
   );
 };

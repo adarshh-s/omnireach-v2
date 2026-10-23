@@ -58,7 +58,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
               {mode === 'signin' ? 'Sign in to your workspace' : 'Create your workspace'}
             </h2>
             <p className="text-xs text-ink-muted mb-5">
-              {mode === 'signin' ? 'Each organization has its own isolated workspace.' : 'One account per organization — you can configure your own WhatsApp, Email, and Calendar afterward.'}
+              {mode === 'signin' ? 'Each organization has its own isolated workspace.' : "Create your organization's workspace — invite your team and connect your own WhatsApp, Email, and Calendar afterward. Joining a teammate's workspace? Use the invite link they sent you instead."}
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-3">
@@ -121,5 +121,74 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
     );
   }
 
+  if (auth.needsPassword) {
+    return <SetPasswordScreen auth={auth} />;
+  }
+
   return <>{children(auth)}</>;
+};
+
+/** A teammate who accepted an invite arrives signed in from the invite link with no
+ * password yet — they set one here before entering the workspace. */
+const SetPasswordScreen: React.FC<{ auth: AuthState }> = ({ auth }) => {
+  const [password, setPasswordValue] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) {
+      setError("The passwords don't match.");
+      return;
+    }
+    setError(null);
+    setSubmitting(true);
+    const result = await auth.setPassword(password);
+    setSubmitting(false);
+    if (result.error) setError(result.error);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-7 shadow-card">
+          <h2 className="text-lg font-bold text-ink mb-1">Welcome to the team</h2>
+          <p className="text-xs text-ink-muted mb-5">
+            Set a password for {auth.user?.email || 'your account'} so you can sign in next time.
+          </p>
+          <form onSubmit={handleSubmit} className="space-y-3">
+            {[
+              { label: 'New Password', value: password, onChange: setPasswordValue },
+              { label: 'Confirm Password', value: confirm, onChange: setConfirm },
+            ].map((field) => (
+              <div key={field.label}>
+                <label className="block text-xs font-medium text-ink-secondary mb-1">{field.label}</label>
+                <div className="relative">
+                  <Lock className="w-3.5 h-3.5 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={field.value}
+                    onChange={(e) => field.onChange(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full pl-9 pr-3 py-2.5 bg-canvas border border-border rounded-xl text-sm text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-[#128C7E]/30"
+                  />
+                </div>
+              </div>
+            ))}
+            {error && <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{error}</p>}
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full py-2.5 rounded-xl bg-brand-strong hover:bg-[#0d6e62] text-white text-sm font-medium shadow-sm transition-all disabled:opacity-60"
+            >
+              {submitting ? 'Please wait…' : 'Set Password & Continue'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
 };

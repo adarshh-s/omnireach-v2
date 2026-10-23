@@ -1,6 +1,8 @@
 import { getOrgIdFromAuthHeader } from '../../../lib/supabaseServerAuth.js';
 import { buildGoogleAuthUrl, isGoogleOAuthConfigured } from '../../../lib/googleOAuthFlow.js';
 import { buildMicrosoftAuthUrl, isMicrosoftOAuthConfigured } from '../../../lib/microsoftOAuthFlow.js';
+import { buildGmailAuthUrl, buildOutlookMailAuthUrl } from '../../../lib/emailOAuth.js';
+import { buildCrmAuthUrl, isCrmProvider, CRM_LABEL } from '../../../lib/crm/index.js';
 
 interface ApiRequest {
   method?: string;
@@ -14,10 +16,11 @@ interface ApiResponse {
 }
 
 /**
- * Handles both Google and Outlook calendar "connect" requests — kept in this one file
+ * Handles both Google and Outlook "connect" requests — kept in this one file
  * (?provider=microsoft picks the second) to stay under Vercel's Hobby-plan 12-serverless-
  * function cap; vercel.json rewrites /api/auth/microsoft/connect here so the public URL
- * still reads cleanly instead of exposing the ?provider= query param.
+ * still reads cleanly instead of exposing the ?provider= query param. ?purpose=email
+ * connects the mailbox campaign email is sent from instead of the calendar.
  */
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'POST') {
@@ -30,11 +33,22 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
+  // CRM connections (?purpose=crm&crm=hubspot|zoho|salesforce) — lib/crm/index.ts.
+  if (req.query?.purpose === 'crm') {
+    const crm = req.query?.crm;
+    if (!isCrmProvider(crm)) return res.status(400).json({ error: 'Unknown CRM.' });
+    const authUrl = buildCrmAuthUrl(orgId, crm);
+    if (!authUrl) return res.status(500).json({ error: `${CRM_LABEL[crm]} isn't set up on the server yet.` });
+    return res.status(200).json({ authUrl });
+  }
+
+  const forEmail = req.query?.purpose === 'email';
+
   if (req.query?.provider === 'microsoft') {
     if (!isMicrosoftOAuthConfigured()) {
       return res.status(500).json({ error: 'Outlook Calendar OAuth is not configured on the server yet.' });
     }
-    const authUrl = buildMicrosoftAuthUrl(orgId);
+    const authUrl = forEmail ? buildOutlookMailAuthUrl(orgId) : buildMicrosoftAuthUrl(orgId);
     if (!authUrl) {
       return res.status(500).json({ error: 'Failed to build Microsoft authorization URL.' });
     }
@@ -45,7 +59,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(500).json({ error: 'Google Calendar OAuth is not configured on the server yet.' });
   }
 
-  const authUrl = buildGoogleAuthUrl(orgId);
+  const authUrl = forEmail ? buildGmailAuthUrl(orgId) : buildGoogleAuthUrl(orgId);
   if (!authUrl) {
     return res.status(500).json({ error: 'Failed to build Google authorization URL.' });
   }

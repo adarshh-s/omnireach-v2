@@ -9,6 +9,8 @@
  */
 
 const VAPI_BASE_URL = 'https://api.vapi.ai';
+const DEFAULT_VOICE = { provider: 'vapi', voiceId: 'Elliot' };
+const DEFAULT_TRANSCRIBER = { provider: 'deepgram', model: 'nova-2', language: 'en' };
 
 export interface VapiCredentials {
   apiKey?: string;
@@ -34,19 +36,15 @@ export interface AssistantConfigResult {
   assistantId?: string;
 }
 
-/** Org's own credentials win; falls back to the platform's shared account field by field,
- * so an org can set only some of these and still inherit the rest. */
+/** Org's own credentials win; the API key and assistant fall back to the platform's shared
+ * account. The phone number never does — every org calls from its own number (assigned by
+ * the platform admin, or its own on its own Vapi account), so there's no shared one. */
 function resolveCredentials(org?: VapiCredentials): Required<VapiCredentials> {
   return {
     apiKey: org?.apiKey?.trim() || process.env.VAPI_API_KEY || '',
     assistantId: org?.assistantId?.trim() || process.env.VAPI_ASSISTANT_ID || '',
-    phoneNumberId: org?.phoneNumberId?.trim() || process.env.VAPI_PHONE_NUMBER_ID || '',
+    phoneNumberId: org?.phoneNumberId?.trim() || '',
   };
-}
-
-export function isVapiConfigured(org?: VapiCredentials): boolean {
-  const { apiKey, assistantId, phoneNumberId } = resolveCredentials(org);
-  return !!(apiKey && assistantId && phoneNumberId);
 }
 
 /** Vapi requires E.164 (leading +, digits only after that) — this only reformats, it
@@ -71,8 +69,11 @@ export async function startVapiCall(params: {
 }): Promise<StartCallResult> {
   const { apiKey, assistantId, phoneNumberId } = resolveCredentials(params.org);
 
-  if (!apiKey || !assistantId || !phoneNumberId) {
-    return { ok: false, error: 'Vapi is not configured — set your Vapi API Key, Assistant ID, and Phone Number ID in Channel Setup.' };
+  if (!apiKey || !assistantId) {
+    return { ok: false, error: 'Voice calling is not set up yet — save your voice agent prompt in Channel Setup → Voice.' };
+  }
+  if (!phoneNumberId) {
+    return { ok: false, error: 'No phone number is assigned to your workspace yet — contact support to get one.' };
   }
 
   const number = toE164(params.phone);
@@ -166,7 +167,13 @@ export async function getAssistantConfig(org: VapiCredentials): Promise<Assistan
  * drop the model/provider/other message config already set there. */
 export async function syncAssistantPrompt(
   org: VapiCredentials,
-  params: { systemPrompt: string; firstMessage: string; assistantName?: string }
+  params: {
+    systemPrompt: string;
+    firstMessage: string;
+    assistantName?: string;
+    /** The org's chosen call language (lib/voiceLanguages.ts) — null means its default voice. */
+    speech?: { transcriber: Record<string, unknown>; voice: Record<string, unknown> } | null;
+  }
 ): Promise<AssistantConfigResult> {
   const { apiKey } = resolveCredentials(org);
   // Deliberately the org's OWN assistantId only — not resolveCredentials' fallback to the
@@ -196,7 +203,8 @@ export async function syncAssistantPrompt(
             ...templateModel,
             messages: [{ role: 'system', content: params.systemPrompt }],
           },
-          voice: template?.voice || { provider: 'vapi', voiceId: 'Elliot' },
+          voice: params.speech?.voice || template?.voice || DEFAULT_VOICE,
+          ...(params.speech ? { transcriber: params.speech.transcriber } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -224,10 +232,20 @@ export async function syncAssistantPrompt(
       messages: [{ role: 'system', content: params.systemPrompt }],
     };
 
+    // A chosen language sets the voice and transcriber; going back to the default undoes a
+    // language voice set here earlier (Azure — the provider every language voice uses).
+    let speech: Record<string, unknown> = {};
+    if (params.speech) {
+      speech = { voice: params.speech.voice, transcriber: params.speech.transcriber };
+    } else if (params.speech === null && current.voice?.provider === 'azure') {
+      const template = !org?.apiKey?.trim() && process.env.VAPI_ASSISTANT_ID ? await fetchAssistant({}) : null;
+      speech = { voice: template?.voice || DEFAULT_VOICE, transcriber: template?.transcriber || DEFAULT_TRANSCRIBER };
+    }
+
     const patchRes = await fetch(`${VAPI_BASE_URL}/assistant/${assistantId}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ firstMessage: params.firstMessage, model: updatedModel }),
+      body: JSON.stringify({ firstMessage: params.firstMessage, model: updatedModel, ...speech }),
     });
     const data = await patchRes.json().catch(() => ({}));
     if (!patchRes.ok) {
@@ -235,6 +253,62 @@ export async function syncAssistantPrompt(
     }
     const systemPrompt = (data?.model?.messages || []).find((m: any) => m.role === 'system')?.content || '';
     return { ok: true, systemPrompt, firstMessage: data?.firstMessage || '' };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Failed to reach Vapi.' };
+  }
+}
+
+export interface VapiPhoneNumber {
+  id: string;
+  number: string | null;
+  name: string | null;
+  provider: string | null;
+  assistantId: string | null;
+}
+
+function toPhoneNumber(p: any): VapiPhoneNumber {
+  return { id: p.id, number: p.number || p.sipUri || null, name: p.name || null, provider: p.provider || null, assistantId: p.assistantId || null };
+}
+
+/** Every number on a Vapi account — the admin picks from these when assigning one to an org. */
+export async function listPhoneNumbers(apiKey: string): Promise<{ ok: boolean; numbers?: VapiPhoneNumber[]; error?: string }> {
+  try {
+    const res = await fetch(`${VAPI_BASE_URL}/phone-number?limit=1000`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) return { ok: false, error: data?.message || `Vapi rejected the request (${res.status}).` };
+    return { ok: true, numbers: (Array.isArray(data) ? data : data?.results || []).map(toPhoneNumber) };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Failed to reach Vapi.' };
+  }
+}
+
+/**
+ * Points a number's incoming calls at this app: with no fixed assistant on the number, Vapi
+ * asks the number's server URL which assistant should answer each call (an
+ * "assistant-request"), which is how lib/voiceCalls.ts picks the org's own assistant and
+ * adds the caller's context and the booking tool. Also proves the key owns the number — Vapi
+ * rejects the update otherwise.
+ */
+export async function configurePhoneNumberForInbound(
+  apiKey: string,
+  phoneNumberId: string,
+  server: { url: string; secret: string }
+): Promise<{ ok: boolean; number?: VapiPhoneNumber; error?: string }> {
+  try {
+    const res = await fetch(`${VAPI_BASE_URL}/phone-number/${phoneNumberId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        assistantId: null,
+        server: { url: server.url, headers: { 'x-vapi-secret': server.secret } },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = Array.isArray(data?.message) ? data.message.join('; ') : data?.message;
+      return { ok: false, error: message || `Vapi rejected the phone number update (${res.status}).` };
+    }
+    return { ok: true, number: toPhoneNumber(data) };
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Failed to reach Vapi.' };
   }

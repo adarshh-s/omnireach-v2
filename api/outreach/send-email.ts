@@ -1,4 +1,5 @@
-import { getOrgIdFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { settingsForSendRequest, getOrgProfile } from '../../lib/orgSettings.js';
+import { withComplianceFooter, unsubscribeHeaders } from '../../lib/emailCompliance.js';
 import { buildEmailReplyToAddress, seedEmailConversationFromLead } from '../../lib/emailWebhookHandler.js';
 import { sendEmailViaOrgProvider } from '../../lib/emailSender.js';
 
@@ -20,16 +21,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   try {
     const { lead, subject, body, channelSettings, webhookUrl, senderName, senderEmail, campaignRecipientId } = req.body || {};
-    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
+    const resolved = await settingsForSendRequest(req.headers?.authorization as string | undefined, channelSettings);
+    if (!resolved.ok) return res.status(401).json({ success: false, delivered: false, error: 'Sign in required.', errorDetail: 'Sign in required.' });
+    const { orgId, settings } = resolved;
     const replyTo = buildEmailReplyToAddress(campaignRecipientId, lead?.id) || undefined;
 
     const mailtoUrl = `mailto:${lead?.email || ''}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
 
-    const result = await sendEmailViaOrgProvider(channelSettings, {
+    // Outreach emails carry the sender's address and an unsubscribe link (lib/emailCompliance.ts).
+    const compliant = orgId
+      ? withComplianceFooter(orgId, lead?.email || '', body || '', await getOrgProfile(orgId))
+      : { body: body || '', unsubscribeUrl: null };
+    const result = await sendEmailViaOrgProvider(settings, {
       to: lead?.email || '',
       toName: lead?.name,
       subject: subject || 'Meeting Request',
-      body: body || '',
+      body: compliant.body,
+      headers: unsubscribeHeaders(compliant.unsubscribeUrl),
       fromName: senderName || 'OmniReach AI',
       fromAddress: senderEmail,
       replyTo,
