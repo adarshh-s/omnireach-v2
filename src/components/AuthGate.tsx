@@ -8,7 +8,7 @@ interface AuthGateProps {
 
 export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
   const auth = useAuth();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -34,13 +34,25 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
       setError(null);
       setInfo(null);
       setSubmitting(true);
-      const result = mode === 'signup' ? await auth.signUp(email, password) : await auth.signIn(email, password);
+      const result =
+        mode === 'forgot'
+          ? await auth.sendPasswordReset(email)
+          : mode === 'signup'
+            ? await auth.signUp(email, password)
+            : await auth.signIn(email, password);
       setSubmitting(false);
       if (result.error) {
         setError(result.error);
       } else if (mode === 'signup') {
         setInfo('Account created! Check your email to confirm, then sign in.');
+      } else if (mode === 'forgot') {
+        setInfo('If that email has an account, a reset link is on its way. Open it on this device to choose a new password.');
       }
+    };
+    const switchMode = (next: 'signin' | 'signup' | 'forgot') => {
+      setMode(next);
+      setError(null);
+      setInfo(null);
     };
 
     return (
@@ -55,10 +67,14 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
 
           <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-7 shadow-card">
             <h2 className="text-lg font-bold text-ink mb-1">
-              {mode === 'signin' ? 'Sign in to your workspace' : 'Create your workspace'}
+              {mode === 'signin' ? 'Sign in to your workspace' : mode === 'forgot' ? 'Reset your password' : 'Create your workspace'}
             </h2>
             <p className="text-xs text-ink-muted mb-5">
-              {mode === 'signin' ? 'Each organization has its own isolated workspace.' : "Create your organization's workspace — invite your team and connect your own WhatsApp, Email, and Calendar afterward. Joining a teammate's workspace? Use the invite link they sent you instead."}
+              {mode === 'signin'
+                ? 'Each organization has its own isolated workspace.'
+                : mode === 'forgot'
+                  ? "Enter your work email and we'll send you a link to choose a new password."
+                  : "Create your organization's workspace — invite your team and connect your own WhatsApp, Email, and Calendar afterward. Joining a teammate's workspace? Use the invite link they sent you instead."}
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-3">
@@ -77,8 +93,16 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
                 </div>
               </div>
 
+              {mode !== 'forgot' && (
               <div>
-                <label className="block text-xs font-medium text-ink-secondary mb-1">Password</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-ink-secondary">Password</label>
+                  {mode === 'signin' && (
+                    <button type="button" onClick={() => switchMode('forgot')} className="text-[11px] text-ink-muted hover:text-ink-secondary">
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
                 <div className="relative">
                   <Lock className="w-3.5 h-3.5 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
@@ -92,6 +116,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
                   />
                 </div>
               </div>
+              )}
 
               {error && <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{error}</p>}
               {info && <p className="text-xs text-[#128C7E] bg-[#128C7E]/10 border border-[#128C7E]/30 rounded-lg px-3 py-2">{info}</p>}
@@ -101,19 +126,15 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
                 disabled={submitting}
                 className="w-full py-2.5 rounded-xl bg-brand-strong hover:bg-[#0d6e62] text-white text-sm font-medium shadow-sm transition-all disabled:opacity-60"
               >
-                {submitting ? 'Please wait…' : mode === 'signin' ? 'Sign In' : 'Create Workspace'}
+                {submitting ? 'Please wait…' : mode === 'signin' ? 'Sign In' : mode === 'forgot' ? 'Send Reset Link' : 'Create Workspace'}
               </button>
             </form>
 
             <button
-              onClick={() => {
-                setMode(mode === 'signin' ? 'signup' : 'signin');
-                setError(null);
-                setInfo(null);
-              }}
+              onClick={() => switchMode(mode === 'signin' ? 'signup' : 'signin')}
               className="w-full text-center text-xs text-ink-muted hover:text-ink-secondary mt-4"
             >
-              {mode === 'signin' ? "Don't have a workspace? Create one" : 'Already have a workspace? Sign in'}
+              {mode === 'signin' ? "Don't have a workspace? Create one" : mode === 'forgot' ? 'Back to sign in' : 'Already have a workspace? Sign in'}
             </button>
           </div>
         </div>
@@ -129,7 +150,8 @@ export const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
 };
 
 /** A teammate who accepted an invite arrives signed in from the invite link with no
- * password yet — they set one here before entering the workspace. */
+ * password yet — they set one here before entering the workspace. Someone who opened a
+ * "forgot password" link lands here too, to choose their new one. */
 const SetPasswordScreen: React.FC<{ auth: AuthState }> = ({ auth }) => {
   const [password, setPasswordValue] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -153,9 +175,11 @@ const SetPasswordScreen: React.FC<{ auth: AuthState }> = ({ auth }) => {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl p-7 shadow-card">
-          <h2 className="text-lg font-bold text-ink mb-1">Welcome to the team</h2>
+          <h2 className="text-lg font-bold text-ink mb-1">{auth.recoveringPassword ? 'Choose a new password' : 'Welcome to the team'}</h2>
           <p className="text-xs text-ink-muted mb-5">
-            Set a password for {auth.user?.email || 'your account'} so you can sign in next time.
+            {auth.recoveringPassword
+              ? `Set a new password for ${auth.user?.email || 'your account'}.`
+              : `Set a password for ${auth.user?.email || 'your account'} so you can sign in next time.`}
           </p>
           <form onSubmit={handleSubmit} className="space-y-3">
             {[
@@ -187,6 +211,9 @@ const SetPasswordScreen: React.FC<{ auth: AuthState }> = ({ auth }) => {
               {submitting ? 'Please wait…' : 'Set Password & Continue'}
             </button>
           </form>
+          <button onClick={() => auth.signOut()} className="w-full text-center text-xs text-ink-muted hover:text-ink-secondary mt-4">
+            Cancel and sign out
+          </button>
         </div>
       </div>
     </div>

@@ -20,6 +20,8 @@ export type ChannelDeliveryStatus =
   | 'Clicked'
   | 'Replied'
   | 'Failed'
+  /** Email only: the address doesn't exist — it's on the do-not-contact list (lib/emailBounces.ts). */
+  | 'Bounced'
   | 'Skipped'
   | 'Cancelled';
 
@@ -167,6 +169,15 @@ export interface ChannelApiSettings {
   whatsappFollowupTemplateVariables?: string[];
   twilioFollowupContentSid?: string;
   twilioFollowupContentVariables?: string[];
+
+  /** Reminders before meetings the AI booked (lib/meetingReminders.ts). Default 'both'. */
+  meetingReminders?: 'both' | '24h' | '1h' | 'off';
+  // Optional approved template for reminders on WhatsApp (Meta Cloud API) — needed when the
+  // lead's last message was over 24 hours ago. Variables may use {{first_name}}, {{name}},
+  // {{meeting_time}}, {{meeting_link}}, {{company_name}}. Without it, such reminders go by email.
+  whatsappReminderTemplateName?: string;
+  whatsappReminderTemplateLanguage?: string;
+  whatsappReminderTemplateVariables?: string[];
 
   emailProvider: EmailProvider;
   emailApiKey?: string;

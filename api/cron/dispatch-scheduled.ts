@@ -11,6 +11,8 @@ import { processCrmEvents } from '../../lib/crm/index.js';
 import { getOrgProfile } from '../../lib/orgSettings.js';
 import { withComplianceFooter, unsubscribeHeaders } from '../../lib/emailCompliance.js';
 import { placeOrgVoiceCall, getPublicBaseUrl } from '../../lib/voiceCalls.js';
+import { recordUsage, usageRoom } from '../../lib/usage.js';
+import { processMeetingReminders } from '../../lib/meetingReminders.js';
 import type { ChannelApiSettings } from '../../src/types.js';
 
 interface ApiRequest {
@@ -79,7 +81,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   // Due campaign messages: sent at each campaign's pace until the time budget runs out
   // (lib/messageQueue.ts) — scheduled sends and server-run campaigns alike.
-  const messages = await processMessageQueue({ budgetMs: 30000 });
+  const messages = await processMessageQueue({ budgetMs: 25000 });
 
   // Failed sends, past their backoff window and under the retry cap — see the
   // Retry/backoff schema comment in supabase/schema.sql.
@@ -123,7 +125,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       continue;
     }
 
-    if (row.whatsapp_status === 'Failed') {
+    // Over this month's limit (lib/usage.ts): leave it failed — it's retried once there's room.
+    if (row.whatsapp_status === 'Failed' && (await usageRoom(row.org_id, 'whatsapp')) > 0) {
       const { data: claimed } = await supabase
         .from('campaign_recipients')
         .update({ whatsapp_status: 'Sending', retry_count: (row.retry_count || 0) + 1 })
@@ -152,6 +155,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         retried++;
         if (result.delivered) {
           sent++;
+          await recordUsage(row.org_id, 'whatsapp');
           if (result.provider === 'cloud_api') {
             seedConversationFromLead(row.org_id, client, row.id).catch(() => {});
           }
@@ -161,7 +165,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
     }
 
-    if (row.email_status === 'Failed') {
+    if (row.email_status === 'Failed' && (await usageRoom(row.org_id, 'emails')) > 0) {
       const { data: claimed } = await supabase
         .from('campaign_recipients')
         .update({ email_status: 'Sending', retry_count: (row.retry_count || 0) + 1 })
@@ -181,6 +185,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           fromName: payload.senderName || 'OmniReach AI',
           fromAddress: payload.senderEmail,
           replyTo,
+          orgId: row.org_id,
         });
         await supabase
           .from('campaign_recipients')
@@ -194,6 +199,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         retried++;
         if (result.ok) {
           sent++;
+          await recordUsage(row.org_id, 'emails');
           if (replyTo) {
             seedEmailConversationFromLead(row.org_id, client, row.id, payload.emailSubject).catch(() => {});
           }
@@ -203,6 +209,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
     }
   }
+
+  // Reminders 24 hours and 1 hour before booked meetings (lib/meetingReminders.ts).
+  const reminders = await processMeetingReminders({ budgetMs: 6000 });
 
   // Activity waiting to go to connected CRMs (lib/crm/index.ts).
   const crm = await processCrmEvents({ budgetMs: 8000 });
@@ -215,5 +224,5 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   // that went quiet, which no webhook ever signals. A no-op for orgs with nothing pending.
   const learning = new Date().getUTCHours() === 6 ? await reviewAllOrgs(25000) : undefined;
 
-  return res.status(200).json({ processed: sent + failed + skipped + retried, sent, failed, skipped, retried, voiceCalls, crm, learning });
+  return res.status(200).json({ processed: sent + failed + skipped + retried, sent, failed, skipped, retried, reminders, voiceCalls, crm, learning });
 }

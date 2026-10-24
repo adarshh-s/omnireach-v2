@@ -2,6 +2,7 @@ import { settingsForSendRequest, getOrgProfile } from '../../lib/orgSettings.js'
 import { withComplianceFooter, unsubscribeHeaders } from '../../lib/emailCompliance.js';
 import { buildEmailReplyToAddress, seedEmailConversationFromLead } from '../../lib/emailWebhookHandler.js';
 import { sendEmailViaOrgProvider } from '../../lib/emailSender.js';
+import { recordUsage, usageRoom, limitReachedMessage } from '../../lib/usage.js';
 
 interface ApiRequest {
   method?: string;
@@ -27,6 +28,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const replyTo = buildEmailReplyToAddress(campaignRecipientId, lead?.id) || undefined;
 
     const mailtoUrl = `mailto:${lead?.email || ''}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
+    if (orgId && (await usageRoom(orgId, 'emails')) <= 0) {
+      return res.status(200).json({ success: true, delivered: false, errorDetail: limitReachedMessage('emails'), mailtoUrl, limitReached: true });
+    }
 
     // Outreach emails carry the sender's address and an unsubscribe link (lib/emailCompliance.ts).
     const compliant = orgId
@@ -41,10 +45,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       fromName: senderName || 'OmniReach AI',
       fromAddress: senderEmail,
       replyTo,
+      orgId,
       webhookUrl,
       webhookContext: lead,
     });
 
+    if (result.ok) await recordUsage(orgId, 'emails');
     // Fire-and-forget: let the AI booking bot know this lead once they reply.
     if (result.ok && orgId && replyTo) {
       seedEmailConversationFromLead(orgId, lead || {}, campaignRecipientId, subject).catch(() => {});

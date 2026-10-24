@@ -1,5 +1,6 @@
 import type { IncomingMessage } from 'http';
-import { parseInboundEmailFields } from '../../lib/parseMultipart.js';
+import { parseInboundEmailFields, readRawBody } from '../../lib/parseMultipart.js';
+import { verifyResendSignature, handleResendEvent } from '../../lib/emailBounces.js';
 import { verifyEmailWebhookToken, processInboundEmail } from '../../lib/emailWebhookHandler.js';
 import { handleUnsubscribe } from '../../lib/emailCompliance.js';
 
@@ -28,6 +29,22 @@ export default async function handler(req: IncomingMessage & { method?: string; 
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Resend's bounce/complaint webhook (lib/emailBounces.ts) — add it in Resend → Webhooks as
+  // https://<your-domain>/api/email/inbound?action=resend-events with the email.bounced and
+  // email.complained events, and put its signing secret in RESEND_WEBHOOK_SECRET.
+  if (params.get('action') === 'resend-events') {
+    const raw = typeof (req as any).rawBody === 'string' ? (req as any).rawBody : await readRawBody(req);
+    if (!verifyResendSignature(raw, req.headers as any, process.env.RESEND_WEBHOOK_SECRET)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+    try {
+      return res.status(200).json(await handleResendEvent(JSON.parse(raw)));
+    } catch (err) {
+      console.error('[Resend Webhook] Processing error:', err);
+      return res.status(500).json({ error: 'Processing failed' });
+    }
   }
 
   const url = new URL(req.url || '', 'http://localhost');

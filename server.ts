@@ -175,7 +175,7 @@ app.post('/api/whatsapp/webhook', async (req, res) => {
 // our own Cloudflare Email Worker (see cloudflare/email-worker/) posts JSON instead.
 // Configure the Destination URL as: https://<domain>/api/email/inbound?token=<EMAIL_INBOUND_WEBHOOK_SECRET>
 app.all('/api/email/inbound', (req, res, next) =>
-  req.query.action === 'unsubscribe' ? emailInboundHandler(req as any, res as any) : next()
+  req.query.action === 'unsubscribe' || req.query.action === 'resend-events' ? emailInboundHandler(req as any, res as any) : next()
 );
 app.post('/api/email/inbound', async (req, res) => {
   if (!verifyEmailWebhookToken(req.query.token as string | undefined)) {
@@ -188,7 +188,7 @@ app.post('/api/email/inbound', async (req, res) => {
       // express.json() middleware already parsed this into req.body (and drained the stream).
       const body = req.body || {};
       fields = {};
-      for (const key of ['to', 'from', 'subject', 'text', 'html']) {
+      for (const key of ['to', 'from', 'subject', 'text', 'html', 'headers']) {
         if (typeof body[key] === 'string') fields[key] = body[key];
       }
     } else {

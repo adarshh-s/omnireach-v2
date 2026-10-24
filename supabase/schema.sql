@@ -879,3 +879,85 @@ alter table crm_events enable row level security;
 
 -- Per-campaign analytics groups campaigns by the template they used.
 alter table campaigns add column if not exists template_name text;
+
+-- ---------------------------------------------------------------------------
+-- Usage and monthly limits per org (lib/usage.ts). Every outbound call, call minute,
+-- WhatsApp message, email and AI generation is counted per calendar month (UTC). The
+-- platform admin sets limits per org from the Admin page; null = no limit. Reaching a limit
+-- holds new campaign sends and calls until the next month or a higher limit — replies to
+-- leads already in a conversation, and incoming calls, still go out (and are counted).
+-- ---------------------------------------------------------------------------
+create table if not exists org_usage (
+  org_id uuid not null references auth.users(id) on delete cascade,
+  period text not null,            -- 'YYYY-MM' (UTC)
+  metric text not null,            -- calls | call_minutes | whatsapp | emails | ai
+  amount numeric not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key (org_id, period, metric)
+);
+alter table org_usage enable row level security;
+drop policy if exists "org can read own usage" on org_usage;
+create policy "org can read own usage" on org_usage
+  for select using ((select current_org_id()) = org_id);
+
+create or replace function increment_org_usage(p_org_id uuid, p_period text, p_metric text, p_amount numeric)
+returns numeric
+language sql
+security definer
+set search_path = public
+as $$
+  insert into org_usage (org_id, period, metric, amount)
+  values (p_org_id, p_period, p_metric, p_amount)
+  on conflict (org_id, period, metric)
+  do update set amount = org_usage.amount + excluded.amount, updated_at = now()
+  returning amount;
+$$;
+-- Server only (service role): orgs must not be able to change their own counters.
+revoke execute on function increment_org_usage(uuid, text, text, numeric) from public, anon, authenticated;
+
+create table if not exists org_limits (
+  org_id uuid primary key references auth.users(id) on delete cascade,
+  calls int,
+  call_minutes int,
+  whatsapp int,
+  emails int,
+  ai int,
+  -- Which alerts went out this month, so each is sent once: {"YYYY-MM": ["calls:80", ...]}
+  alerts_sent jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+alter table org_limits enable row level security;
+drop policy if exists "org can read own limits" on org_limits;
+create policy "org can read own limits" on org_limits
+  for select using ((select current_org_id()) = org_id);
+
+-- ---------------------------------------------------------------------------
+-- Meeting reminders (lib/meetingReminders.ts): one row per reminder sent, so each goes out
+-- once even when dispatcher runs overlap. meeting_at is part of the key, so a meeting that
+-- moves gets fresh reminders for its new time.
+-- ---------------------------------------------------------------------------
+create table if not exists meeting_reminders (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references auth.users(id) on delete cascade,
+  source text not null,            -- whatsapp | email | voice (which conversation booked it)
+  source_id uuid not null,         -- that conversation / call row
+  kind text not null,              -- 24h | 1h
+  meeting_at timestamptz not null,
+  channel text,                    -- whatsapp | email | none (what the reminder went out on)
+  detail text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists uq_meeting_reminders on meeting_reminders(source, source_id, kind, meeting_at);
+alter table meeting_reminders enable row level security;
+drop policy if exists "org can read own meeting reminders" on meeting_reminders;
+create policy "org can read own meeting reminders" on meeting_reminders
+  for select using ((select current_org_id()) = org_id);
+create index if not exists idx_whatsapp_conversations_meeting on whatsapp_conversations(meeting_datetime_iso) where status = 'confirmed';
+create index if not exists idx_email_conversations_meeting on email_conversations(meeting_datetime_iso) where status = 'confirmed';
+create index if not exists idx_voice_calls_meeting on voice_calls(meeting_datetime_iso) where status = 'confirmed';
+
+-- Email bounces and auto-replies (lib/emailAutoDetect.ts): an undeliverable address is put on
+-- the do-not-contact list and its lead marked email_status 'Bounced'; out-of-office and other
+-- automatic replies are logged here instead of counting as a reply or getting an AI answer.
+alter table email_conversations add column if not exists last_auto_reply_at timestamptz;
+alter table email_conversations add column if not exists last_auto_reply text;

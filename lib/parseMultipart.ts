@@ -54,7 +54,8 @@ async function parseJsonFields(req: IncomingMessage): Promise<Record<string, str
   try {
     const data = JSON.parse(raw);
     const fields: Record<string, string> = {};
-    for (const key of ['to', 'from', 'subject', 'text', 'html']) {
+    // headers: the raw header block, for spotting bounces and auto-replies (lib/emailAutoDetect.ts).
+    for (const key of ['to', 'from', 'subject', 'text', 'html', 'headers']) {
       if (typeof data[key] === 'string') fields[key] = data[key];
     }
     return fields;

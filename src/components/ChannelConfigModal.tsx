@@ -461,7 +461,8 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     | 'whatsappTemplateVariables'
     | 'twilioContentVariables'
     | 'whatsappFollowupTemplateVariables'
-    | 'twilioFollowupContentVariables';
+    | 'twilioFollowupContentVariables'
+    | 'whatsappReminderTemplateVariables';
 
   const addTemplateVariable = (key: TemplateVarKey) => {
     setFormData({ ...formData, [key]: [...(formData[key] || []), ''] });
@@ -1117,6 +1118,32 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                                   </Field>
                                 </div>
                                 {formData.whatsappFollowupTemplateName && renderTemplateVariableEditor('whatsappFollowupTemplateVariables')}
+                              </AdvancedSection>
+                              <AdvancedSection label="Meeting reminder template (optional)">
+                                <p className="text-[10px] text-ink-muted">
+                                  Meeting reminders go out as normal WhatsApp messages while the lead has written in the last 24 hours. After that WhatsApp needs an approved template — without one, those reminders go by email. Variables can use {'{{first_name}}'}, {'{{meeting_time}}'} and {'{{meeting_link}}'}.
+                                </p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <Field label="Reminder template name">
+                                    <input
+                                      type="text"
+                                      placeholder="meeting_reminder"
+                                      value={formData.whatsappReminderTemplateName || ''}
+                                      onChange={(e) => setFormData({ ...formData, whatsappReminderTemplateName: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                  <Field label="Language code">
+                                    <input
+                                      type="text"
+                                      placeholder={formData.whatsappTemplateLanguage || 'en_US'}
+                                      value={formData.whatsappReminderTemplateLanguage || ''}
+                                      onChange={(e) => setFormData({ ...formData, whatsappReminderTemplateLanguage: e.target.value })}
+                                      className={`${inputClass} font-mono`}
+                                    />
+                                  </Field>
+                                </div>
+                                {formData.whatsappReminderTemplateName && renderTemplateVariableEditor('whatsappReminderTemplateVariables')}
                               </AdvancedSection>
                             </>
                           )}
@@ -1853,6 +1880,23 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           {microsoftCalendar.status.connected && !googleCalendar.status.connected && (
                             <Note>Connecting Google switches the AI over to Google Calendar.</Note>
                           )}
+                          <Card title="Meeting reminders">
+                            <Field
+                              label="Remind leads before their meeting"
+                              hint="Sent where they booked — WhatsApp, the same email thread, or after a call by WhatsApp or email — with the meeting link. If they reply to reschedule, the AI takes it from there."
+                            >
+                              <select
+                                value={formData.meetingReminders || 'both'}
+                                onChange={(e) => setFormData({ ...formData, meetingReminders: e.target.value as ChannelApiSettings['meetingReminders'] })}
+                                className={`${inputClass} !w-64`}
+                              >
+                                <option value="both">24 hours and 1 hour before</option>
+                                <option value="24h">24 hours before</option>
+                                <option value="1h">1 hour before</option>
+                                <option value="off">Off</option>
+                              </select>
+                            </Field>
+                          </Card>
                         </>
                       )}
                     </SetupSection>

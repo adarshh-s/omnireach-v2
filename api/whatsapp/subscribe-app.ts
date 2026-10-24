@@ -16,6 +16,7 @@ import { configuredCrms, disconnectCrm, importFromCrm, processCrmEvents } from '
 import { getSupabaseAdmin } from '../../lib/supabaseAdmin.js';
 import { listPhoneNumbers } from '../../lib/vapiClient.js';
 import { enableInboundCalls, getPublicBaseUrl } from '../../lib/voiceCalls.js';
+import { getOrgUsage, adminUsageByOrg, setOrgLimits } from '../../lib/usage.js';
 
 interface ApiRequest {
   method?: string;
@@ -60,6 +61,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (action === 'email-domain') return res.status(200).json({ domain: await getOrgEmailDomain(orgId) });
     if (action === 'do-not-contact') return res.status(200).json(await listSuppression(orgId));
     if (action === 'crm') return res.status(200).json(await crmStatus(orgId));
+    if (action === 'usage') return res.status(200).json(await getOrgUsage(orgId));
     // Not a credential — Meta's webhook handshake echo string, which orgs paste into their own
     // Meta App's webhook config. The real access control is the X-Hub-Signature-256 check.
     return res.status(200).json({ verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null });
@@ -129,7 +131,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 async function handleAdminAction(action: string, req: ApiRequest, res: ApiResponse) {
   if (action === 'admin-list-orgs') {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-    return res.status(200).json({ orgs: await adminListOrgs() });
+    const [orgs, usage] = await Promise.all([adminListOrgs(), adminUsageByOrg()]);
+    return res.status(200).json({ orgs, usage });
   }
 
   // Numbers on the platform's Vapi account, to pick from when assigning one to an org.
@@ -144,6 +147,11 @@ async function handleAdminAction(action: string, req: ApiRequest, res: ApiRespon
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   const { orgId: targetOrgId, status, phoneNumberId } = req.body || {};
   if (!targetOrgId) return res.status(400).json({ error: 'orgId is required.' });
+
+  // Monthly limits per org (lib/usage.ts); a blank field means no limit.
+  if (action === 'admin-set-limits') {
+    return res.status(200).json({ ok: true, limits: await setOrgLimits(targetOrgId, req.body?.limits || {}) });
+  }
 
   if (action === 'admin-set-org-access') {
     if (status !== 'active' && status !== 'locked') {

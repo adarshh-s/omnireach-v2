@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { RefreshCw, Loader2 } from 'lucide-react';
 import { PageHeader, headerSecondaryButton } from './PageHeader';
 import type { AnalyticsReport } from '../../lib/analytics';
+import { UsagePanel, useOrgUsage } from './UsagePanel';
 
 interface ReportsViewProps {
   accessToken?: string | null;
@@ -39,6 +40,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ accessToken }) => {
   const [report, setReport] = useState<AnalyticsReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const usage = useOrgUsage(accessToken);
 
   const load = async () => {
     if (!accessToken) return;
@@ -79,6 +81,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ accessToken }) => {
       />
 
       {!accessToken && <div className={`${card} p-6 text-sm text-ink-muted`}>Sign in to a workspace to see reports.</div>}
+      <UsagePanel usage={usage} />
       {error && <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300">{error}</div>}
       {accessToken && !report && !error && (
         <div className={`${card} p-8 text-center text-xs text-ink-muted`}>
@@ -144,7 +147,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ accessToken }) => {
                         <td className={td}>
                           <Rate value={c.bookingRate} />
                         </td>
-                        <td className={`${td} tabular-nums ${c.failed ? 'text-rose-400' : ''}`}>{c.failed}</td>
+                        <td className={`${td} tabular-nums ${c.failed ? 'text-rose-400' : ''}`} title={c.bounced ? `${c.bounced} bounced (address doesn't exist)` : undefined}>
+                          {c.failed}
+                          {c.bounced > 0 && <span className="text-[10px] text-ink-muted"> · {c.bounced} bounced</span>}
+                        </td>
                         <td className={`${td} tabular-nums`}>{c.optedOut}</td>
                       </tr>
                     ))}

@@ -725,6 +725,14 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                             <AlertTriangle className="w-2.5 h-2.5" /> Failed
                           </span>
                         )}
+                        {lead.emailStatus === 'Bounced' && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20"
+                            title="This address doesn't exist or rejected the email. It's on the do-not-contact list, so it won't be emailed again."
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5" /> Bounced
+                          </span>
+                        )}
                       </td>
 
                       {/* Lead Status */}

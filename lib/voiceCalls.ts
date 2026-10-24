@@ -18,6 +18,7 @@ import { markQueuedCallFinished, processCallQueue } from './callQueue.js';
 import { optOutClient } from './suppression.js';
 import { emitCrmEvent } from './crm/index.js';
 import { needsAiDisclosure, legalRegion } from './regionRules.js';
+import { recordUsage, usageRoom, limitReachedMessage } from './usage.js';
 import type { ChannelApiSettings } from '../src/types.js';
 
 /**
@@ -238,6 +239,9 @@ export async function placeOrgVoiceCall(params: {
   if (!phone) {
     return { httpStatus: 400, body: { error: 'phone is required.' } };
   }
+  for (const metric of ['calls', 'call_minutes'] as const) {
+    if ((await usageRoom(orgId, metric)) <= 0) return { httpStatus: 400, body: { error: limitReachedMessage(metric), limitReached: true } };
+  }
 
   const supabase = getSupabaseAdmin();
   let client: { name?: string; company?: string; email?: string; country?: string; opted_out?: boolean; call_consent?: boolean } | null = null;
@@ -321,6 +325,7 @@ export async function placeOrgVoiceCall(params: {
     });
     if (error) console.error('[Vapi] Failed to log call', result.callId, error.message);
   }
+  if (result.ok) await recordUsage(orgId, 'calls');
 
   return { httpStatus: result.ok ? 200 : 400, body: { ...result, webhookAttached: !!overrides?.server } };
 }
@@ -360,6 +365,10 @@ async function handleEndOfCallReport(message: any, callId: string): Promise<{ or
         : null;
   const outcome = classifyOutcome(message.endedReason, history.filter((h) => h.role === 'user').length);
 
+  // The report can arrive twice (webhook, then the stale-call reconciler) — count minutes once.
+  const { data: before } = await supabase.from('voice_calls').select('outcome').eq('vapi_call_id', callId).maybeSingle();
+  const firstReport = !!before && !before.outcome;
+
   const { data: row } = await supabase
     .from('voice_calls')
     .update({
@@ -377,6 +386,7 @@ async function handleEndOfCallReport(message: any, callId: string): Promise<{ or
     .eq('vapi_call_id', callId)
     .select('org_id, client_id, status')
     .maybeSingle();
+  if (row && firstReport && durationSeconds) await recordUsage(row.org_id, 'call_minutes', Math.ceil(durationSeconds / 60));
 
   // Log the call in the org's CRM (if connected): outcome, length and the AI's summary.
   if (row?.client_id) {

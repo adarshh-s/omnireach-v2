@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
+import { usageRoom } from './usage.js';
 import { getOrgChannelSettings, getOrgAccessStatus } from './orgSettings.js';
 import { checkCallingHours } from './countryTiming.js';
 import { loadSuppression, isSuppressed } from './suppression.js';
@@ -279,7 +280,9 @@ export async function processCallQueue(
     // The org's limit is the most any of its running campaigns allows (the default when only
     // missed-call retries are waiting).
     const concurrency = runningCampaigns.length ? Math.max(...runningCampaigns.map((c: any) => c.concurrency)) : DEFAULT_CONCURRENCY;
-    let room = Math.min(concurrency - (active || 0), platformRoom, dailyLimit - (placedToday || 0));
+    // Monthly limits (lib/usage.ts): queued calls wait until the limit is raised or the month turns.
+    const [callsLeft, minutesLeft] = await Promise.all([usageRoom(orgId, 'calls'), usageRoom(orgId, 'call_minutes')]);
+    let room = Math.min(concurrency - (active || 0), platformRoom, dailyLimit - (placedToday || 0), minutesLeft > 0 ? callsLeft : 0);
     if (room <= 0) continue;
 
     // Which batch each running campaign is on, and whether its pause between batches is over.

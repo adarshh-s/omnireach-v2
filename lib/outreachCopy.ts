@@ -1,13 +1,15 @@
 import { GoogleGenAI } from '@google/genai';
 import { generateViaGroq } from './groqClient.js';
 import { buildLearnedGuidance } from './aiLearning.js';
+import { recordUsage, usageRoom } from './usage.js';
 
 /**
  * AI-personalised outreach copy (one WhatsApp message + one email) for a lead: Gemini, then
  * Groq if Gemini fails, then the template with variables filled in, then a generic default.
  * Shared by api/outreach/generate-message.ts (the dashboard's per-lead preview) and the
  * server-side message queue (lib/messageQueue.ts), which writes each lead's copy just
- * before sending it.
+ * before sending it. Counted as AI usage (lib/usage.ts); past the org's monthly AI limit the
+ * template is used instead.
  */
 
 export interface OutreachCopy {
@@ -76,9 +78,10 @@ Output strict JSON with these 3 keys:
 }`;
 
   let aiResult: { whatsApp?: string; emailSubject?: string; emailBody?: string } | null = null;
+  const aiAllowed = !orgId || (await usageRoom(orgId, 'ai')) > 0;
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (apiKey) {
+  if (apiKey && aiAllowed) {
     try {
       const ai = new GoogleGenAI({
         apiKey,
@@ -108,7 +111,7 @@ Output strict JSON with these 3 keys:
 
   // Groq (free tier, much higher daily ceiling) — tried whenever Gemini didn't produce a
   // usable result, whether that's a quota/overload failure or GEMINI_API_KEY being unset.
-  if (!aiResult && process.env.GROQ_API_KEY) {
+  if (!aiResult && aiAllowed && process.env.GROQ_API_KEY) {
     try {
       const { text } = await generateViaGroq(prompt);
       const parsed = JSON.parse(text || '{}');
@@ -121,6 +124,7 @@ Output strict JSON with these 3 keys:
   }
 
   if (aiResult) {
+    await recordUsage(orgId, 'ai');
     return {
       whatsApp: aiResult.whatsApp,
       emailSubject: aiResult.emailSubject,

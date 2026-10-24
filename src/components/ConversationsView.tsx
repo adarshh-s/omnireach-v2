@@ -51,6 +51,9 @@ interface RawConversation {
   duration_seconds?: number;
   summary?: string;
   recording_url?: string;
+  // Email only: the latest out-of-office / automatic reply (not counted as a reply)
+  last_auto_reply_at?: string | null;
+  last_auto_reply?: string | null;
 }
 
 interface UnifiedConversation extends RawConversation {
@@ -337,6 +340,12 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                           <span className="ml-2 font-sans">• {formatDuration(conv.duration_seconds)}</span>
                         )}
                       </div>
+                      {conv.channel === 'email' && conv.last_auto_reply_at && (
+                        <p className="text-[11px] text-ink-muted mt-1 truncate max-w-lg" title={conv.last_auto_reply || undefined}>
+                          Automatic reply {new Date(conv.last_auto_reply_at).toLocaleDateString([], { day: 'numeric', month: 'short' })}
+                          {conv.last_auto_reply ? ` — ${conv.last_auto_reply}` : ''}
+                        </p>
+                      )}
                       {conv.channel === 'voice' && followUpLabel(conv) && (
                         <p className="text-[11px] text-ink-muted mt-1" title={conv.followup_detail || undefined}>
                           {followUpLabel(conv)}

@@ -1,6 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, Lock, Unlock, Loader2, Phone } from 'lucide-react';
+import { RefreshCw, Lock, Unlock, Loader2, Phone, Save } from 'lucide-react';
 import { PageHeader, headerSecondaryButton } from './PageHeader';
+import type { OrgUsage, UsageMetric } from '../../lib/usage';
+
+const LIMIT_FIELDS: { key: UsageMetric; label: string }[] = [
+  { key: 'calls', label: 'Calls' },
+  { key: 'call_minutes', label: 'Call min' },
+  { key: 'whatsapp', label: 'WhatsApp' },
+  { key: 'emails', label: 'Emails' },
+  { key: 'ai', label: 'AI' },
+];
+type LimitDraft = Record<UsageMetric, string>;
 
 interface OrgSummary {
   orgId: string;
@@ -38,6 +48,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
   const [numbersError, setNumbersError] = useState<string | null>(null);
   const [assigningOrgId, setAssigningOrgId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [usage, setUsage] = useState<Record<string, OrgUsage>>({});
+  const [drafts, setDrafts] = useState<Record<string, LimitDraft>>({});
+  const [savingLimitsFor, setSavingLimitsFor] = useState<string | null>(null);
+
+  const draftFor = (orgId: string): LimitDraft =>
+    drafts[orgId] ||
+    (Object.fromEntries(LIMIT_FIELDS.map(({ key }) => [key, usage[orgId]?.limits[key] == null ? '' : String(usage[orgId]!.limits[key])])) as LimitDraft);
+
+  const saveLimits = async (org: OrgSummary) => {
+    if (!accessToken) return;
+    setSavingLimitsFor(org.orgId);
+    setError(null);
+    try {
+      const res = await fetch('/api/whatsapp/subscribe-app?action=admin-set-limits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ orgId: org.orgId, limits: draftFor(org.orgId) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setUsage((prev) => ({
+          ...prev,
+          [org.orgId]: { period: prev[org.orgId]?.period || '', used: prev[org.orgId]?.used || ({} as OrgUsage['used']), limits: data.limits },
+        }));
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[org.orgId];
+          return next;
+        });
+      } else {
+        setError(data?.error || 'Could not save the limits.');
+      }
+    } catch {
+      setError('Failed to reach the server.');
+    } finally {
+      setSavingLimitsFor(null);
+    }
+  };
 
   const loadNumbers = () => {
     if (!accessToken) return;
@@ -98,8 +146,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data?.orgs) setOrgs(data.orgs);
-        else setError(data?.error || 'Could not load organizations.');
+        if (data?.orgs) {
+          setOrgs(data.orgs);
+          setUsage(data.usage || {});
+          setDrafts({});
+        } else setError(data?.error || 'Could not load organizations.');
       })
       .catch(() => setError('Failed to reach the server.'))
       .finally(() => setLoading(false));
@@ -138,7 +189,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
     <div className="space-y-6">
       <PageHeader
         title="Admin"
-        description="Every workspace on the platform. Unlock access once a client has paid, and give each one its own phone number."
+        description="Every workspace on the platform. Unlock access once a client has paid, give each one its own phone number, and set monthly usage limits."
         actions={
           <button
             onClick={() => {
@@ -265,6 +316,74 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ accessToken }) =
             ))}
           </tbody>
         </table>
+        </div>
+      </div>
+
+      <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl shadow-card overflow-hidden">
+        <div className="px-5 pt-4 pb-2">
+          <h2 className="text-sm font-semibold text-ink">Usage &amp; monthly limits</h2>
+          <p className="text-[11px] text-ink-muted">
+            This month's usage per workspace. Leave a limit blank for no limit. At a limit, new campaign sends and calls wait until the 1st —
+            replies to leads already in a conversation still go out.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-y border-border text-left text-ink-muted uppercase tracking-wider text-[10px]">
+                <th className="px-5 py-3 font-semibold">Workspace</th>
+                {LIMIT_FIELDS.map((f) => (
+                  <th key={f.key} className="px-3 py-3 font-semibold whitespace-nowrap">
+                    {f.label}
+                  </th>
+                ))}
+                <th className="px-5 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {orgs?.map((org) => {
+                const draft = draftFor(org.orgId);
+                const used = usage[org.orgId]?.used;
+                const dirty = !!drafts[org.orgId];
+                return (
+                  <tr key={org.orgId} className="hover:bg-surface-hover transition-colors">
+                    <td className="px-5 py-3 text-ink font-medium whitespace-nowrap">{org.companyName || org.email || '—'}</td>
+                    {LIMIT_FIELDS.map(({ key }) => {
+                      const n = Math.round(used?.[key] || 0);
+                      const limit = draft[key] === '' ? null : Number(draft[key]);
+                      const over = limit !== null && n >= limit;
+                      return (
+                        <td key={key} className="px-3 py-3 whitespace-nowrap">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`tabular-nums ${over ? 'text-rose-400 font-semibold' : 'text-ink-secondary'}`}>{n.toLocaleString()}</span>
+                            <span className="text-ink-muted">/</span>
+                            <input
+                              type="number"
+                              min={0}
+                              placeholder="∞"
+                              value={draft[key]}
+                              onChange={(e) => setDrafts((prev) => ({ ...prev, [org.orgId]: { ...draft, [key]: e.target.value } }))}
+                              className="w-16 bg-canvas border border-border-strong rounded-lg px-1.5 py-1 text-[11px] font-mono"
+                            />
+                          </div>
+                        </td>
+                      );
+                    })}
+                    <td className="px-5 py-3 text-right">
+                      <button
+                        onClick={() => saveLimits(org)}
+                        disabled={!dirty || savingLimitsFor === org.orgId}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-brand-strong text-white hover:bg-[#0d6e62] disabled:opacity-40 transition-all"
+                      >
+                        {savingLimitsFor === org.orgId ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                        <span>Save</span>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

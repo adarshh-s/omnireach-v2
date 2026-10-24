@@ -16,6 +16,9 @@ import { emitCrmEvent } from './crm/index.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
+import { recordUsage } from './usage.js';
+import { classifyInboundEmail, autoReplySummary } from './emailAutoDetect.js';
+import { markEmailBounced } from './emailBounces.js';
 
 /** Verifies the shared secret appended to the Inbound Parse Destination URL, so this
  * endpoint can't be spammed by anyone who finds the URL. */
@@ -134,6 +137,27 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     return;
   }
 
+  // Mail no person wrote (lib/emailAutoDetect.ts): never answered by the AI, never a "reply".
+  const automatic = classifyInboundEmail({ from: fromHeader, subject, headers: fields.headers, text: bodyText });
+  if (automatic.kind === 'bounce') {
+    const failed = bodyText.match(/Final-Recipient:\s*rfc822;\s*<?([^\s>]+@[^\s>]+)>?/i)?.[1] || context.clientEmail;
+    if (failed) await markEmailBounced(orgId, failed, automatic.reason);
+    console.log('[Email Bot] Bounce for', failed || 'unknown address', '—', automatic.reason);
+    return;
+  }
+  if (automatic.kind === 'auto_reply') {
+    // Kept on the conversation so the AI Inbox shows it (e.g. "back on Monday"); the
+    // campaign's follow-up still goes out since nobody actually answered.
+    const leadEmail = (context.clientEmail || fromEmail).trim().toLowerCase();
+    await supabase
+      .from('email_conversations')
+      .update({ last_auto_reply_at: new Date().toISOString(), last_auto_reply: autoReplySummary(subject, bodyText), updated_at: new Date().toISOString() })
+      .eq('org_id', orgId)
+      .eq('client_email', leadEmail);
+    console.log('[Email Bot] Automatic reply from', fromEmail, '—', automatic.reason);
+    return;
+  }
+
   // Set when this email ends the conversation (booked / declined / handoff) — it's then
   // reviewed for lessons once the reply is out and the lock released (lib/aiLearning.ts).
   let conversationFinished = false;
@@ -216,13 +240,15 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       }
     }
 
-    await sendEmailViaOrgProvider(orgChannelSettings, {
+    const optOutSent = await sendEmailViaOrgProvider(orgChannelSettings, {
       to: fromEmail,
       subject: subject ? `Re: ${subject}` : 'Unsubscribed',
       body: OPT_OUT_REPLY,
       fromName,
       replyTo: trackingAddress,
+      orgId,
     });
+    if (optOutSent.ok) await recordUsage(orgId, 'emails');
     conversationFinished = true;
     return;
   }
@@ -402,10 +428,14 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     body: replyText,
     fromName,
     replyTo: trackingAddress,
+    orgId,
   });
   if (!sendResult.ok) {
     console.error('[Email Bot] Failed to send auto-reply:', sendResult.error);
   }
+  // Replies to someone already talking to the bot are counted but never held by a limit.
+  if (sendResult.ok) await recordUsage(orgId, 'emails');
+  if (ai) await recordUsage(orgId, 'ai');
   conversationFinished = finalStatus !== 'active' && finalStatus !== existing?.status;
   } // end processLockedEmail
 }

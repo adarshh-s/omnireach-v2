@@ -31,6 +31,7 @@ import {
 import { INITIAL_LEADS, INITIAL_CALENDAR_SLOTS } from './data/sampleLeads';
 import { hasChannelSecret } from './utils/channelSecrets';
 import { DEFAULT_TEMPLATES, DEFAULT_CAMPAIGN_SETTINGS } from './data/sampleTemplates';
+import { useOrgUsage, usageWarning } from './components/UsagePanel';
 
 const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
   whatsAppProvider: 'web_direct',
@@ -222,6 +223,10 @@ function AppContent({ auth }: { auth: AuthState }) {
 
   // Selected Lead for Simulator
   const [selectedLeadId, setSelectedLeadId] = useState<string>(leads[0]?.id || 'lead-1');
+
+  // Monthly usage limits (lib/usage.ts) — a banner once one is 80% used or reached.
+  const usageNotice = usageWarning(useOrgUsage(auth.accessToken));
+  const [usageNoticeDismissed, setUsageNoticeDismissed] = useState<string | null>(null);
 
   // Google/Outlook Calendar OAuth redirect banner
   const [calendarBanner, setCalendarBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -497,6 +502,29 @@ function AppContent({ auth }: { auth: AuthState }) {
             >
               <span>{calendarBanner.message}</span>
               <button onClick={() => setCalendarBanner(null)} className="opacity-70 hover:opacity-100">
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {usageNotice && usageNoticeDismissed !== usageNotice.message && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div
+              className={`px-4 sm:px-6 lg:px-8 py-2 text-xs flex items-center justify-between gap-3 ${
+                usageNotice.level === 'full' ? 'bg-rose-500/10 text-rose-400' : 'bg-amber-500/10 text-amber-300'
+              }`}
+            >
+              <span>{usageNotice.message}</span>
+              <button onClick={() => setUsageNoticeDismissed(usageNotice.message)} className="opacity-70 hover:opacity-100 shrink-0">
                 Dismiss
               </button>
             </div>

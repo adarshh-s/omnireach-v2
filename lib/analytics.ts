@@ -24,6 +24,8 @@ export interface MessageCampaignReport {
   delivered: number;
   read: number;
   failed: number;
+  /** Emails to addresses that don't exist (also counted in failed). */
+  bounced: number;
   replied: number;
   booked: number;
   optedOut: number;
@@ -127,7 +129,8 @@ export async function buildAnalytics(orgId: string, limit = 50): Promise<Analyti
       sent: sent.length,
       delivered: first.filter((r) => ['Delivered', 'Read'].includes(r.whatsapp_status)).length,
       read: first.filter((r) => r.whatsapp_status === 'Read').length,
-      failed: first.filter((r) => r.whatsapp_status === 'Failed' || r.email_status === 'Failed').length,
+      failed: first.filter((r) => r.whatsapp_status === 'Failed' || r.email_status === 'Failed' || r.email_status === 'Bounced').length,
+      bounced: first.filter((r) => r.email_status === 'Bounced').length,
       replied: repliedLeads.size,
       booked: bookedLeads.size,
       optedOut: [...leadIds].filter((id) => optedOut.has(id)).length,

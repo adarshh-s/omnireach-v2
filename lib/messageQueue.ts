@@ -6,6 +6,8 @@ import { seedConversationFromLead } from './whatsappWebhookHandler.js';
 import { seedEmailConversationFromLead, buildEmailReplyToAddress } from './emailWebhookHandler.js';
 import { computeNextPeakSendTime } from './countryTiming.js';
 import { generateOutreachCopy } from './outreachCopy.js';
+import { getOrgUsage, recordUsage, limitReachedMessage } from './usage.js';
+import { HARD_BOUNCE_ERROR, markEmailBounced } from './emailBounces.js';
 import { interpolateTemplate } from '../src/utils/outreachEngine.js';
 import { loadSuppression, isSuppressed } from './suppression.js';
 import { withComplianceFooter, unsubscribeHeaders } from './emailCompliance.js';
@@ -308,7 +310,10 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
   const { data: due } = await query;
 
   const lastSentAt = new Map<string, number>();
-  const orgCache = new Map<string, { settings: ChannelApiSettings | null; profile: CampaignSettings | null; locked: boolean }>();
+  const orgCache = new Map<
+    string,
+    { settings: ChannelApiSettings | null; profile: CampaignSettings | null; locked: boolean; room: { whatsapp: number; emails: number } }
+  >();
   const touchedCampaigns = new Set<string>();
 
   for (const row of due || []) {
@@ -340,11 +345,41 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
     }
 
     if (!orgCache.has(row.org_id)) {
-      const [settings, profile, access] = await Promise.all([getOrgChannelSettings(row.org_id), getOrgProfile(row.org_id), getOrgAccessStatus(row.org_id)]);
-      orgCache.set(row.org_id, { settings, profile, locked: access === 'locked' });
+      const [settings, profile, access, usage] = await Promise.all([
+        getOrgChannelSettings(row.org_id),
+        getOrgProfile(row.org_id),
+        getOrgAccessStatus(row.org_id),
+        getOrgUsage(row.org_id),
+      ]);
+      // What's left of this month's limits, counted down locally as this run sends.
+      const left = (m: 'whatsapp' | 'emails') => (usage.limits[m] === null ? Infinity : Math.max(0, usage.limits[m]! - usage.used[m]));
+      orgCache.set(row.org_id, { settings, profile, locked: access === 'locked', room: { whatsapp: left('whatsapp'), emails: left('emails') } });
     }
     const org = orgCache.get(row.org_id)!;
     if (org.locked) continue;
+
+    // Monthly limit reached on a channel: that channel waits (checked again in an hour) while
+    // the other one still goes out.
+    const heldWhatsApp = row.whatsapp_status === 'Queued' && org.room.whatsapp <= 0;
+    const heldEmail = row.email_status === 'Queued' && org.room.emails <= 0;
+    // Kept as the row's note while the other channel's send result is written.
+    const heldNote = heldWhatsApp || heldEmail ? limitReachedMessage(heldWhatsApp ? 'whatsapp' : 'emails') : null;
+    if (heldWhatsApp || heldEmail) {
+      await supabase
+        .from('campaign_recipients')
+        .update({
+          scheduled_for: new Date(Date.now() + 3_600_000).toISOString(),
+          error_detail: heldNote,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (heldWhatsApp) row.whatsapp_status = 'Held';
+      if (heldEmail) row.email_status = 'Held';
+      if (row.whatsapp_status !== 'Queued' && row.email_status !== 'Queued') {
+        counts.skipped++;
+        continue;
+      }
+    }
 
     // Pace each org's sends.
     const gapMs = Math.max(1, campaign.send_gap_seconds || 2) * 1000;
@@ -400,7 +435,7 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
         .from('campaign_recipients')
         .update({
           whatsapp_status: result.delivered ? 'Sent' : 'Failed',
-          error_detail: result.errorDetail || null,
+          error_detail: result.errorDetail || heldNote,
           ...(result.delivered && messageId ? { whatsapp_message_id: messageId } : {}),
           updated_at: new Date().toISOString(),
         })
@@ -410,6 +445,8 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
       if (result.delivered) {
         counts.sent++;
         sentSomething = true;
+        org.room.whatsapp--;
+        await recordUsage(row.org_id, 'whatsapp');
         if (result.provider === 'cloud_api') await seedConversationFromLead(row.org_id, client, row.id).catch(() => {});
       } else counts.failed++;
     }
@@ -426,17 +463,24 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
         fromAddress: payload.senderEmail,
         replyTo,
         headers: unsubscribeHeaders(compliant.unsubscribeUrl),
+        orgId: row.org_id,
       });
+      // Rejected as an address that doesn't exist: no retries, and never emailed again.
+      const bounced = !result.ok && HARD_BOUNCE_ERROR.test(result.error || '');
+      const emailStatus = result.ok ? 'Sent' : bounced ? 'Bounced' : 'Failed';
       await supabase
         .from('campaign_recipients')
-        .update({ email_status: result.ok ? 'Sent' : 'Failed', error_detail: result.error || null, updated_at: new Date().toISOString() })
+        .update({ email_status: emailStatus, error_detail: result.error || heldNote, updated_at: new Date().toISOString() })
         .eq('id', row.id);
-      clientUpdate.email_status = result.ok ? 'Sent' : 'Failed';
+      clientUpdate.email_status = emailStatus;
+      if (bounced) await markEmailBounced(row.org_id, client.email || '', result.error || 'invalid address');
       clientUpdate.email_subject = payload.emailSubject || null;
       clientUpdate.email_body = payload.emailBody || null;
       if (result.ok) {
         counts.sent++;
         sentSomething = true;
+        org.room.emails--;
+        await recordUsage(row.org_id, 'emails');
         if (replyTo) await seedEmailConversationFromLead(row.org_id, client, row.id, payload.emailSubject).catch(() => {});
       } else counts.failed++;
     }
@@ -473,8 +517,9 @@ export async function processMessageQueue(options: { budgetMs: number; onlyOrgId
 
     // Queue the follow-up for leads this first message reached: by email when they have one,
     // and on WhatsApp too when it reached them there and the org has a follow-up template.
+    // A row with a channel held by a monthly limit queues it on the pass that sends the rest.
     const waFollowSettings = clientUpdate.whatsapp_status === 'Sent' ? followupWhatsAppSettings(org.settings) : null;
-    if (sentSomething && (row.step || 1) === 1 && campaign.followup_days && (client.email || waFollowSettings)) {
+    if (sentSomething && !heldWhatsApp && !heldEmail && (row.step || 1) === 1 && campaign.followup_days && (client.email || waFollowSettings)) {
       const followAt = new Date(Date.now() + campaign.followup_days * 24 * 3_600_000);
       const followTemplate = campaign.followup_template || campaign.template || {};
       await supabase.from('campaign_recipients').insert({

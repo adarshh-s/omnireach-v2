@@ -7,6 +7,7 @@ import { seedEmailConversationFromLead, buildEmailReplyToAddress } from './email
 import { enqueueRetryCall } from './callQueue.js';
 import { isSuppressed } from './suppression.js';
 import { withComplianceFooter, unsubscribeHeaders } from './emailCompliance.js';
+import { recordUsage } from './usage.js';
 import { DEFAULT_VOICE_FALLBACK_MESSAGE, type ChannelApiSettings, type CampaignSettings } from '../src/types.js';
 
 /**
@@ -144,6 +145,7 @@ async function sendFallbackMessage(row: any, settings: ChannelApiSettings | null
       templateParams: settings!.whatsappMessageMode === 'template' ? (templateVars || []).map((v) => fillTokens(v, lead, profile)) : undefined,
     });
     if (result.delivered) {
+      await recordUsage(row.org_id, 'whatsapp');
       if (result.provider === 'cloud_api') await seedConversationFromLead(row.org_id, lead, null).catch(() => {});
       return setFollowUp(row.id, { followup_status: 'fallback_whatsapp', followup_detail: null });
     }
@@ -163,8 +165,10 @@ async function sendFallbackMessage(row: any, settings: ChannelApiSettings | null
       fromName: profile?.senderName || profile?.companyName || 'OmniReach AI',
       fromAddress: profile?.senderEmail,
       replyTo,
+      orgId: row.org_id,
     });
     if (result.ok) {
+      await recordUsage(row.org_id, 'emails');
       if (replyTo) await seedEmailConversationFromLead(row.org_id, lead, null, subject).catch(() => {});
       return setFollowUp(row.id, { followup_status: 'fallback_email', followup_detail: problems.join(' · ') || null });
     }

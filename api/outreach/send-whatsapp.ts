@@ -9,6 +9,7 @@ import {
 } from '../../lib/messageQueue.js';
 import { processCrmEvents } from '../../lib/crm/index.js';
 import { sendCampaignWhatsAppMessage } from '../../lib/whatsappCampaignSender.js';
+import { recordUsage, usageRoom, limitReachedMessage } from '../../lib/usage.js';
 
 interface ApiRequest {
   method?: string;
@@ -37,6 +38,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const resolved = await settingsForSendRequest(req.headers?.authorization as string | undefined, channelSettings);
     if (!resolved.ok) return res.status(401).json({ error: 'Sign in required.', errorDetail: 'Sign in required.' });
     const { orgId, settings } = resolved;
+    if (orgId && (await usageRoom(orgId, 'whatsapp')) <= 0) {
+      return res.status(200).json({
+        success: true,
+        delivered: false,
+        errorDetail: limitReachedMessage('whatsapp'),
+        directUrl: `https://wa.me/${String(lead?.phone || '').replace(/\D/g, '')}`,
+        limitReached: true,
+      });
+    }
 
     const result = await sendCampaignWhatsAppMessage(settings, {
       toPhone: lead?.phone || '',
@@ -46,6 +56,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       webhookContext: lead,
     });
 
+    if (result.delivered && result.provider !== 'web_direct') await recordUsage(orgId, 'whatsapp');
     // Fire-and-forget: let the AI booking bot know this lead once they reply (Meta Cloud
     // API only — the inbound webhook the bot listens on is Meta-specific).
     if (result.provider === 'cloud_api' && result.delivered && orgId) {

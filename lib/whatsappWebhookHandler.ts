@@ -16,6 +16,7 @@ import { emitCrmEvent } from './crm/index.js';
 import { sendSlackNotification } from './slackNotifier.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
+import { recordUsage } from './usage.js';
 
 /**
  * Verifies Meta's X-Hub-Signature-256 header (HMAC-SHA256 of the raw request body, keyed
@@ -331,7 +332,8 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
         .eq('id', existing.campaign_recipient_id);
     }
 
-    await sendWhatsAppText(orgChannelSettings?.whatsappCloudApiKey, orgChannelSettings?.whatsappCloudPhoneId, fromPhone, OPT_OUT_REPLY);
+    const optOutSent = await sendWhatsAppText(orgChannelSettings?.whatsappCloudApiKey, orgChannelSettings?.whatsappCloudPhoneId, fromPhone, OPT_OUT_REPLY);
+    if (optOutSent.ok) await recordUsage(orgId, 'whatsapp');
     conversationFinished = true;
     return;
   }
@@ -506,6 +508,9 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
   if (!sendResult.ok) {
     console.error('[WhatsApp Bot] Failed to send auto-reply:', sendResult.error);
   }
+  // Replies to someone already talking to the bot are counted but never held by a limit.
+  if (sendResult.ok) await recordUsage(orgId, 'whatsapp');
+  if (ai) await recordUsage(orgId, 'ai');
   conversationFinished = finalStatus !== 'active' && finalStatus !== existing?.status;
   }
 }

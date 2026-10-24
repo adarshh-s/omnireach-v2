@@ -14,18 +14,41 @@ export interface AuthState {
   orgRole: OrgRole | null;
   /** Invited teammates arrive signed in from the invite link but with no password yet. */
   needsPassword: boolean;
+  /** Signed in from a "forgot password" email link — they choose a new password first. */
+  recoveringPassword: boolean;
   accessToken: string | null;
   loading: boolean;
   setPassword: (password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string) => Promise<{ error: string | null }>;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  /** Emails a link that signs them in to choose a new password. */
+  sendPasswordReset: (email: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
 }
+
+const RECOVERY_KEY = 'omnireach_password_recovery';
 
 export function useAuth(): AuthState {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(isSupabaseBrowserConfigured);
   const [org, setOrg] = useState<{ forUser: string; orgId: string; role: OrgRole } | null>(null);
+  // Kept for the tab, so a refresh on the new-password screen doesn't drop them into the app.
+  const [recovering, setRecovering] = useState(() => {
+    try {
+      return sessionStorage.getItem(RECOVERY_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const markRecovering = (on: boolean) => {
+    setRecovering(on);
+    try {
+      if (on) sessionStorage.setItem(RECOVERY_KEY, '1');
+      else sessionStorage.removeItem(RECOVERY_KEY);
+    } catch {
+      // storage unavailable: the flag just lives in memory
+    }
+  };
 
   useEffect(() => {
     if (!supabase) return;
@@ -35,7 +58,9 @@ export function useAuth(): AuthState {
       setLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (event === 'PASSWORD_RECOVERY') markRecovering(true);
+      if (event === 'SIGNED_OUT') markRecovering(false);
       setSession(newSession);
     });
 
@@ -65,12 +90,14 @@ export function useAuth(): AuthState {
     user: session?.user ?? null,
     orgId: userId && orgReady ? org!.orgId : null,
     orgRole: userId && orgReady ? org!.role : null,
-    needsPassword: !!session?.user?.user_metadata?.needs_password,
+    needsPassword: !!session?.user?.user_metadata?.needs_password || (!!session && recovering),
+    recoveringPassword: !!session && recovering,
     accessToken: session?.access_token ?? null,
     loading: loading || !orgReady,
     setPassword: async (password) => {
       if (!supabase) return { error: 'Not configured' };
       const { error } = await supabase.auth.updateUser({ password, data: { needs_password: false } });
+      if (!error) markRecovering(false);
       return { error: error?.message ?? null };
     },
     signUp: async (email, password) => {
@@ -81,6 +108,13 @@ export function useAuth(): AuthState {
     signIn: async (email, password) => {
       if (!supabase) return { error: 'Not configured' };
       const { error } = await supabase.auth.signInWithPassword({ email, password });
+      return { error: error?.message ?? null };
+    },
+    sendPasswordReset: async (email) => {
+      if (!supabase) return { error: 'Not configured' };
+      // The link comes back to this app; its URL must be in Supabase → Authentication → URL
+      // Configuration → Redirect URLs.
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
       return { error: error?.message ?? null };
     },
     signOut: async () => {

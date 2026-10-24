@@ -21,6 +21,9 @@ export interface SendEmailParams {
   /** Extra headers, e.g. one-click unsubscribe (lib/emailCompliance.ts). Outlook (Graph)
    * only accepts X- headers, so it relies on the footer link instead. */
   headers?: Record<string, string>;
+  /** The sending org — tagged on Resend sends, so Resend's bounce/complaint webhook can find
+   * the org even for mail from the shared platform address (lib/emailBounces.ts). */
+  orgId?: string | null;
   /** Only used when settings.emailProvider === 'webhook'. */
   webhookUrl?: string;
   webhookContext?: unknown;
@@ -94,6 +97,7 @@ export async function sendEmailViaOrgProvider(
           html,
           ...(replyTo ? { reply_to: replyTo } : {}),
           ...(headers ? { headers } : {}),
+          ...(params.orgId ? { tags: [{ name: 'org_id', value: params.orgId }] } : {}),
         }),
       });
       const text = await res.text();

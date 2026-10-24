@@ -19,6 +19,9 @@ export default {
         from: message.from,
         subject: parsed.subject || '',
         text: parsed.text || parsed.html || '',
+        // Raw "Name: value" lines, same shape as SendGrid's `headers` field — lets the app
+        // tell bounces and out-of-office replies from real replies.
+        headers: (parsed.headers || []).map((h) => `${h.key}: ${h.value}`).join('\n'),
       };
 
       const url = `${env.INBOUND_WEBHOOK_BASE_URL}?token=${encodeURIComponent(env.INBOUND_WEBHOOK_TOKEN)}`;
