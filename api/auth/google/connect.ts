@@ -3,6 +3,7 @@ import { buildGoogleAuthUrl, isGoogleOAuthConfigured } from '../../../lib/google
 import { buildMicrosoftAuthUrl, isMicrosoftOAuthConfigured } from '../../../lib/microsoftOAuthFlow.js';
 import { buildGmailAuthUrl, buildOutlookMailAuthUrl } from '../../../lib/emailOAuth.js';
 import { buildCrmAuthUrl, isCrmProvider, CRM_LABEL } from '../../../lib/crm/index.js';
+import { isOAuthStateConfigured } from '../../../lib/googleOAuthState.js';
 
 interface ApiRequest {
   method?: string;
@@ -25,6 +26,9 @@ interface ApiResponse {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+  if (!isOAuthStateConfigured()) {
+    return res.status(500).json({ error: 'Connecting accounts is not set up yet — OAUTH_STATE_SECRET is missing on the server.' });
   }
 
   const authHeader = req.headers?.authorization as string | undefined;

@@ -34,7 +34,8 @@ interface SheetsViewProps {
   onAddLead: (lead: Lead) => void;
   onUpdateLead: (lead: Lead) => void;
   onDeleteLead: (id: string) => void;
-  onResetLeads: () => void;
+  /** Only in demo mode (no workspace) — swaps the leads for the sample ones. */
+  onResetLeads?: () => void;
   onSelectLeadForSimulator: (leadId: string) => void;
   onOpenExcelUpload: () => void;
   onStartCampaignWithSelected?: (selectedIds: string[]) => void;
@@ -194,15 +195,19 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
               <Upload className="w-3.5 h-3.5" />
               <span>Import Leads</span>
             </button>
+            {onResetLeads && (
             <button
               id="sheet-reset-btn"
-              onClick={onResetLeads}
+              onClick={() => {
+                if (window.confirm('Replace all leads with the sample leads?')) onResetLeads();
+              }}
               className="p-2 rounded-full text-ink-muted hover:text-ink hover:bg-surface-hover border border-border-strong transition-colors"
               title="Replace all leads with the sample leads"
               aria-label="Replace all leads with the sample leads"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
+            )}
           </>
         }
       />

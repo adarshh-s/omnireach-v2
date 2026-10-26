@@ -138,10 +138,28 @@ function AppContent({ auth }: { auth: AuthState }) {
     if (!userId || loadedClientsForUser.current === userId) return;
     loadedClientsForUser.current = userId;
     cloudClientsReadyRef.current = false;
-    cloudClients.loadClients().then((loaded) => {
-      if (loaded !== null) setLeads(loaded);
-      cloudClientsReadyRef.current = true;
-    });
+    // Syncing only starts once the org's real leads have loaded — a failed load (network
+    // blip) must never let the sample leads or another session's leftovers be uploaded
+    // into this org. It retries instead, backing off up to 30s.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = (attempt: number) => {
+      cloudClients.loadClients().then((loaded) => {
+        if (cancelled) return;
+        if (loaded === null) {
+          timer = setTimeout(() => load(attempt + 1), Math.min(30_000, 2_000 * 2 ** attempt));
+          return;
+        }
+        setLeads(loaded);
+        cloudClientsReadyRef.current = true;
+      });
+    };
+    load(0);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (loadedClientsForUser.current === userId) loadedClientsForUser.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.orgId]);
 
@@ -576,7 +594,8 @@ function AppContent({ auth }: { auth: AuthState }) {
             onAddLead={handleAddLead}
             onUpdateLead={handleUpdateLead}
             onDeleteLead={handleDeleteLead}
-            onResetLeads={handleResetLeads}
+            // Demo mode only: in a real workspace this would replace (and delete) the org's leads.
+            onResetLeads={auth.orgId ? undefined : handleResetLeads}
             onSelectLeadForSimulator={handleOpenLeadInSimulator}
             onOpenExcelUpload={() => setIsExcelModalOpen(true)}
             onStartCampaignWithSelected={handleStartCampaignWithSelected}

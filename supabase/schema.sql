@@ -433,6 +433,8 @@ create policy "org can read own access status" on org_access
 -- No insert/update/delete policy for the authenticated role on purpose — only the
 -- service role (which bypasses RLS entirely, used server-side only) can write here.
 
+-- Every new signup starts locked — no email is special-cased. The platform admin (ADMIN_EMAIL)
+-- gets past the lock screen anyway and unlocks workspaces, their own included, from Admin.
 create or replace function handle_new_org_access()
 returns trigger
 language plpgsql
@@ -441,7 +443,7 @@ set search_path = public
 as $$
 begin
   insert into org_access (org_id, status)
-  values (new.id, case when new.email = 'admin@test.com' then 'active' else 'locked' end)
+  values (new.id, 'locked')
   on conflict (org_id) do nothing;
   return new;
 end;

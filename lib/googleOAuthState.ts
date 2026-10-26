@@ -10,8 +10,19 @@ const PURPOSES: OAuthPurpose[] = ['calendar', 'email', 'crm-hubspot', 'crm-zoho'
 
 /** `purpose` lets the calendar and email-sending connect flows share one redirect URI per
  * provider — the callback reads it back to know which one it's finishing. */
+/** The signing key. Without one, anyone could forge a state and connect their own account to
+ * another org — so signing refuses and verifying rejects everything. */
+function stateSecret(): string | null {
+  return process.env.OAUTH_STATE_SECRET?.trim() || null;
+}
+
+export function isOAuthStateConfigured(): boolean {
+  return !!stateSecret();
+}
+
 export function signOAuthState(orgId: string, purpose: OAuthPurpose = 'calendar'): string {
-  const secret = process.env.OAUTH_STATE_SECRET || '';
+  const secret = stateSecret();
+  if (!secret) throw new Error('OAUTH_STATE_SECRET is not set on the server.');
   const subject = purpose === 'calendar' ? orgId : `${orgId}~${purpose}`;
   const payload = `${subject}.${Date.now()}`;
   const signature = crypto.createHmac('sha256', secret).update(payload).digest('hex');
@@ -25,8 +36,8 @@ export function verifyOAuthState(state: string | undefined): string | null {
 }
 
 export function verifyOAuthStateWithPurpose(state: string | undefined): { orgId: string; purpose: OAuthPurpose } | null {
-  if (!state) return null;
-  const secret = process.env.OAUTH_STATE_SECRET || '';
+  const secret = stateSecret();
+  if (!state || !secret) return null;
   try {
     const decoded = Buffer.from(state, 'base64url').toString('utf8');
     const parts = decoded.split('.');
