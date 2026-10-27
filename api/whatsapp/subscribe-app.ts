@@ -17,6 +17,8 @@ import { getSupabaseAdmin } from '../../lib/supabaseAdmin.js';
 import { listPhoneNumbers } from '../../lib/vapiClient.js';
 import { enableInboundCalls, getPublicBaseUrl } from '../../lib/voiceCalls.js';
 import { getOrgUsage, adminUsageByOrg, setOrgLimits } from '../../lib/usage.js';
+import { logAudit, listAudit } from '../../lib/auditLog.js';
+import { exportLeadData, eraseLeadData } from '../../lib/leadData.js';
 
 interface ApiRequest {
   method?: string;
@@ -46,7 +48,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const user = await getUserFromAuthHeader(authHeader);
     if (!user) return res.status(401).json({ error: 'Sign in required.' });
     if (!isAdminEmail(user.email)) return res.status(403).json({ error: 'Not authorized.' });
-    return handleAdminAction(action, req, res);
+    return handleAdminAction(action, req, res, { userId: user.id, email: user.email || null });
   }
 
   const caller = await getCallerFromAuthHeader(authHeader);
@@ -54,6 +56,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
   const orgId = caller.orgId;
+  const actor = { userId: caller.userId, email: caller.email };
+  const audit = (action: string, target?: string | null, detail?: Record<string, unknown>) => logAudit(orgId, actor, action, target, detail);
 
   if (req.method === 'GET') {
     if (action === 'health') return res.status(200).json(await checkChannelHealth(orgId));
@@ -62,6 +66,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (action === 'do-not-contact') return res.status(200).json(await listSuppression(orgId));
     if (action === 'crm') return res.status(200).json(await crmStatus(orgId));
     if (action === 'usage') return res.status(200).json(await getOrgUsage(orgId));
+    if (action === 'audit-log') {
+      if (caller.role === 'member') return res.status(403).json({ error: 'Only the workspace owner or an admin can see the activity log.' });
+      return res.status(200).json({ entries: await listAudit(orgId) });
+    }
+    if (action === 'lead-export') {
+      const result = await exportLeadData(orgId, actor, String(req.query?.id || ''));
+      return res.status(result.ok ? 200 : 404).json(result);
+    }
     // Not a credential — Meta's webhook handshake echo string, which orgs paste into their own
     // Meta App's webhook config. The real access control is the X-Hub-Signature-256 check.
     return res.status(200).json({ verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null });
@@ -77,28 +89,45 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   switch (action) {
     case 'team-invite': {
       const redirectTo = getPublicBaseUrl(req.headers) || process.env.APP_URL?.trim() || undefined;
-      return respond(await inviteTeamMember(caller, body.email, body.role === 'admin' ? 'admin' : 'member', redirectTo));
+      const result = await inviteTeamMember(caller, body.email, body.role === 'admin' ? 'admin' : 'member', redirectTo);
+      if (result.ok) await audit('team.invited', String(body.email || ''), { role: body.role === 'admin' ? 'admin' : 'member' });
+      return respond(result);
     }
-    case 'team-remove':
-      return respond(await removeTeamMember(caller, body.userId));
+    case 'team-remove': {
+      const result = await removeTeamMember(caller, body.userId);
+      if (result.ok) await audit('team.removed', String(body.userId || ''));
+      return respond(result);
+    }
+    case 'lead-erase': {
+      // Deleting everything about a person can't be undone — owner/admin only.
+      if (caller.role === 'member') return res.status(403).json({ ok: false, error: 'Only the workspace owner or an admin can erase a lead’s data.' });
+      return respond(await eraseLeadData(orgId, actor, String(body.clientId || ''), body.keepOnDoNotContact !== false));
+    }
     case 'email-domain-add':
+      await audit('email_domain.added', String(body.domain || ''));
       return respond(await addOrgEmailDomain(orgId, body.domain, body.fromAddress));
     case 'email-domain-verify':
       return respond(await verifyOrgEmailDomain(orgId));
     case 'email-domain-from':
       return respond(await updateOrgEmailFromAddress(orgId, body.fromAddress));
     case 'email-domain-remove':
+      await audit('email_domain.removed');
       return respond(await removeOrgEmailDomain(orgId));
-    case 'do-not-contact-add':
-      return res.status(200).json({ ok: true, ...(await addManyToSuppression(orgId, String(body.values || ''))) });
+    case 'do-not-contact-add': {
+      const added = await addManyToSuppression(orgId, String(body.values || ''));
+      await audit('do_not_contact.added', null, { added: added.added });
+      return res.status(200).json({ ok: true, ...added });
+    }
     case 'do-not-contact-remove':
       // Taking someone off the list lets campaigns contact them again — owner/admin only.
       if (caller.role === 'member') return res.status(403).json({ ok: false, error: 'Only the workspace owner or an admin can remove entries.' });
       await removeFromSuppression(orgId, String(body.id || ''));
+      await audit('do_not_contact.removed', String(body.id || ''));
       return res.status(200).json({ ok: true });
     case 'crm-disconnect':
       if (caller.role === 'member') return res.status(403).json({ ok: false, error: 'Only the workspace owner or an admin can disconnect the CRM.' });
       await disconnectCrm(orgId);
+      await audit('crm.disconnected');
       return res.status(200).json({ ok: true });
     case 'crm-sync':
       await processCrmEvents({ budgetMs: 20000, onlyOrgId: orgId });
@@ -106,12 +135,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     case 'crm-import':
       try {
         const result = await importFromCrm(orgId, Math.min(2000, Number(body.limit) || 500));
+        await audit('crm.imported', null, { imported: (result as any).imported ?? null });
         return res.status(200).json({ ok: true, ...result });
       } catch (err: any) {
         return res.status(400).json({ ok: false, error: err?.message || 'Could not import from the CRM.' });
       }
     case 'email-oauth-disconnect':
       await disconnectEmailOAuth(orgId);
+      await audit('email_account.disconnected');
       return res.status(200).json({ ok: true });
   }
 
@@ -128,7 +159,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   return res.status(result.ok ? 200 : 400).json(result);
 }
 
-async function handleAdminAction(action: string, req: ApiRequest, res: ApiResponse) {
+async function handleAdminAction(action: string, req: ApiRequest, res: ApiResponse, admin: { userId: string; email: string | null }) {
   if (action === 'admin-list-orgs') {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
     const [orgs, usage] = await Promise.all([adminListOrgs(), adminUsageByOrg()]);
@@ -150,7 +181,9 @@ async function handleAdminAction(action: string, req: ApiRequest, res: ApiRespon
 
   // Monthly limits per org (lib/usage.ts); a blank field means no limit.
   if (action === 'admin-set-limits') {
-    return res.status(200).json({ ok: true, limits: await setOrgLimits(targetOrgId, req.body?.limits || {}) });
+    const limits = await setOrgLimits(targetOrgId, req.body?.limits || {});
+    await logAudit(targetOrgId, admin, 'admin.limits_changed', null, limits);
+    return res.status(200).json({ ok: true, limits });
   }
 
   if (action === 'admin-set-org-access') {
@@ -158,6 +191,7 @@ async function handleAdminAction(action: string, req: ApiRequest, res: ApiRespon
       return res.status(400).json({ error: 'A status of "active" or "locked" is required.' });
     }
     await adminSetOrgAccess(targetOrgId, status);
+    await logAudit(targetOrgId, admin, status === 'active' ? 'admin.unlocked' : 'admin.locked');
     return res.status(200).json({ ok: true });
   }
 

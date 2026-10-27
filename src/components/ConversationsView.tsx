@@ -14,6 +14,10 @@ import {
   ChevronUp,
   RefreshCw,
   AlertTriangle,
+  Send,
+  PauseCircle,
+  PlayCircle,
+  Loader2,
 } from 'lucide-react';
 import { Lead } from '../types';
 
@@ -21,6 +25,11 @@ interface ConversationTurn {
   role: 'user' | 'assistant';
   text: string;
   timestamp: string;
+  /** 'human': written by a teammate from this inbox (lib/inboxActions.ts). */
+  by?: 'human';
+  author?: string | null;
+  /** 'reminder': an automatic meeting reminder. */
+  kind?: 'reminder';
 }
 
 interface RawConversation {
@@ -54,6 +63,9 @@ interface RawConversation {
   // Email only: the latest out-of-office / automatic reply (not counted as a reply)
   last_auto_reply_at?: string | null;
   last_auto_reply?: string | null;
+  // WhatsApp/email: a teammate took over — the AI doesn't reply until resumed
+  ai_paused?: boolean;
+  ai_paused_by?: string | null;
 }
 
 interface UnifiedConversation extends RawConversation {
@@ -127,6 +139,99 @@ function formatDuration(seconds?: number): string | null {
   if (seconds == null) return null;
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
+
+const WHATSAPP_WINDOW_MS = 24 * 3_600_000;
+
+/** Reply as a person and pause/resume the AI for one WhatsApp or email conversation. */
+const TakeoverBar: React.FC<{
+  conv: UnifiedConversation;
+  accessToken?: string | null;
+  onUpdated: (conv: RawConversation) => void;
+}> = ({ conv, accessToken, onUpdated }) => {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState<'reply' | 'pause' | 'resume' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const lastFromLead = Math.max(0, ...(conv.history || []).filter((h) => h.role === 'user').map((h) => new Date(h.timestamp).getTime()));
+  const whatsappClosed = conv.channel === 'whatsapp' && (!lastFromLead || Date.now() - lastFromLead > WHATSAPP_WINDOW_MS);
+
+  const run = async (op: 'reply' | 'pause' | 'resume') => {
+    if (!accessToken) return;
+    setBusy(op);
+    setError(null);
+    try {
+      const res = await fetch('/api/conversations?action=inbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ op, channel: conv.channel, id: conv.id, text: op === 'reply' ? text : undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data?.error || 'That did not work — try again.');
+      if (data.conversation) onUpdated(data.conversation);
+      if (op === 'reply') setText('');
+    } catch (err: any) {
+      setError(err?.message || 'That did not work — try again.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="border-t border-border bg-surface/40 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-[11px] text-ink-muted">
+          {conv.ai_paused
+            ? `The AI is paused${conv.ai_paused_by ? ` — ${conv.ai_paused_by} is handling this` : ''}. New messages from the lead wait for you here.`
+            : 'The AI is answering this conversation. Reply yourself to take over.'}
+        </p>
+        <button
+          type="button"
+          onClick={() => run(conv.ai_paused ? 'resume' : 'pause')}
+          disabled={!!busy}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-border-strong text-ink-secondary hover:text-ink hover:bg-surface-hover disabled:opacity-50"
+        >
+          {busy === 'pause' || busy === 'resume' ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : conv.ai_paused ? (
+            <PlayCircle className="w-3 h-3" />
+          ) : (
+            <PauseCircle className="w-3 h-3" />
+          )}
+          {conv.ai_paused ? 'Hand back to AI' : 'Pause AI'}
+        </button>
+      </div>
+      {whatsappClosed ? (
+        <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1.5">
+          WhatsApp only allows a free reply within 24 hours of the lead's last message — it's been longer. Contact them by email or phone, or wait for them to write.
+        </p>
+      ) : (
+        <div className="flex items-end gap-2">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim()) run('reply');
+            }}
+            rows={2}
+            maxLength={4000}
+            placeholder={conv.channel === 'email' ? 'Write an email reply…' : 'Write a WhatsApp reply…'}
+            className="flex-1 resize-none bg-canvas border border-border rounded-xl px-3 py-2 text-xs text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-[#128C7E]/30"
+          />
+          <button
+            type="button"
+            onClick={() => run('reply')}
+            disabled={!text.trim() || !!busy}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-brand-strong text-white text-xs font-semibold hover:bg-[#0d6e62] disabled:opacity-40"
+          >
+            {busy === 'reply' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            Send
+          </button>
+        </div>
+      )}
+      {error && <p className="text-[11px] text-rose-400">{error}</p>}
+    </div>
+  );
+};
 
 export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onUpdateLead, accessToken }) => {
   const [conversations, setConversations] = useState<UnifiedConversation[]>([]);
@@ -329,6 +434,12 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                           <StatusIcon className="w-3 h-3" />
                           {style.label}
                         </span>
+                        {conv.ai_paused && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1">
+                            <PauseCircle className="w-3 h-3" />
+                            AI paused
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-ink-muted mt-0.5 font-mono">
                         {conv.channel === 'whatsapp' ? `+${conv.contact}` : conv.contact}
@@ -353,7 +464,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                       )}
                       {lastTurn && (
                         <p className="text-xs text-ink-secondary mt-1.5 truncate max-w-lg">
-                          <span className="font-medium">{lastTurn.role === 'user' ? 'Them: ' : 'Bot: '}</span>
+                          <span className="font-medium">{lastTurn.role === 'user' ? 'Them: ' : lastTurn.by === 'human' ? 'You: ' : 'Bot: '}</span>
                           {lastTurn.text}
                         </p>
                       )}
@@ -422,8 +533,13 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                     {(conv.history || []).map((turn, idx) => (
                       <div
                         key={idx}
-                        className={`flex ${turn.role === 'user' ? 'justify-start' : 'justify-end'}`}
+                        className={`flex flex-col ${turn.role === 'user' ? 'items-start' : 'items-end'}`}
                       >
+                        {(turn.by === 'human' || turn.kind === 'reminder') && (
+                          <span className="text-[10px] text-ink-muted mb-0.5">
+                            {turn.by === 'human' ? `${turn.author || 'Your team'} (sent by hand)` : 'Automatic meeting reminder'}
+                          </span>
+                        )}
                         <div
                           className={`max-w-[75%] px-3.5 py-2 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${
                             turn.role === 'user'
@@ -436,6 +552,15 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ leads, onU
                       </div>
                     ))}
                   </div>
+                )}
+                {isExpanded && (conv.channel === 'whatsapp' || conv.channel === 'email') && (
+                  <TakeoverBar
+                    conv={conv}
+                    accessToken={accessToken}
+                    onUpdated={(updated) =>
+                      setConversations((prev) => prev.map((c) => (c.id === conv.id && c.channel === conv.channel ? { ...c, ...updated } : c)))
+                    }
+                  />
                 )}
               </div>
             );

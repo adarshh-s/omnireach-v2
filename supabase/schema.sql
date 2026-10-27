@@ -963,3 +963,35 @@ create index if not exists idx_voice_calls_meeting on voice_calls(meeting_dateti
 -- automatic replies are logged here instead of counting as a reply or getting an AI answer.
 alter table email_conversations add column if not exists last_auto_reply_at timestamptz;
 alter table email_conversations add column if not exists last_auto_reply text;
+
+-- ---------------------------------------------------------------------------
+-- Human takeover in the AI Inbox (lib/inboxActions.ts): a teammate can reply in place of the
+-- AI and pause it per conversation; the AI pauses itself when it hands over ("Needs a Human").
+-- While paused, the lead's messages are still saved and the team is alerted
+-- (lib/teamAlerts.ts, at most once per 30 minutes per conversation).
+-- ---------------------------------------------------------------------------
+alter table whatsapp_conversations add column if not exists ai_paused boolean not null default false;
+alter table whatsapp_conversations add column if not exists ai_paused_by text;
+alter table whatsapp_conversations add column if not exists team_alerted_at timestamptz;
+alter table email_conversations add column if not exists ai_paused boolean not null default false;
+alter table email_conversations add column if not exists ai_paused_by text;
+alter table email_conversations add column if not exists team_alerted_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Activity log (lib/auditLog.ts): campaigns started/paused, team changes, do-not-contact
+-- edits, CRM connections, lead data exported or erased, teammates replying in place of the
+-- AI, and the platform admin's access/limit changes. Written only by the server; the org's
+-- owner and admins read it on the Team page (the API checks the role).
+-- ---------------------------------------------------------------------------
+create table if not exists audit_log (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references auth.users(id) on delete cascade,
+  actor_user_id uuid references auth.users(id) on delete set null,
+  actor_email text,
+  action text not null,
+  target text,
+  detail jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_audit_log_org on audit_log(org_id, created_at desc);
+alter table audit_log enable row level security;

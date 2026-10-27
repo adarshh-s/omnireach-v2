@@ -17,6 +17,7 @@ import {
   ExternalLink,
   Edit2,
   Trash2,
+  ShieldCheck,
   FileSpreadsheet,
   Upload,
   AlertTriangle,
@@ -28,6 +29,7 @@ import {
 import { Lead, LeadStatus, ChannelDeliveryStatus } from '../types';
 import { exportLeadsToExcel, sanitizePhoneNumber } from '../utils/excelParser';
 import { AdvancedSection } from './AdvancedSection';
+import { LeadPrivacyDialog } from './LeadPrivacyDialog';
 
 interface SheetsViewProps {
   leads: Lead[];
@@ -41,6 +43,9 @@ interface SheetsViewProps {
   onStartCampaignWithSelected?: (selectedIds: string[]) => void;
   /** Falls back to +91 (matching excelParser's own default) when not provided. */
   defaultCountryCode?: string;
+  /** Signed-in workspace: enables data export/erase requests per lead. */
+  accessToken?: string | null;
+  canEraseLeads?: boolean;
 }
 
 export const SheetsView: React.FC<SheetsViewProps> = ({
@@ -53,8 +58,11 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
   onOpenExcelUpload,
   onStartCampaignWithSelected,
   defaultCountryCode,
+  accessToken,
+  canEraseLeads = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [privacyLead, setPrivacyLead] = useState<Lead | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [filterChannel, setFilterChannel] = useState<string>('ALL');
   const [isAddingLead, setIsAddingLead] = useState(false);
@@ -780,9 +788,22 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
 
+                          {/* Data-protection request: export or erase */}
+                          {accessToken && (
+                            <button
+                              onClick={() => setPrivacyLead(lead)}
+                              className="p-1.5 text-ink-muted hover:text-ink hover:bg-canvas rounded-md transition-colors"
+                              title="Privacy request (export or erase their data)"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Delete */}
                           <button
-                            onClick={() => onDeleteLead(lead.id)}
+                            onClick={() => {
+                              if (window.confirm(`Delete ${lead.name || 'this lead'}? Their campaign history goes too.`)) onDeleteLead(lead.id);
+                            }}
                             className="p-1.5 text-ink-muted hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
                             title="Delete Contact"
                           >
@@ -804,6 +825,15 @@ export const SheetsView: React.FC<SheetsViewProps> = ({
           </table>
         </div>
       </div>
+      )}
+      {privacyLead && (
+        <LeadPrivacyDialog
+          lead={privacyLead}
+          accessToken={accessToken}
+          canErase={canEraseLeads}
+          onClose={() => setPrivacyLead(null)}
+          onErased={(id) => onDeleteLead(id)}
+        />
       )}
     </div>
   );

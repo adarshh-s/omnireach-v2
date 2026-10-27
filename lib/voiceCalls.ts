@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
+import { safeEqual } from './security.js';
 import {
   getOrgChannelSettings,
   saveOrgVoice,
@@ -19,6 +20,7 @@ import { optOutClient } from './suppression.js';
 import { emitCrmEvent } from './crm/index.js';
 import { needsAiDisclosure, legalRegion } from './regionRules.js';
 import { recordUsage, usageRoom, limitReachedMessage } from './usage.js';
+import { meetingRulesFor, checkMeetingTime, meetingRulesPrompt } from './bookingRules.js';
 import type { ChannelApiSettings } from '../src/types.js';
 
 /**
@@ -32,6 +34,31 @@ import type { ChannelApiSettings } from '../src/types.js';
  * org-provisioned assistants have none at all. Attaching `server` + the book_meeting tool
  * on every call means call results always land here, whatever the assistant says.
  */
+
+/** Hands the call to a person on the org's team (Channel Setup → Voice → transfer number). */
+export function transferTool(number: string) {
+  return {
+    type: 'transferCall',
+    destinations: [
+      {
+        type: 'number',
+        number,
+        message: "Sure — I'll connect you with someone from the team now. One moment.",
+        description: 'A person on the team, for callers who ask to speak to a human or need something the assistant cannot answer.',
+      },
+    ],
+  };
+}
+
+export function withoutTransferTool(overrides: Record<string, any> | undefined): Record<string, any> | undefined {
+  if (!overrides?.model?.tools) return overrides;
+  return { ...overrides, model: { ...overrides.model, tools: overrides.model.tools.filter((t: any) => t?.type !== 'transferCall') } };
+}
+
+export function validTransferNumber(value: string | undefined | null): string | null {
+  const n = (value || '').replace(/[\s()-]/g, '');
+  return /^\+[1-9]\d{6,14}$/.test(n) ? n : null;
+}
 
 const DO_NOT_CONTACT_TOOL = {
   type: 'function',
@@ -59,7 +86,7 @@ export function noticeSentence(notice: CallNotice): string {
   return '';
 }
 
-function noticeForLead(settings: ChannelApiSettings | null | undefined, country: string | null | undefined, phone: string | null | undefined): CallNotice {
+export function noticeForLead(settings: ChannelApiSettings | null | undefined, country: string | null | undefined, phone: string | null | undefined): CallNotice {
   // voiceAiDisclosure: false is the earlier on/off switch — read as "never".
   const mode = settings?.voiceAiDisclosureMode || (settings?.voiceAiDisclosure === false ? 'never' : 'required');
   return { ai: needsAiDisclosure(mode, country, phone), recording: settings?.voiceRecordingNotice !== false };
@@ -92,8 +119,7 @@ export interface ApiResult {
  * a `?token=` query string (this app's other webhooks' pattern) — either verifies. */
 export function verifyVapiWebhook(headerSecret: unknown, queryToken: unknown): boolean {
   const expected = process.env.VAPI_WEBHOOK_SECRET;
-  if (!expected) return false;
-  return headerSecret === expected || queryToken === expected;
+  return safeEqual(headerSecret, expected) || safeEqual(queryToken, expected);
 }
 
 /** The public origin Vapi should post call events back to. APP_URL wins when it's a real
@@ -109,32 +135,48 @@ export function getPublicBaseUrl(headers: Record<string, string | string[] | und
   return `${proto}://${host}`;
 }
 
-interface CallLead {
+export interface CallLead {
   name?: string;
   company?: string;
   email?: string;
   country?: string;
 }
 
-async function buildCallOverrides(
+export async function buildCallOverrides(
   orgId: string,
   org: VapiCredentials,
   baseUrl: string | null,
   lead: CallLead,
   language: VoiceLanguageOverrides | null,
   notice: CallNotice,
-  inbound?: { callerNumber?: string; knownCaller: boolean; companyName?: string }
+  inbound?: { callerNumber?: string; knownCaller: boolean; companyName?: string },
+  /** A browser test call (lib/voiceTest.ts): the webhook is reached with a short-lived test
+   * token instead of the real secret (which must never reach the browser), and the call
+   * context still applies when there's no public URL (local dev) — just without tools. */
+  test?: { token: string | null }
 ): Promise<Record<string, unknown> | undefined> {
   // The org's chosen language swaps how the caller is heard and the voice that speaks —
   // applied even when the webhook can't be attached (local dev).
   const languageFields = language ? { transcriber: language.transcriber, voice: language.voice } : {};
   const secret = process.env.VAPI_WEBHOOK_SECRET;
-  if (!baseUrl || !secret) return language ? languageFields : undefined;
+  const server = test
+    ? baseUrl && test.token
+      ? { url: `${baseUrl}/api/voice/vapi?action=webhook&test=${encodeURIComponent(test.token)}` }
+      : null
+    : baseUrl && secret
+      ? { url: `${baseUrl}/api/voice/vapi?action=webhook`, headers: { 'x-vapi-secret': secret } }
+      : null;
+  if (!server && !test) return language ? languageFields : undefined;
 
+  const settings = await getOrgChannelSettings(orgId);
+  const transferNumber = test ? null : validTransferNumber(settings?.voiceTransferNumber);
   const overrides: Record<string, unknown> = {
-    server: { url: `${baseUrl}/api/voice/vapi?action=webhook`, headers: { 'x-vapi-secret': secret } },
-    serverMessages: ['status-update', 'end-of-call-report', 'tool-calls'],
+    ...(server ? { server, serverMessages: ['status-update', 'end-of-call-report', 'tool-calls'] } : {}),
     ...languageFields,
+    // Safety caps: a call never runs past the org's limit (default 10 min), and hangs up
+    // after 30 seconds of silence (a dropped line or a phone left on the table).
+    maxDurationSeconds: Math.round(Math.min(60, Math.max(2, settings?.voiceMaxCallMinutes ?? 10)) * 60),
+    silenceTimeoutSeconds: 30,
   };
 
   // The booking tool and call context ride on the model, so the assistant's current model
@@ -182,6 +224,10 @@ async function buildCallOverrides(
       "- DO NOT CONTACT: if they ask not to be called or contacted again, call the do_not_contact tool, apologise, and end the call politely. Never try to change their mind.",
       `- Today is ${todayLabel}${timeZone ? ` in the prospect's local time zone (${timeZone})` : ''}. Every date and time you discuss is in the prospect's local time.`,
       "- BOOKING: if the prospect wants a meeting, agree on ONE specific date and time, repeat it back, and once they confirm, call the book_meeting tool. Never tell them it's booked until the tool confirms it. If the tool says the slot is taken, offer a different time.",
+      meetingRulesPrompt(meetingRulesFor(settings, timeZone), timeZone),
+      transferNumber
+        ? '- A PERSON: if they ask to speak to a human, or need something you can\'t answer (exact pricing, contracts), offer to connect them and use the transferCall tool.'
+        : "- A PERSON: if they ask to speak to a human, say a team member will call them back, and offer to book a time for that call.",
       lead.email
         ? `- Their email on file is ${lead.email}; the invite goes there unless they give a different one.`
         : "- We don't have their email on file. Before booking, ask for it, spell it back to confirm, and pass it to book_meeting.",
@@ -198,11 +244,15 @@ async function buildCallOverrides(
         ),
         { role: 'system', content: context },
       ],
-      tools: [
-        ...(assistant.model.tools || []).filter((t: any) => !['book_meeting', 'do_not_contact'].includes(t?.function?.name)),
-        BOOK_MEETING_TOOL,
-        DO_NOT_CONTACT_TOOL,
-      ],
+      // Tools need the webhook to answer them, so a test call without one runs without them.
+      tools: server
+        ? [
+            ...(assistant.model.tools || []).filter((t: any) => !['book_meeting', 'do_not_contact'].includes(t?.function?.name) && t?.type !== 'transferCall'),
+            BOOK_MEETING_TOOL,
+            DO_NOT_CONTACT_TOOL,
+            ...(transferNumber ? [transferTool(transferNumber)] : []),
+          ]
+        : (assistant.model.tools || []).filter((t: any) => !['book_meeting', 'do_not_contact'].includes(t?.function?.name) && t?.type !== 'transferCall'),
     };
   }
   return overrides;
@@ -267,12 +317,14 @@ export async function placeOrgVoiceCall(params: {
       body: { error: `${client?.name || name || 'This lead'} has a US number and no recorded consent to calls — US law requires it for AI calls. Tick "Agreed to be called" on the lead once you have it.` },
     };
   }
-  const hours = checkCallingHours(country);
+  const hours = checkCallingHours(country, new Date(), { phone, skipHolidays: settings?.voiceSkipHolidays !== false });
   if (!hours.allowed) {
     return {
       httpStatus: 400,
       body: {
-        error: `It's ${hours.localTimeLabel} for ${client?.name || name || 'this lead'} (${hours.timeZone}). Calls only go out 9 AM–8 PM on their working days — try again then.`,
+        error: hours.holiday
+          ? `It's ${hours.holiday} for ${client?.name || name || 'this lead'} (a public holiday there) — no calls today.`
+          : `It's ${hours.localTimeLabel} for ${client?.name || name || 'this lead'} (${hours.timeZone}). Calls only go out 9 AM–8 PM on their working days — try again then.`,
       },
     };
   }
@@ -303,11 +355,18 @@ export async function placeOrgVoiceCall(params: {
     ...(voicemailMessage ? { voicemailMessage } : {}),
   };
 
-  let result = await startVapiCall({ phone, name: lead.name, variables, org, overrides: { ...(overrides || {}), ...voicemailFields } });
+  let callOverrides = overrides;
+  let result = await startVapiCall({ phone, name: lead.name, variables, org, overrides: { ...(callOverrides || {}), ...voicemailFields } });
+  // Transfer to a person is an extra too — if Vapi rejects the inline transfer tool, call without it.
+  if (!result.ok && /transfer|destination/i.test(result.error || '')) {
+    console.warn('[Vapi] Transfer tool rejected, calling without it:', result.error);
+    callOverrides = withoutTransferTool(callOverrides);
+    result = await startVapiCall({ phone, name: lead.name, variables, org, overrides: { ...(callOverrides || {}), ...voicemailFields } });
+  }
   // Voicemail detection is an extra — if this Vapi account or number rejects it, call without it.
   if (!result.ok && /voicemail/i.test(result.error || '')) {
     console.warn('[Vapi] Voicemail settings rejected, calling without them:', result.error);
-    result = await startVapiCall({ phone, name: lead.name, variables, org, overrides });
+    result = await startVapiCall({ phone, name: lead.name, variables, org, overrides: callOverrides });
   }
 
   if (result.ok && result.callId && supabase) {
@@ -441,6 +500,17 @@ async function bookMeetingFromCall(callId: string, args: { date?: string; time?:
   if (isNaN(new Date(startIso).getTime()) || new Date(startIso).getTime() < Date.now()) {
     return 'That time is in the past. Ask the prospect for a future date and time.';
   }
+  const rules = meetingRulesFor(await getOrgChannelSettings(row.org_id), timeZone);
+  const fits = checkMeetingTime(startIso, 30, rules, timeZone);
+  if (!fits.ok) return `Not booked: ${fits.message} Apologise and offer the prospect a time that fits.`;
+  if (row.direction === 'test') {
+    // Browser test call: every check ran, but nothing goes on the calendar.
+    await supabase
+      .from('voice_calls')
+      .update({ summary: `Test booking (not on the calendar): ${date} at ${time}`, updated_at: new Date().toISOString() })
+      .eq('id', row.id);
+    return `Booked for ${date} at ${time}${timeZone ? ` (${timeZone})` : ''}. (Test call — confirm it to the caller as booked; nothing was added to the real calendar.)`;
+  }
 
   const givenEmail = String(args.email || '').trim().toLowerCase();
   const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(givenEmail) ? givenEmail : row.lead_email || undefined;
@@ -521,8 +591,9 @@ async function bookMeetingFromCall(callId: string, args: { date?: string; time?:
 /** The person asked not to be contacted again — opt them out everywhere (lib/suppression.ts). */
 async function doNotContactFromCall(callId: string): Promise<string> {
   const supabase = getSupabaseAdmin();
-  const { data: row } = supabase ? await supabase.from('voice_calls').select('org_id, client_id, phone, lead_email').eq('vapi_call_id', callId).maybeSingle() : { data: null };
-  if (row) await optOutClient(row.org_id, row.client_id, 'asked on a call', { phone: row.phone, email: row.lead_email });
+  const { data: row } = supabase ? await supabase.from('voice_calls').select('org_id, client_id, phone, lead_email, direction').eq('vapi_call_id', callId).maybeSingle() : { data: null };
+  // Test calls from the browser never touch the real do-not-contact list.
+  if (row && row.direction !== 'test') await optOutClient(row.org_id, row.client_id, 'asked on a call', { phone: row.phone, email: row.lead_email });
   return "Done — they won't be contacted again by call, WhatsApp or email. Apologise for the interruption, say goodbye, and end the call.";
 }
 
@@ -565,11 +636,16 @@ export async function reconcileStaleVoiceCalls(orgId: string, rows: any[]): Prom
 /** Handles one Vapi server message. The return value is the JSON response body — only
  * tool-calls needs a meaningful one ({ results }); everything else is just acked, since
  * Vapi retries non-2xx responses. */
-export async function handleVapiServerMessage(message: any, baseUrl: string | null): Promise<Record<string, unknown>> {
+export async function handleVapiServerMessage(message: any, baseUrl: string | null, scope?: { testOrgId: string }): Promise<Record<string, unknown>> {
   const type = message?.type;
   const callId: string | undefined = message?.call?.id;
 
-  if (type === 'assistant-request') {
+  // A browser test call's webhook (lib/voiceTest.ts) may only act on that org's test calls.
+  if (scope) {
+    if (type === 'assistant-request' || !callId) return { received: true };
+    const ok = await ensureTestCallRow(scope.testOrgId, callId, message?.call);
+    if (!ok) return { received: true };
+  } else if (type === 'assistant-request') {
     return handleInboundCall(message, baseUrl);
   }
 
@@ -612,6 +688,7 @@ export async function handleVapiServerMessage(message: any, baseUrl: string | nu
     const ended = await handleEndOfCallReport(message, callId);
     // That call's slot in the queue is free — start the next queued call for this org now,
     // rather than waiting for the scheduled dispatcher.
+    if (scope) return { received: true }; // test calls: no queue, follow-up or automatic learning
     const queueOrgId = await markQueuedCallFinished(callId, ended ? (ended.answered ? 'answered' : 'not answered') : null);
     if (queueOrgId) await processCallQueue(baseUrl, placeOrgVoiceCall, queueOrgId).catch((err) => console.error('[Vapi] Call queue failed', err));
     // A real conversation happened — review it for lessons the voice agent can use next call.
@@ -619,6 +696,31 @@ export async function handleVapiServerMessage(message: any, baseUrl: string | nu
   }
 
   return { received: true };
+}
+
+/** The voice_calls row for a browser test call, created on its first webhook. A call id that
+ * already belongs to a real call or another org is refused. */
+async function ensureTestCallRow(orgId: string, callId: string, call: any): Promise<boolean> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return false;
+  const { data: row } = await supabase.from('voice_calls').select('org_id, direction').eq('vapi_call_id', callId).maybeSingle();
+  if (row) return row.org_id === orgId && row.direction === 'test';
+  const vars = call?.assistantOverrides?.variableValues || {};
+  const { error } = await supabase.from('voice_calls').insert({
+    org_id: orgId,
+    vapi_call_id: callId,
+    phone: 'browser test',
+    direction: 'test',
+    lead_name: typeof vars.name === 'string' ? vars.name.slice(0, 120) : 'Test caller',
+    lead_company: typeof vars.company === 'string' ? vars.company.slice(0, 120) : null,
+    lead_country: typeof vars.country === 'string' ? vars.country.slice(0, 80) : null,
+    lead_email: typeof vars.email === 'string' ? vars.email.slice(0, 200) : null,
+    call_status: 'in-progress',
+  });
+  if (!error) return true;
+  // Two webhooks for a new call can race to create it — the loser checks what won.
+  const { data: again } = await supabase.from('voice_calls').select('org_id, direction').eq('vapi_call_id', callId).maybeSingle();
+  return !!again && again.org_id === orgId && again.direction === 'test';
 }
 
 function digitsOnly(phone: string | undefined | null): string {

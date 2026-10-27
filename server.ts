@@ -39,6 +39,17 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
+app.disable('x-powered-by');
+
+// Same security headers as vercel.json, for when this server runs the app (npm start).
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), payment=(), microphone=(self)');
+  next();
+});
 
 app.use(
   express.json({
@@ -205,7 +216,7 @@ app.post('/api/email/inbound', async (req, res) => {
 app.get('/api/cron/dispatch-scheduled', (req, res) => dispatchScheduledHandler(req as any, res as any));
 
 app.all('/api/conversations', (req, res, next) =>
-  req.query.action === 'analytics' ? conversationsHandler(req as any, res as any) : next()
+  req.query.action === 'analytics' || req.query.action === 'inbox' ? conversationsHandler(req as any, res as any) : next()
 );
 app.all('/api/conversations', async (req, res, next) => {
   if (req.query.action !== 'learning') return next();

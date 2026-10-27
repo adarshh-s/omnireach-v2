@@ -1,4 +1,6 @@
 import { getOrgIdFromAuthHeader, getCallerFromAuthHeader } from '../../lib/supabaseServerAuth.js';
+import { logAudit } from '../../lib/auditLog.js';
+import { buildTestCallConfig, verifyTestToken } from '../../lib/voiceTest.js';
 import { enqueueCampaignCalls, processCallQueue, getQueueStatus, setOrgQueueStatus } from '../../lib/callQueue.js';
 import { getOrgChannelSettings, saveOrgChannelSettings, getOrgProfile, saveOrgVoice, resolveOrgVoiceSetup } from '../../lib/orgSettings.js';
 import { getAssistantConfig, syncAssistantPrompt } from '../../lib/vapiClient.js';
@@ -56,6 +58,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return handleWebhook(req, res);
   }
 
+  // The "Test Voice Agent" page: everything the browser needs to start a test call (lib/voiceTest.ts).
+  if (req.query?.action === 'test-config') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const tester = await getCallerFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!tester) return res.status(401).json({ error: 'Sign in required.' });
+    const result = await buildTestCallConfig(tester.orgId, getPublicBaseUrl(req.headers), (req.body as any)?.persona || {});
+    return res.status(result.ok ? 200 : 400).json(result);
+  }
+
   if (req.query?.action === 'get-assistant') {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
     return handleGetAssistant(req, res);
@@ -81,13 +92,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   if (req.query?.action === 'queue-control') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const orgId = await getOrgIdFromAuthHeader(req.headers?.authorization as string | undefined);
-    if (!orgId) return res.status(401).json({ error: 'Sign in required.' });
+    const controller = await getCallerFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!controller) return res.status(401).json({ error: 'Sign in required.' });
+    const orgId = controller.orgId;
     const control = req.body?.control;
     if (control !== 'pause' && control !== 'resume' && control !== 'cancel') {
       return res.status(400).json({ error: 'control must be pause, resume or cancel.' });
     }
     await setOrgQueueStatus(orgId, control);
+    await logAudit(orgId, { userId: controller.userId, email: controller.email }, `call_campaign.${control}`);
     if (control === 'resume') await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall, orgId);
     return res.status(200).json({ ok: true, status: await getQueueStatus(orgId) });
   }
@@ -136,6 +149,7 @@ async function handleQueueCalls(req: ApiRequest, res: ApiResponse) {
   if (!Array.isArray(leads) || leads.length === 0) return res.status(400).json({ ok: false, error: 'No leads to call.' });
   const result = await enqueueCampaignCalls(caller.orgId, caller.userId, leads, { batchSize, concurrency, batchGapMinutes });
   if (!result.ok) return res.status(400).json(result);
+  await logAudit(caller.orgId, { userId: caller.userId, email: caller.email }, 'call_campaign.started', null, { queued: result.queued, skipped: result.skipped.length });
 
   // Start the first calls now; the rest follow as calls end (and on the scheduled dispatcher).
   await processCallQueue(getPublicBaseUrl(req.headers), placeOrgVoiceCall, caller.orgId);
@@ -211,11 +225,17 @@ async function handleSyncAssistant(req: ApiRequest, res: ApiResponse) {
 }
 
 async function handleWebhook(req: ApiRequest, res: ApiResponse) {
-  if (!verifyVapiWebhook(req.headers?.['x-vapi-secret'], req.query?.token)) {
+  // Real calls carry the webhook secret; browser test calls a short-lived token that only
+  // reaches that org's test calls (lib/voiceTest.ts).
+  const trusted = verifyVapiWebhook(req.headers?.['x-vapi-secret'], req.query?.token);
+  const testOrgId = trusted ? null : verifyTestToken(req.query?.test);
+  if (!trusted && !testOrgId) {
     return res.status(403).json({ error: 'Invalid token' });
   }
   try {
-    return res.status(200).json(await handleVapiServerMessage((req.body as any)?.message, getPublicBaseUrl(req.headers)));
+    return res
+      .status(200)
+      .json(await handleVapiServerMessage((req.body as any)?.message, getPublicBaseUrl(req.headers), testOrgId ? { testOrgId } : undefined));
   } catch (err: any) {
     // Still 200 — Vapi retries non-2xx, and a retried end-of-call report would just fail again.
     console.error('[Vapi] Webhook handling failed:', err);

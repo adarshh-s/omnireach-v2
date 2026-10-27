@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from '../lib/supabaseAdmin.js';
-import { getOrgIdFromAuthHeader } from '../lib/supabaseServerAuth.js';
+import { getOrgIdFromAuthHeader, getCallerFromAuthHeader } from '../lib/supabaseServerAuth.js';
+import { replyAsTeammate, setAiPaused } from '../lib/inboxActions.js';
 import { reconcileStaleVoiceCalls } from '../lib/voiceCalls.js';
 import { handleLearningRequest } from '../lib/aiLearning.js';
 import { buildAnalytics } from '../lib/analytics.js';
@@ -35,6 +36,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(200).json(await buildAnalytics(orgId));
   }
 
+  // ?action=inbox — a teammate replying in place of the AI, or pausing/resuming it (lib/inboxActions.ts).
+  if (req.query?.action === 'inbox') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const caller = await getCallerFromAuthHeader(req.headers?.authorization as string | undefined);
+    if (!caller) return res.status(401).json({ error: 'Sign in required.' });
+    const { op, channel, id, text } = req.body || {};
+    if (channel !== 'whatsapp' && channel !== 'email') return res.status(400).json({ ok: false, error: 'Only WhatsApp and email conversations can be taken over.' });
+    const actor = { userId: caller.userId, email: caller.email };
+    const result =
+      op === 'reply'
+        ? await replyAsTeammate(caller.orgId, actor, channel, String(id || ''), String(text || ''))
+        : op === 'pause' || op === 'resume'
+          ? await setAiPaused(caller.orgId, actor, channel, String(id || ''), op === 'pause')
+          : { ok: false, error: 'Unknown inbox action.' };
+    return res.status(result.ok ? 200 : 400).json(result);
+  }
+
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -52,8 +70,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  const query = () =>
-    supabase.from(table).select('*').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(200);
+  // Browser test calls (Test Voice Agent page) aren't real conversations.
+  const query = () => {
+    let q = supabase.from(table).select('*').eq('org_id', orgId);
+    if (channel === 'voice') q = q.neq('direction', 'test');
+    return q.order('last_message_at', { ascending: false }).limit(200);
+  };
   let { data, error } = await query();
 
   if (error) {

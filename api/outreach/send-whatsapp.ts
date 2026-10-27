@@ -10,6 +10,7 @@ import {
 import { processCrmEvents } from '../../lib/crm/index.js';
 import { sendCampaignWhatsAppMessage } from '../../lib/whatsappCampaignSender.js';
 import { recordUsage, usageRoom, limitReachedMessage } from '../../lib/usage.js';
+import { logAudit } from '../../lib/auditLog.js';
 
 interface ApiRequest {
   method?: string;
@@ -115,6 +116,11 @@ async function handleCampaignAction(action: string, req: ApiRequest, res: ApiRes
       templateName: typeof body.templateName === 'string' ? body.templateName.slice(0, 200) : null,
     });
     if (!result.ok) return res.status(400).json(result);
+    await logAudit(orgId, { userId: caller.userId, email: caller.email }, 'campaign.started', result.campaignId || null, {
+      channels: body.channels,
+      queued: result.queued,
+      skipped: result.skipped.length,
+    });
     // Get the first messages out now; the open page and the scheduler send the rest.
     await processMessageQueue({ budgetMs: 15000, onlyOrgId: orgId });
     return res.status(200).json({ ...result, status: await getMessageCampaignStatus(orgId) });
@@ -134,6 +140,7 @@ async function handleCampaignAction(action: string, req: ApiRequest, res: ApiRes
       return res.status(400).json({ error: 'control must be pause, resume or cancel.' });
     }
     await setMessageCampaignStatus(orgId, control);
+    await logAudit(orgId, { userId: caller.userId, email: caller.email }, `campaign.${control}`);
     return res.status(200).json({ ok: true, status: await getMessageCampaignStatus(orgId) });
   }
 

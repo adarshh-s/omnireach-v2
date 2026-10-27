@@ -170,6 +170,28 @@ export interface ChannelApiSettings {
   twilioFollowupContentSid?: string;
   twilioFollowupContentVariables?: string[];
 
+  // When the AI may book meetings (lib/bookingRules.ts): days (0 = Sunday), hours in
+  // meetingTimeZone, and minimum notice. Defaults: Mon–Fri, 9–18, 2 hours.
+  meetingDays?: number[];
+  meetingStartHour?: number;
+  meetingEndHour?: number;
+  meetingTimeZone?: string;
+  meetingMinNoticeHours?: number;
+
+  /** A person's number the voice agent transfers to when a caller asks for a human (E.164). */
+  voiceTransferNumber?: string;
+  /** Longest an AI call may run before it's ended (minutes). Default 10. */
+  voiceMaxCallMinutes?: number;
+  /** Skip AI calls on the lead's national public holidays (lib/holidays.ts). On unless false. */
+  voiceSkipHolidays?: boolean;
+
+  /** A new campaign skips leads another campaign contacted within this many hours, or who are
+   * mid-conversation with the AI (lib/contactRules.ts). Default 24; 0 turns it off. */
+  minHoursBetweenCampaigns?: number;
+
+  /** Where "a lead needs a person" alerts are emailed (besides Slack). Blank: no email. */
+  handoffNotifyEmail?: string;
+
   /** Reminders before meetings the AI booked (lib/meetingReminders.ts). Default 'both'. */
   meetingReminders?: 'both' | '24h' | '1h' | 'off';
   // Optional approved template for reminders on WhatsApp (Meta Cloud API) — needed when the

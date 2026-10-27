@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
+import { safeEqual, maskEmail } from './security.js';
 import {
   getContextFromCampaignRecipientId,
   getContextFromClientId,
@@ -19,12 +20,14 @@ import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
 import { recordUsage } from './usage.js';
 import { classifyInboundEmail, autoReplySummary } from './emailAutoDetect.js';
 import { markEmailBounced } from './emailBounces.js';
+import { alertTeam } from './teamAlerts.js';
+import { meetingRulesFor, checkMeetingTime, meetingRulesPrompt } from './bookingRules.js';
+import { getTimezoneForLead } from './countryTiming.js';
 
 /** Verifies the shared secret appended to the Inbound Parse Destination URL, so this
  * endpoint can't be spammed by anyone who finds the URL. */
 export function verifyEmailWebhookToken(token: string | undefined): boolean {
-  const expected = process.env.EMAIL_INBOUND_WEBHOOK_SECRET;
-  return !!expected && token === expected;
+  return safeEqual(token, process.env.EMAIL_INBOUND_WEBHOOK_SECRET);
 }
 
 /** A domain env value pasted with stray quotes/whitespace (an easy mistake in a dashboard
@@ -91,7 +94,7 @@ async function acquireEmailConversationLock(supabase: any, orgId: string, client
 
     await sleep(400 + Math.random() * 400);
   }
-  console.warn('[Email Bot] Could not acquire conversation lock for', clientEmail, '— proceeding unlocked to avoid dropping the message.');
+  console.warn('[Email Bot] Could not acquire conversation lock for', maskEmail(clientEmail), '— proceeding unlocked to avoid dropping the message.');
   return false;
 }
 
@@ -142,7 +145,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   if (automatic.kind === 'bounce') {
     const failed = bodyText.match(/Final-Recipient:\s*rfc822;\s*<?([^\s>]+@[^\s>]+)>?/i)?.[1] || context.clientEmail;
     if (failed) await markEmailBounced(orgId, failed, automatic.reason);
-    console.log('[Email Bot] Bounce for', failed || 'unknown address', '—', automatic.reason);
+    console.log('[Email Bot] Bounce for', failed ? maskEmail(failed) : 'unknown address', '—', automatic.reason);
     return;
   }
   if (automatic.kind === 'auto_reply') {
@@ -154,7 +157,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       .update({ last_auto_reply_at: new Date().toISOString(), last_auto_reply: autoReplySummary(subject, bodyText), updated_at: new Date().toISOString() })
       .eq('org_id', orgId)
       .eq('client_email', leadEmail);
-    console.log('[Email Bot] Automatic reply from', fromEmail, '—', automatic.reason);
+    console.log('[Email Bot] Automatic reply from', maskEmail(fromEmail), '—', automatic.reason.replace(/sent by \S+/, 'sent by a mail server'));
     return;
   }
 
@@ -178,6 +181,8 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     .maybeSingle();
 
   const history: ConversationTurn[] = existing?.history || [];
+  // Read before anything is saved — the status this message started from.
+  const previousStatus = existing?.status;
   const nowIso = new Date().toISOString();
   history.push({ role: 'user', text: bodyText, timestamp: nowIso });
 
@@ -253,6 +258,30 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     return;
   }
 
+  // A teammate has taken this conversation over in the AI Inbox (or the AI handed it to one):
+  // keep the email for them and let them know — the AI stays quiet.
+  if (existing?.ai_paused) {
+    await supabase
+      .from('email_conversations')
+      .update({ history, last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', existing.id);
+    await alertTeam(orgChannelSettings, {
+      orgId,
+      table: 'email_conversations',
+      conversationId: existing.id,
+      lastAlertAt: existing.team_alerted_at,
+      leadLabel: existing.lead_name || context.clientName || fromEmail,
+      channel: 'email',
+      reason: 'replied_while_paused',
+      lastMessage: bodyText,
+      appUrl: process.env.APP_URL,
+    });
+    return;
+  }
+
+  const leadTimeZone = getTimezoneForLead(existing?.lead_country || context.clientCountry);
+  const meetingRules = meetingRulesFor(orgChannelSettings, leadTimeZone);
+
   const ai = getGeminiClient();
   const result = ai
     ? await runConversationTurn({
@@ -266,6 +295,7 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
         senderName: orgProfile?.senderName,
         serviceDescription: orgProfile?.serviceDescription,
         learnedGuidance,
+        availability: meetingRulesPrompt(meetingRules, leadTimeZone, new Date(nowIso)),
         history,
         nowIso,
       })
@@ -283,7 +313,15 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
   let calendarEventId: string | null = null;
   let replyText = result.reply;
 
-  if (result.status === 'confirmed' && result.meeting) {
+  // Outside the org's meeting days/hours or too soon (lib/bookingRules.ts): don't book it.
+  const ruleCheck =
+    result.status === 'confirmed' && result.meeting
+      ? checkMeetingTime(toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone), result.meeting.durationMinutes || 30, meetingRules, leadTimeZone)
+      : null;
+  if (ruleCheck && !ruleCheck.ok) {
+    finalStatus = 'active';
+    replyText = `Sorry, I can't book that one — ${ruleCheck.message.charAt(0).toLowerCase()}${ruleCheck.message.slice(1)} Which other time would work for you?\n\n${orgProfile?.senderName || orgProfile?.companyName || ''}`.trim();
+  } else if (result.status === 'confirmed' && result.meeting) {
     if (calendar) {
       try {
         const startIso = toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone);
@@ -345,6 +383,8 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
       status: finalStatus,
       subject: existing?.subject || subject,
       history,
+      // Handing over to a person pauses the AI until a teammate resumes it in the AI Inbox.
+      ai_paused: finalStatus === 'handoff' ? true : existing?.ai_paused || false,
       meeting_date: meetingDateTimeIso ? meetingDateTimeIso.slice(0, 10) : retractedMeeting ? null : existing?.meeting_date,
       meeting_time: meetingDateTimeIso ? result.meeting?.time : retractedMeeting ? null : existing?.meeting_time,
       meeting_datetime_iso: meetingDateTimeIso || (retractedMeeting ? null : existing?.meeting_datetime_iso),
@@ -355,6 +395,23 @@ export async function processInboundEmail(fields: Record<string, string>): Promi
     },
     { onConflict: 'org_id,client_email' }
   );
+
+  if (finalStatus === 'handoff' && previousStatus !== 'handoff') {
+    const { data: saved } = await supabase.from('email_conversations').select('id, team_alerted_at').eq('org_id', orgId).eq('client_email', fromEmail).maybeSingle();
+    if (saved) {
+      await alertTeam(orgChannelSettings, {
+        orgId,
+        table: 'email_conversations',
+        conversationId: saved.id,
+        lastAlertAt: saved.team_alerted_at,
+        leadLabel: existing?.lead_name || context.clientName || fromEmail,
+        channel: 'email',
+        reason: 'handoff',
+        lastMessage: bodyText,
+        appUrl: process.env.APP_URL,
+      });
+    }
+  }
 
   {
     const recipientId = token.type === 'cr' ? token.id : existing?.campaign_recipient_id;

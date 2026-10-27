@@ -2,6 +2,42 @@ import React, { useEffect, useState } from 'react';
 import { Loader2, UserPlus, Trash2, RefreshCw } from 'lucide-react';
 import { PageHeader, headerSecondaryButton } from './PageHeader';
 
+// Readable names for lib/auditLog.ts actions.
+const AUDIT_LABELS: Record<string, string> = {
+  'campaign.started': 'Started a WhatsApp/email campaign',
+  'campaign.pause': 'Paused the WhatsApp/email campaign',
+  'campaign.resume': 'Resumed the WhatsApp/email campaign',
+  'campaign.cancel': 'Cancelled the WhatsApp/email campaign',
+  'call_campaign.started': 'Started an AI call campaign',
+  'call_campaign.pause': 'Paused AI calls',
+  'call_campaign.resume': 'Resumed AI calls',
+  'call_campaign.cancel': 'Cancelled AI calls',
+  'team.invited': 'Invited a teammate',
+  'team.removed': 'Removed a teammate',
+  'do_not_contact.added': 'Added to the do-not-contact list',
+  'do_not_contact.removed': 'Removed from the do-not-contact list',
+  'crm.disconnected': 'Disconnected the CRM',
+  'crm.imported': 'Imported contacts from the CRM',
+  'email_domain.added': 'Added a sending domain',
+  'email_domain.removed': 'Removed the sending domain',
+  'email_account.disconnected': 'Disconnected the email account',
+  'lead.exported': "Downloaded a lead's data",
+  'lead.erased': "Erased a lead's data",
+  'inbox.reply': 'Replied to a lead by hand',
+  'inbox.ai_paused': 'Paused the AI on a conversation',
+  'inbox.ai_resumed': 'Handed a conversation back to the AI',
+  'admin.unlocked': 'Platform admin unlocked the workspace',
+  'admin.locked': 'Platform admin locked the workspace',
+  'admin.limits_changed': 'Platform admin changed monthly limits',
+};
+
+interface AuditEntry {
+  action: string;
+  target: string | null;
+  actor_email: string | null;
+  created_at: string;
+}
+
 interface TeamMember {
   userId: string;
   email: string | null;
@@ -31,6 +67,14 @@ export const TeamView: React.FC<TeamViewProps> = ({ accessToken }) => {
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   const canManage = myRole === 'owner' || myRole === 'admin';
+  const [audit, setAudit] = useState<AuditEntry[] | null>(null);
+  useEffect(() => {
+    if (!accessToken || !canManage) return;
+    fetch('/api/whatsapp/subscribe-app?action=audit-log', { headers: { Authorization: `Bearer ${accessToken}` } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setAudit(data?.entries || []))
+      .catch(() => setAudit([]));
+  }, [accessToken, canManage]);
 
   const load = () => {
     if (!accessToken) return;
@@ -206,6 +250,42 @@ export const TeamView: React.FC<TeamViewProps> = ({ accessToken }) => {
           </table>
         </div>
       </div>
+
+      {canManage && (
+        <div className="bg-surface/50 backdrop-blur-3xl border border-border rounded-2xl shadow-card overflow-hidden">
+          <div className="px-5 pt-4 pb-2">
+            <h2 className="text-sm font-semibold text-ink">Activity log</h2>
+            <p className="text-[11px] text-ink-muted">Who started campaigns, changed the team, edited the do-not-contact list, or exported or erased a lead's data. Only owners and admins see this.</p>
+          </div>
+          {audit === null ? (
+            <p className="px-5 pb-5 text-xs text-ink-muted">
+              <Loader2 className="w-3.5 h-3.5 animate-spin inline-block mr-1.5" />
+              Loading…
+            </p>
+          ) : audit.length === 0 ? (
+            <p className="px-5 pb-5 text-xs text-ink-muted">Nothing yet.</p>
+          ) : (
+            <div className="max-h-96 overflow-y-auto">
+              <table className="w-full text-xs">
+                <tbody className="divide-y divide-border">
+                  {audit.map((e, i) => (
+                    <tr key={i} className="hover:bg-surface-hover">
+                      <td className="px-5 py-2.5 text-ink-muted whitespace-nowrap tabular-nums">
+                        {new Date(e.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td className="px-3 py-2.5 text-ink">
+                        {AUDIT_LABELS[e.action] || e.action}
+                        {e.target && <span className="text-ink-muted"> — {e.target}</span>}
+                      </td>
+                      <td className="px-5 py-2.5 text-ink-muted text-right whitespace-nowrap">{e.actor_email || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

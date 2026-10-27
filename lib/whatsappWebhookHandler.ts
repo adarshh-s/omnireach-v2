@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import { maskPhone } from './security.js';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import {
   getOrgIdByPhoneNumberId,
@@ -17,6 +18,9 @@ import { sendSlackNotification } from './slackNotifier.js';
 import { toMeetingStartIso } from './countryTiming.js';
 import { buildLearnedGuidance, reviewAfterConversation } from './aiLearning.js';
 import { recordUsage } from './usage.js';
+import { alertTeam } from './teamAlerts.js';
+import { meetingRulesFor, checkMeetingTime, meetingRulesPrompt } from './bookingRules.js';
+import { getTimezoneForLead } from './countryTiming.js';
 
 /**
  * Verifies Meta's X-Hub-Signature-256 header (HMAC-SHA256 of the raw request body, keyed
@@ -113,7 +117,7 @@ async function acquireConversationLock(supabase: any, orgId: string, phone: stri
 
     await sleep(400 + Math.random() * 400);
   }
-  console.warn('[WhatsApp Bot] Could not acquire conversation lock for', phone, '— proceeding unlocked to avoid dropping the message.');
+  console.warn('[WhatsApp Bot] Could not acquire conversation lock for', maskPhone(phone), '— proceeding unlocked to avoid dropping the message.');
   return false;
 }
 
@@ -199,11 +203,12 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     if (value?.statuses?.length) {
       await processWhatsAppStatusCallbacks(value);
     } else {
-      console.log('[WhatsApp Bot] Ignoring non-text/empty payload:', JSON.stringify(body)?.slice(0, 500));
+      // Only the kind of event — the payload itself carries phone numbers and message text.
+      console.log('[WhatsApp Bot] Ignoring non-text/empty payload:', message?.type || Object.keys(value || {}).join(',') || 'unknown');
     }
     return; // ignore status callbacks, media, reactions, etc.
   }
-  console.log('[WhatsApp Bot] Processing text message from', message.from, '- phoneNumberId:', value?.metadata?.phone_number_id);
+  console.log('[WhatsApp Bot] Processing text message from', maskPhone(message.from), '- phoneNumberId:', value?.metadata?.phone_number_id);
 
   const phoneNumberId: string | undefined = value?.metadata?.phone_number_id;
   const fromPhone: string = message.from;
@@ -263,6 +268,8 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
   }
 
   const history: ConversationTurn[] = existing?.history || [];
+  // Read before anything is saved — the status this message started from.
+  const previousStatus = existing?.status;
   const nowIso = new Date().toISOString();
   history.push({ role: 'user', text: incomingText, timestamp: nowIso });
 
@@ -338,6 +345,35 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     return;
   }
 
+  // A teammate has taken this conversation over in the AI Inbox (or the AI handed it to one):
+  // keep the message for them and let them know — the AI stays quiet.
+  if (existing?.ai_paused) {
+    await supabase
+      .from('whatsapp_conversations')
+      .update({
+        history,
+        last_inbound_message_id: inboundMessageId || existing.last_inbound_message_id,
+        last_message_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id);
+    await alertTeam(orgChannelSettings, {
+      orgId,
+      table: 'whatsapp_conversations',
+      conversationId: existing.id,
+      lastAlertAt: existing.team_alerted_at,
+      leadLabel: existing.lead_name || contactName || `+${fromPhone}`,
+      channel: 'WhatsApp',
+      reason: 'replied_while_paused',
+      lastMessage: incomingText,
+      appUrl: process.env.APP_URL,
+    });
+    return;
+  }
+
+  const leadTimeZone = getTimezoneForLead(existing?.lead_country, fromPhone);
+  const meetingRules = meetingRulesFor(orgChannelSettings, leadTimeZone);
+
   const ai = getGeminiClient();
   const result = ai
     ? await runConversationTurn({
@@ -349,6 +385,7 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
         senderName: orgProfile?.senderName,
         serviceDescription: orgProfile?.serviceDescription,
         learnedGuidance,
+        availability: meetingRulesPrompt(meetingRules, leadTimeZone, new Date(nowIso)),
         history,
         nowIso,
       })
@@ -360,7 +397,16 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
   let calendarEventId: string | null = null;
   let replyText = result.reply;
 
-  if (result.status === 'confirmed' && result.meeting) {
+  // Outside the org's meeting days/hours or too soon (lib/bookingRules.ts): don't book it —
+  // say so and ask for another time instead of the AI's confirmation.
+  const ruleCheck =
+    result.status === 'confirmed' && result.meeting
+      ? checkMeetingTime(toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone), result.meeting.durationMinutes || 30, meetingRules, leadTimeZone)
+      : null;
+  if (ruleCheck && !ruleCheck.ok) {
+    finalStatus = 'active';
+    replyText = `Sorry, I can't book that one — ${ruleCheck.message.charAt(0).toLowerCase()}${ruleCheck.message.slice(1)} Which other time works for you?`;
+  } else if (result.status === 'confirmed' && result.meeting) {
     if (calendar) {
       try {
         const startIso = toMeetingStartIso(result.meeting.date, result.meeting.time, result.meetingTimeZone);
@@ -423,6 +469,8 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
       lead_company: existing?.lead_company,
       status: finalStatus,
       history,
+      // Handing over to a person pauses the AI until a teammate resumes it in the AI Inbox.
+      ai_paused: finalStatus === 'handoff' ? true : existing?.ai_paused || false,
       last_inbound_message_id: inboundMessageId || existing?.last_inbound_message_id,
       collected: existing?.collected || {},
       meeting_date: meetingDateTimeIso ? meetingDateTimeIso.slice(0, 10) : retractedMeeting ? null : existing?.meeting_date,
@@ -435,6 +483,23 @@ export async function processWhatsAppWebhookPayload(body: any): Promise<void> {
     },
     { onConflict: 'org_id,phone' }
   );
+
+  if (finalStatus === 'handoff' && previousStatus !== 'handoff') {
+    const { data: saved } = await supabase.from('whatsapp_conversations').select('id, team_alerted_at').eq('org_id', orgId).eq('phone', fromPhone).maybeSingle();
+    if (saved) {
+      await alertTeam(orgChannelSettings, {
+        orgId,
+        table: 'whatsapp_conversations',
+        conversationId: saved.id,
+        lastAlertAt: saved.team_alerted_at,
+        leadLabel: existing?.lead_name || contactName || `+${fromPhone}`,
+        channel: 'WhatsApp',
+        reason: 'handoff',
+        lastMessage: incomingText,
+        appUrl: process.env.APP_URL,
+      });
+    }
+  }
 
   if (existing?.campaign_recipient_id) {
     await supabase

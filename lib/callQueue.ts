@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import { usageRoom } from './usage.js';
+import { contactBlocks, campaignGapHours } from './contactRules.js';
 import { getOrgChannelSettings, getOrgAccessStatus } from './orgSettings.js';
 import { checkCallingHours } from './countryTiming.js';
 import { loadSuppression, isSuppressed } from './suppression.js';
@@ -83,12 +84,15 @@ export async function enqueueCampaignCalls(
   // What the database knows now wins over the browser's copy (opt-outs, bookings, numbers).
   const ids = leads.map((l) => l.clientId).filter(Boolean);
   const { data: rows } = ids.length
-    ? await supabase.from('clients').select('id, name, phone, country, opted_out, status, call_consent').eq('org_id', orgId).in('id', ids)
+    ? await supabase.from('clients').select('id, name, phone, country, opted_out, status, call_consent, last_contacted').eq('org_id', orgId).in('id', ids)
     : { data: [] as any[] };
   const byId = new Map((rows || []).map((r: any) => [r.id, r]));
 
   const suppression = await loadSuppression(orgId);
-  const usConsentRequired = (await getOrgChannelSettings(orgId))?.voiceUsConsentRequired !== false;
+  const settings = await getOrgChannelSettings(orgId);
+  const usConsentRequired = settings?.voiceUsConsentRequired !== false;
+  // Recently contacted elsewhere, or mid-conversation with the AI (lib/contactRules.ts).
+  const blocks = await contactBlocks(orgId, rows || [], campaignGapHours(settings));
   const { data: live } = await supabase.from('call_queue').select('phone_digits').eq('org_id', orgId).in('status', ['queued', 'calling']);
   const seen = new Set((live || []).map((r: any) => r.phone_digits));
 
@@ -105,6 +109,7 @@ export async function enqueueCampaignCalls(
     else if (usConsentRequired && !row?.call_consent && legalRegion(row?.country || lead.country, phone) === 'us')
       skipped.push({ name, reason: 'US number without recorded consent to calls' });
     else if (seen.has(digits)) skipped.push({ name, reason: 'already in the call queue (or a duplicate number)' });
+    else if (blocks.has(lead.clientId)) skipped.push({ name, reason: blocks.get(lead.clientId)! });
     else {
       seen.add(digits);
       toQueue.push({ client_id: lead.clientId, phone, phone_digits: digits, lead_name: name, lead_country: row?.country || lead.country });
@@ -329,11 +334,16 @@ export async function processCallQueue(
         if (allowedBatch.get(item.campaign_id) !== item.batch_no) continue;
       }
 
-      // Outside the lead's business hours: look again in an hour.
-      if (!checkCallingHours(item.lead_country).allowed) {
+      // Outside the lead's business hours (or a public holiday there): look again in an hour.
+      const hours = checkCallingHours(item.lead_country, now, { phone: item.phone, skipHolidays: settings?.voiceSkipHolidays !== false });
+      if (!hours.allowed) {
         await supabase
           .from('call_queue')
-          .update({ not_before: new Date(now.getTime() + 3_600_000).toISOString(), detail: 'waiting for business hours', updated_at: now.toISOString() })
+          .update({
+            not_before: new Date(now.getTime() + 3_600_000).toISOString(),
+            detail: hours.holiday ? `waiting — ${hours.holiday} (public holiday)` : 'waiting for business hours',
+            updated_at: now.toISOString(),
+          })
           .eq('id', item.id);
         counts.waiting++;
         continue;

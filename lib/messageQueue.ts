@@ -8,6 +8,7 @@ import { computeNextPeakSendTime } from './countryTiming.js';
 import { generateOutreachCopy } from './outreachCopy.js';
 import { getOrgUsage, recordUsage, limitReachedMessage } from './usage.js';
 import { HARD_BOUNCE_ERROR, markEmailBounced } from './emailBounces.js';
+import { contactBlocks, campaignGapHours } from './contactRules.js';
 import { interpolateTemplate } from '../src/utils/outreachEngine.js';
 import { loadSuppression, isSuppressed } from './suppression.js';
 import { withComplianceFooter, unsubscribeHeaders } from './emailCompliance.js';
@@ -186,6 +187,8 @@ export async function enqueueMessageCampaign(orgId: string, createdBy: string | 
   }
 
   const suppression = await loadSuppression(orgId);
+  // Recently contacted elsewhere, or mid-conversation with the AI (lib/contactRules.ts).
+  const blocks = await contactBlocks(orgId, clients, campaignGapHours(settings));
   const skipped: { name: string; reason: string }[] = [];
   const senderEmail = usableSenderEmail(profile, settings);
   const rows: any[] = [];
@@ -202,6 +205,10 @@ export async function enqueueMessageCampaign(orgId: string, createdBy: string | 
     }
     if (client.status === 'Meeting Scheduled') {
       skipped.push({ name, reason: 'meeting already booked' });
+      continue;
+    }
+    if (blocks.has(client.id)) {
+      skipped.push({ name, reason: blocks.get(client.id)! });
       continue;
     }
 

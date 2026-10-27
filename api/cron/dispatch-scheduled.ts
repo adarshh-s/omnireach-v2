@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '../../lib/supabaseAdmin.js';
+import { safeEqual } from '../../lib/security.js';
 import { getOrgChannelSettings } from '../../lib/orgSettings.js';
 import { sendCampaignWhatsAppMessage } from '../../lib/whatsappCampaignSender.js';
 import { sendEmailViaOrgProvider } from '../../lib/emailSender.js';
@@ -40,8 +41,7 @@ function verifyDispatchToken(req: ApiRequest): boolean {
   const expected = process.env.CRON_SECRET;
   if (!expected) return false;
   const authHeader = (req.headers?.authorization as string | undefined) || '';
-  if (authHeader === `Bearer ${expected}`) return true;
-  return (req.query?.token as string | undefined) === expected;
+  return safeEqual(authHeader, `Bearer ${expected}`) || safeEqual(req.query?.token, expected);
 }
 
 interface DuePayload {

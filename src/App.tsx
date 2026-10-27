@@ -9,7 +9,7 @@ import { ConversationsView } from './components/ConversationsView';
 import { DashboardView } from './components/DashboardView';
 import { TemplateManagerView } from './components/TemplateManagerView';
 import { ExcelUploadModal } from './components/ExcelUploadModal';
-import { ChannelConfigModal } from './components/ChannelConfigModal';
+import { ChannelConfigModal, type SetupSectionId } from './components/ChannelConfigModal';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { AuthGate } from './components/AuthGate';
 import { AccessLockedScreen } from './components/AccessLockedScreen';
@@ -32,6 +32,7 @@ import { INITIAL_LEADS, INITIAL_CALENDAR_SLOTS } from './data/sampleLeads';
 import { hasChannelSecret } from './utils/channelSecrets';
 import { DEFAULT_TEMPLATES, DEFAULT_CAMPAIGN_SETTINGS } from './data/sampleTemplates';
 import { useOrgUsage, usageWarning } from './components/UsagePanel';
+import { VoiceTestLab } from './components/VoiceTestLab';
 
 const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
   whatsAppProvider: 'web_direct',
@@ -43,7 +44,7 @@ const DEFAULT_CHANNEL_SETTINGS: ChannelApiSettings = {
   safeDailyWhatsAppLimit: 250,
 };
 
-const PAGE_TABS: ActiveTab[] = ['dashboard', 'reports', 'campaign', 'sheets', 'templates', 'inbox', 'learning', 'simulator', 'calendar', 'team', 'admin'];
+const PAGE_TABS: ActiveTab[] = ['dashboard', 'reports', 'campaign', 'sheets', 'templates', 'inbox', 'learning', 'voicetest', 'simulator', 'calendar', 'team', 'admin'];
 
 function tabFromHash(): ActiveTab {
   if (typeof window === 'undefined') return 'dashboard';
@@ -216,6 +217,7 @@ function AppContent({ auth }: { auth: AuthState }) {
   // Modals State
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [isChannelModalOpen, setIsChannelModalOpen] = useState(false);
+  const [channelModalSection, setChannelModalSection] = useState<SetupSectionId | undefined>(undefined);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const onboardingCheckedRef = React.useRef(false);
   useEffect(() => {
@@ -449,7 +451,11 @@ function AppContent({ auth }: { auth: AuthState }) {
 
       <ChannelConfigModal
         isOpen={isChannelModalOpen}
-        onClose={() => setIsChannelModalOpen(false)}
+        initialSection={channelModalSection}
+        onClose={() => {
+          setIsChannelModalOpen(false);
+          setChannelModalSection(undefined);
+        }}
         settings={channelSettings}
         onSaveSettings={setChannelSettings}
         campaignSettings={campaignSettings}
@@ -600,6 +606,8 @@ function AppContent({ auth }: { auth: AuthState }) {
             onOpenExcelUpload={() => setIsExcelModalOpen(true)}
             onStartCampaignWithSelected={handleStartCampaignWithSelected}
             defaultCountryCode={campaignSettings.defaultCountryCode}
+            accessToken={auth.accessToken}
+            canEraseLeads={auth.orgRole === 'owner' || auth.orgRole === 'admin'}
           />
         )}
 
@@ -652,6 +660,16 @@ function AppContent({ auth }: { auth: AuthState }) {
         )}
 
         {activeTab === 'reports' && <ReportsView accessToken={auth.accessToken} />}
+
+        {activeTab === 'voicetest' && (
+          <VoiceTestLab
+            accessToken={auth.accessToken}
+            onOpenVoiceSetup={() => {
+              setChannelModalSection('voice');
+              setIsChannelModalOpen(true);
+            }}
+          />
+        )}
 
         {activeTab === 'team' && <TeamView accessToken={auth.accessToken} />}
 

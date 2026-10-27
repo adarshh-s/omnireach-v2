@@ -37,6 +37,8 @@ export interface RunConversationTurnParams {
   serviceDescription?: string;
   /** Prompt section built from the org's approved AI lessons (lib/aiLearning.ts) — empty when there are none. */
   learnedGuidance?: string;
+  /** When meetings may be booked (lib/bookingRules.ts's meetingRulesPrompt). */
+  availability?: string;
   history: ConversationTurn[];
   nowIso: string;
 }
@@ -132,6 +134,7 @@ export function buildConversationPrompt(params: Omit<RunConversationTurnParams, 
     senderName,
     serviceDescription,
     learnedGuidance,
+    availability,
     history,
     nowIso,
   } = params;
@@ -174,6 +177,8 @@ HOW TO SOUND HUMAN, NOT SCRIPTED:
       : 'Keep it under 50 words. Sound like a text message, not an email crammed into a chat box.'
   }
 - Never invent facts you weren't given, and never output bracket placeholders (e.g. "[Your Name]", "[Company]") — use the concrete names given above, or omit that detail entirely.
+- LANGUAGE: reply in the language of the prospect's latest message (Hindi, Spanish, German, Arabic, Hinglish…), even if earlier messages were in English. If you can't tell, use the language of the conversation so far.
+${availability ? `${availability}\n` : ''}
 ${learnedGuidance ? `\n${learnedGuidance}\n` : ''}
 
 Reply to the prospect's latest message. Output STRICT JSON only, no markdown, no commentary:

@@ -66,7 +66,7 @@ export async function scheduleVoiceFollowUp(callId: string): Promise<void> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return;
   const { data: row } = await supabase.from('voice_calls').select('*').eq('vapi_call_id', callId).maybeSingle();
-  if (!row || row.followup_status || row.direction === 'inbound' || row.status === 'confirmed') return;
+  if (!row || row.followup_status || row.direction === 'inbound' || row.direction === 'test' || row.status === 'confirmed') return;
   if (!UNANSWERED_OUTCOMES.has(row.outcome)) return;
 
   const settings = await getOrgChannelSettings(row.org_id);

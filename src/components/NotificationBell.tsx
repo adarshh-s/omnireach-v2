@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Bell, CalendarCheck2 } from 'lucide-react';
+import { Bell, CalendarCheck2, UserCog } from 'lucide-react';
 import { supabase, isSupabaseBrowserConfigured } from '../lib/supabaseClient';
 
 interface NotificationBellProps {
@@ -18,12 +18,13 @@ interface NotificationEvent {
   leadName: string;
   channel: 'whatsapp' | 'email';
   at: string;
+  kind: 'booked' | 'handoff';
 }
 
 const SEEN_KEY = 'omnireach_notifications_last_seen_v1';
 
 /**
- * Polls whatsapp_conversations/email_conversations for confirmed (booked) meetings only —
+ * Polls whatsapp_conversations/email_conversations for booked meetings and handoffs —
  * same 15s-poll pattern already used in DashboardView. "Unseen" is tracked
  * via a localStorage marker rather than a new table, since this is inherently per-browser,
  * per-viewer state.
@@ -45,16 +46,16 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
       const [{ data: wa }, { data: em }] = await Promise.all([
         supabase!
           .from('whatsapp_conversations')
-          .select('id, lead_name, last_message_at')
+          .select('id, lead_name, last_message_at, status')
           .eq('org_id', userId)
-          .eq('status', 'confirmed')
+          .in('status', ['confirmed', 'handoff'])
           .order('last_message_at', { ascending: false })
           .limit(10),
         supabase!
           .from('email_conversations')
-          .select('id, lead_name, last_message_at')
+          .select('id, lead_name, last_message_at, status')
           .eq('org_id', userId)
-          .eq('status', 'confirmed')
+          .in('status', ['confirmed', 'handoff'])
           .order('last_message_at', { ascending: false })
           .limit(10),
       ]);
@@ -66,6 +67,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
           leadName: r.lead_name || 'A contact',
           channel,
           at: r.last_message_at,
+          kind: r.status === 'handoff' ? 'handoff' : 'booked',
         }));
 
       const merged = [...toEvents(wa, 'whatsapp'), ...toEvents(em, 'email')]
@@ -133,10 +135,10 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
             }`}
           >
             <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Booked Meetings
+              Meetings &amp; leads needing you
             </div>
             {events.length === 0 ? (
-              <p className="px-3 py-3 text-xs text-ink-muted">No meetings booked yet — they'll show up here.</p>
+              <p className="px-3 py-3 text-xs text-ink-muted">Nothing yet — booked meetings and leads who need a person show up here.</p>
             ) : (
               events.map((e) => (
                 <button
@@ -147,9 +149,13 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ userId, onOp
                   }}
                   className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-surface-hover transition-colors"
                 >
-                  <CalendarCheck2 className="w-3.5 h-3.5 text-[#128C7E] mt-0.5 shrink-0" />
+                  {e.kind === 'handoff' ? (
+                    <UserCog className="w-3.5 h-3.5 text-amber-300 mt-0.5 shrink-0" />
+                  ) : (
+                    <CalendarCheck2 className="w-3.5 h-3.5 text-[#128C7E] mt-0.5 shrink-0" />
+                  )}
                   <div className="min-w-0">
-                    <p className="text-xs text-ink truncate">Meeting booked with {e.leadName}</p>
+                    <p className="text-xs text-ink truncate">{e.kind === 'handoff' ? `${e.leadName} needs a person` : `Meeting booked with ${e.leadName}`}</p>
                     <p className="text-[10px] text-ink-muted">
                       {e.channel === 'whatsapp' ? 'WhatsApp' : 'Email'} • {new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </p>

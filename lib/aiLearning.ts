@@ -194,12 +194,10 @@ async function findPendingConversations(orgId: string): Promise<Candidate[]> {
   const found: Array<Omit<Candidate, 'ref'> & { lastMessageAt: string }> = [];
 
   for (const channel of Object.keys(TABLES) as LearningChannel[]) {
-    const { data, error } = await supabase
-      .from(TABLES[channel])
-      .select('*')
-      .eq('org_id', orgId)
-      .order('last_message_at', { ascending: false })
-      .limit(60);
+    let query = supabase.from(TABLES[channel]).select('*').eq('org_id', orgId);
+    // Browser test calls are practice — lessons come from real conversations only.
+    if (channel === 'voice') query = query.neq('direction', 'test');
+    const { data, error } = await query.order('last_message_at', { ascending: false }).limit(60);
     if (error || !data) continue;
 
     for (const row of data) {

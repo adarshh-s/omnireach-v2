@@ -1,3 +1,4 @@
+import { publicHoliday } from './holidays.js';
 /**
  * Country -> timezone/peak-business-hours lookup, used to schedule campaign sends for
  * when a client is actually likely to be awake and checking WhatsApp/email, instead of
@@ -9,6 +10,9 @@
 
 interface CountryTimingEntry {
   timezone: string;
+  /** Countries spanning several time zones: a call must be within hours in all of them
+   * (e.g. 9 AM in New York is 6 AM in Los Angeles). */
+  zones?: string[];
   /** 0=Sun..6=Sat */
   weekend: number[];
   /** Local 24h hour ranges, e.g. [10, 12] means 10:00-11:59 local time. */
@@ -50,12 +54,51 @@ const COUNTRY_TIMING: Record<string, CountryTimingEntry> = {
   southafrica: { timezone: 'Africa/Johannesburg', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   nigeria: { timezone: 'Africa/Lagos', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   unitedkingdom: { timezone: 'Europe/London', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
-  unitedstates: { timezone: 'America/New_York', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
-  canada: { timezone: 'America/Toronto', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  unitedstates: {
+    timezone: 'America/New_York',
+    zones: ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles'],
+    weekend: STANDARD_WEEKEND,
+    windows: DEFAULT_WINDOWS,
+  },
+  canada: { timezone: 'America/Toronto', zones: ['America/Toronto', 'America/Winnipeg', 'America/Edmonton', 'America/Vancouver'], weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   germany: { timezone: 'Europe/Berlin', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   france: { timezone: 'Europe/Paris', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
-  australia: { timezone: 'Australia/Sydney', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  australia: { timezone: 'Australia/Sydney', zones: ['Australia/Sydney', 'Australia/Adelaide', 'Australia/Brisbane', 'Australia/Perth'], weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  newzealand: { timezone: 'Pacific/Auckland', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
   russia: { timezone: 'Europe/Moscow', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  // Rest of the EU/EEA and Europe — a launch market, so every country is known.
+  ireland: { timezone: 'Europe/Dublin', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  spain: { timezone: 'Europe/Madrid', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  portugal: { timezone: 'Europe/Lisbon', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  italy: { timezone: 'Europe/Rome', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  netherlands: { timezone: 'Europe/Amsterdam', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  belgium: { timezone: 'Europe/Brussels', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  luxembourg: { timezone: 'Europe/Luxembourg', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  austria: { timezone: 'Europe/Vienna', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  switzerland: { timezone: 'Europe/Zurich', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  denmark: { timezone: 'Europe/Copenhagen', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  sweden: { timezone: 'Europe/Stockholm', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  norway: { timezone: 'Europe/Oslo', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  finland: { timezone: 'Europe/Helsinki', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  iceland: { timezone: 'Atlantic/Reykjavik', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  poland: { timezone: 'Europe/Warsaw', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  czechia: { timezone: 'Europe/Prague', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  slovakia: { timezone: 'Europe/Bratislava', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  hungary: { timezone: 'Europe/Budapest', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  slovenia: { timezone: 'Europe/Ljubljana', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  croatia: { timezone: 'Europe/Zagreb', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  romania: { timezone: 'Europe/Bucharest', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  bulgaria: { timezone: 'Europe/Sofia', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  greece: { timezone: 'Europe/Athens', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  cyprus: { timezone: 'Asia/Nicosia', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  malta: { timezone: 'Europe/Malta', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  estonia: { timezone: 'Europe/Tallinn', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  latvia: { timezone: 'Europe/Riga', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  lithuania: { timezone: 'Europe/Vilnius', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  israel: { timezone: 'Asia/Jerusalem', weekend: GCC_WEEKEND, windows: DEFAULT_WINDOWS },
+  mexico: { timezone: 'America/Mexico_City', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  brazil: { timezone: 'America/Sao_Paulo', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
+  kenya: { timezone: 'Africa/Nairobi', weekend: STANDARD_WEEKEND, windows: DEFAULT_WINDOWS },
 };
 
 const ALIASES: Record<string, keyof typeof COUNTRY_TIMING> = {
@@ -106,8 +149,98 @@ const ALIASES: Record<string, keyof typeof COUNTRY_TIMING> = {
   germany: 'germany',
   france: 'france',
   australia: 'australia',
+  'new zealand': 'newzealand',
   russia: 'russia',
+  ireland: 'ireland',
+  spain: 'spain',
+  espana: 'spain',
+  portugal: 'portugal',
+  italy: 'italy',
+  italia: 'italy',
+  netherlands: 'netherlands',
+  'the netherlands': 'netherlands',
+  holland: 'netherlands',
+  belgium: 'belgium',
+  luxembourg: 'luxembourg',
+  austria: 'austria',
+  switzerland: 'switzerland',
+  denmark: 'denmark',
+  sweden: 'sweden',
+  norway: 'norway',
+  finland: 'finland',
+  iceland: 'iceland',
+  poland: 'poland',
+  czechia: 'czechia',
+  'czech republic': 'czechia',
+  slovakia: 'slovakia',
+  hungary: 'hungary',
+  slovenia: 'slovenia',
+  croatia: 'croatia',
+  romania: 'romania',
+  bulgaria: 'bulgaria',
+  greece: 'greece',
+  cyprus: 'cyprus',
+  malta: 'malta',
+  estonia: 'estonia',
+  latvia: 'latvia',
+  lithuania: 'lithuania',
+  israel: 'israel',
+  mexico: 'mexico',
+  brazil: 'brazil',
+  kenya: 'kenya',
+  deutschland: 'germany',
+  scotland: 'unitedkingdom',
+  wales: 'unitedkingdom',
+  'great britain': 'unitedkingdom',
+  'northern ireland': 'unitedkingdom',
+  america: 'unitedstates',
 };
+
+// ISO 3166 two-letter codes, as many spreadsheets and CRMs store the country.
+const ISO_CODES: Record<string, keyof typeof COUNTRY_TIMING> = {
+  ae: 'uae', sa: 'saudiarabia', qa: 'qatar', kw: 'kuwait', om: 'oman', bh: 'bahrain', in: 'india', pk: 'pakistan',
+  bd: 'bangladesh', lk: 'srilanka', np: 'nepal', ph: 'philippines', sg: 'singapore', my: 'malaysia', cn: 'china',
+  hk: 'hongkong', id: 'indonesia', jp: 'japan', kr: 'southkorea', eg: 'egypt', jo: 'jordan', lb: 'lebanon', tr: 'turkey',
+  za: 'southafrica', ng: 'nigeria', gb: 'unitedkingdom', us: 'unitedstates', ca: 'canada', de: 'germany', fr: 'france',
+  au: 'australia', nz: 'newzealand', ru: 'russia', ie: 'ireland', es: 'spain', pt: 'portugal', it: 'italy', nl: 'netherlands',
+  be: 'belgium', lu: 'luxembourg', at: 'austria', ch: 'switzerland', dk: 'denmark', se: 'sweden', no: 'norway', fi: 'finland',
+  is: 'iceland', pl: 'poland', cz: 'czechia', sk: 'slovakia', hu: 'hungary', si: 'slovenia', hr: 'croatia', ro: 'romania',
+  bg: 'bulgaria', gr: 'greece', cy: 'cyprus', mt: 'malta', ee: 'estonia', lv: 'latvia', lt: 'lithuania', il: 'israel',
+  mx: 'mexico', br: 'brazil', ke: 'kenya',
+};
+
+// International dialling codes → country, for leads saved without a country. Longest match wins.
+const DIAL_CODES: [string, keyof typeof COUNTRY_TIMING][] = (
+  [
+    ['1', 'unitedstates'], ['7', 'russia'], ['20', 'egypt'], ['27', 'southafrica'], ['30', 'greece'], ['31', 'netherlands'],
+    ['32', 'belgium'], ['33', 'france'], ['34', 'spain'], ['36', 'hungary'], ['39', 'italy'], ['40', 'romania'],
+    ['41', 'switzerland'], ['43', 'austria'], ['44', 'unitedkingdom'], ['45', 'denmark'], ['46', 'sweden'], ['47', 'norway'],
+    ['48', 'poland'], ['49', 'germany'], ['52', 'mexico'], ['55', 'brazil'], ['60', 'malaysia'], ['61', 'australia'],
+    ['62', 'indonesia'], ['63', 'philippines'], ['64', 'newzealand'], ['65', 'singapore'], ['81', 'japan'], ['82', 'southkorea'],
+    ['86', 'china'], ['90', 'turkey'], ['91', 'india'], ['92', 'pakistan'], ['94', 'srilanka'], ['234', 'nigeria'],
+    ['254', 'kenya'], ['351', 'portugal'], ['352', 'luxembourg'], ['353', 'ireland'], ['354', 'iceland'], ['356', 'malta'],
+    ['357', 'cyprus'], ['358', 'finland'], ['359', 'bulgaria'], ['370', 'lithuania'], ['371', 'latvia'], ['372', 'estonia'],
+    ['385', 'croatia'], ['386', 'slovenia'], ['420', 'czechia'], ['421', 'slovakia'], ['852', 'hongkong'], ['880', 'bangladesh'],
+    ['961', 'lebanon'], ['962', 'jordan'], ['965', 'kuwait'], ['966', 'saudiarabia'], ['968', 'oman'], ['971', 'uae'],
+    ['972', 'israel'], ['973', 'bahrain'], ['974', 'qatar'], ['977', 'nepal'],
+  ] as [string, keyof typeof COUNTRY_TIMING][]
+).sort((a, b) => b[0].length - a[0].length);
+
+/** The country an international phone number belongs to ("+44 20…", "0044…", or 11+ digits
+ * with no leading 0, as WhatsApp stores them). Local-format numbers ("050…") can't be told. */
+export function countryKeyFromPhone(phone: string | undefined | null): string | null {
+  const raw = (phone || '').trim();
+  let digits = raw.replace(/\D/g, '');
+  if (raw.startsWith('+')) {
+    // already international
+  } else if (digits.startsWith('00')) {
+    digits = digits.slice(2);
+  } else if (!(digits.length >= 11 && !digits.startsWith('0'))) {
+    return null;
+  }
+  const hit = DIAL_CODES.find(([code]) => digits.startsWith(code));
+  return hit ? hit[1] : null;
+}
 
 function normalize(input: string): string {
   return input
@@ -117,10 +250,21 @@ function normalize(input: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function resolveCountry(country: string | undefined | null): CountryTimingEntry | null {
+function countryKey(country: string | undefined | null): string | null {
   if (!country) return null;
-  const key = ALIASES[normalize(country)];
+  const n = normalize(country);
+  return ALIASES[n] || (n.length === 2 ? ISO_CODES[n] : undefined) || null;
+}
+
+function resolveCountry(country: string | undefined | null): CountryTimingEntry | null {
+  const key = countryKey(country);
   return key ? COUNTRY_TIMING[key] : null;
+}
+
+/** The lead's country (normalised key, e.g. 'unitedkingdom'), from the country field or else
+ * the phone number's dialling code. */
+export function resolveCountryKey(country: string | undefined | null, phone?: string | null): string | null {
+  return countryKey(country) || countryKeyFromPhone(phone);
 }
 
 const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -263,18 +407,34 @@ export function describeScheduledTime(date: Date, country: string | undefined | 
  */
 export function checkCallingHours(
   country: string | undefined | null,
-  now: Date = new Date()
-): { allowed: boolean; localTimeLabel?: string; timeZone?: string } {
-  const entry = resolveCountry(country);
+  now: Date = new Date(),
+  options: { phone?: string | null; skipHolidays?: boolean } = {}
+): { allowed: boolean; localTimeLabel?: string; timeZone?: string; holiday?: string } {
+  // No country on the lead: go by the phone number's dialling code.
+  const key = resolveCountryKey(country, options.phone);
+  const entry = key ? COUNTRY_TIMING[key] : null;
   if (!entry) return { allowed: true };
-  const local = getLocalDateParts(now, entry.timezone);
   const localTimeLabel = now.toLocaleString('en-US', { timeZone: entry.timezone, weekday: 'long', hour: 'numeric', minute: '2-digit' });
-  const allowed = !entry.weekend.includes(local.weekday) && local.hour >= 9 && local.hour < 20;
+  const allowed = (entry.zones || [entry.timezone]).every((tz) => {
+    const local = getLocalDateParts(now, tz);
+    return !entry.weekend.includes(local.weekday) && local.hour >= 9 && local.hour < 20;
+  });
+  if (allowed && options.skipHolidays !== false) {
+    const local = getLocalDateParts(now, entry.timezone);
+    const holiday = publicHoliday(key!, local.year, local.month, local.day);
+    if (holiday) return { allowed: false, localTimeLabel, timeZone: entry.timezone, holiday };
+  }
   return { allowed, localTimeLabel, timeZone: entry.timezone };
 }
 
 export function isCountryRecognized(country: string | undefined | null): boolean {
   return resolveCountry(country) !== null;
+}
+
+/** The lead's time zone from the country field, else the phone number. */
+export function getTimezoneForLead(country: string | undefined | null, phone?: string | null): string | null {
+  const key = resolveCountryKey(country, phone);
+  return key ? COUNTRY_TIMING[key].timezone : null;
 }
 
 /**

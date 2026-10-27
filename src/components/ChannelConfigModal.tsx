@@ -46,11 +46,13 @@ import { AdvancedSection } from './AdvancedSection';
 import { SecretInput } from './SecretInput';
 import { hasChannelSecret } from '../utils/channelSecrets';
 
-type SetupSectionId = 'whatsapp' | 'email' | 'voice' | 'calendar' | 'crm' | 'compliance' | 'notifications' | 'integrations';
+export type SetupSectionId = 'whatsapp' | 'email' | 'voice' | 'calendar' | 'crm' | 'compliance' | 'notifications' | 'integrations';
 
 interface ChannelConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Open straight at this section (e.g. 'voice' from the Test Voice Agent page). */
+  initialSection?: SetupSectionId;
   settings: ChannelApiSettings;
   onSaveSettings: (settings: ChannelApiSettings) => void;
   campaignSettings?: CampaignSettings;
@@ -64,6 +66,7 @@ interface ChannelConfigModalProps {
 export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
   isOpen,
   onClose,
+  initialSection,
   settings,
   campaignSettings,
   availableSlots = [],
@@ -98,6 +101,9 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
     }));
   };
   const [activeSubTab, setActiveSubTab] = useState<SetupSectionId>('whatsapp');
+  useEffect(() => {
+    if (isOpen && initialSection) setActiveSubTab(initialSection);
+  }, [isOpen, initialSection]);
   const [savedSuccess, setSavedSuccess] = useState(false);
   // 'resend' with no org-supplied API key is the automatic platform default (see the
   // "Email sending is automatic" banner) — only a provider that actually needs the org's
@@ -1532,6 +1538,43 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                               </select>
                             </Field>
                             <Field
+                              label="Transfer to a person (optional)"
+                              hint="When a caller asks for a human, the AI connects them to this number. Leave blank and it offers a call back instead. Include the country code, e.g. +44 20 7946 0000."
+                            >
+                              <input
+                                type="tel"
+                                placeholder="+971 4 123 4567"
+                                value={formData.voiceTransferNumber || ''}
+                                onChange={(e) => setFormData({ ...formData, voiceTransferNumber: e.target.value })}
+                                className={`${inputClass} !w-64 font-mono`}
+                              />
+                            </Field>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <Field label="Longest call" hint="A call is ended after this, so a stuck call can't run up minutes.">
+                                <select
+                                  value={formData.voiceMaxCallMinutes ?? 10}
+                                  onChange={(e) => setFormData({ ...formData, voiceMaxCallMinutes: Number(e.target.value) })}
+                                  className={`${inputClass} !w-40`}
+                                >
+                                  {[5, 10, 15, 20, 30].map((n) => (
+                                    <option key={n} value={n}>
+                                      {n} minutes
+                                    </option>
+                                  ))}
+                                </select>
+                              </Field>
+                              <Field label="Public holidays" hint="Skip calls on the lead's national public holidays.">
+                                <select
+                                  value={formData.voiceSkipHolidays === false ? 'call' : 'skip'}
+                                  onChange={(e) => setFormData({ ...formData, voiceSkipHolidays: e.target.value === 'skip' })}
+                                  className={`${inputClass} !w-48`}
+                                >
+                                  <option value="skip">Don't call on holidays</option>
+                                  <option value="call">Call anyway</option>
+                                </select>
+                              </Field>
+                            </div>
+                            <Field
                               label="Greeting for incoming calls (optional)"
                               hint={
                                 formData.vapiLanguage && !formData.vapiLanguage.startsWith('en')
@@ -1880,6 +1923,96 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                           {microsoftCalendar.status.connected && !googleCalendar.status.connected && (
                             <Note>Connecting Google switches the AI over to Google Calendar.</Note>
                           )}
+                          <Card title="When the AI can book meetings">
+                            <div className="flex flex-wrap gap-1.5">
+                              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => {
+                                const days = formData.meetingDays || [1, 2, 3, 4, 5];
+                                const on = days.includes(i);
+                                return (
+                                  <button
+                                    key={day}
+                                    type="button"
+                                    onClick={() => {
+                                      const next = on ? days.filter((d) => d !== i) : [...days, i].sort();
+                                      if (next.length) setFormData({ ...formData, meetingDays: next });
+                                    }}
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                      on ? 'bg-[#128C7E]/15 text-[#128C7E] border-[#128C7E]/40' : 'border-border-strong text-ink-muted hover:text-ink'
+                                    }`}
+                                  >
+                                    {day}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <Field label="From">
+                                <select
+                                  value={formData.meetingStartHour ?? 9}
+                                  onChange={(e) => setFormData({ ...formData, meetingStartHour: Number(e.target.value) })}
+                                  className={inputClass}
+                                >
+                                  {Array.from({ length: 24 }, (_, h) => (
+                                    <option key={h} value={h}>{`${String(h).padStart(2, '0')}:00`}</option>
+                                  ))}
+                                </select>
+                              </Field>
+                              <Field label="Until">
+                                <select
+                                  value={formData.meetingEndHour ?? 18}
+                                  onChange={(e) => setFormData({ ...formData, meetingEndHour: Number(e.target.value) })}
+                                  className={inputClass}
+                                >
+                                  {Array.from({ length: 24 }, (_, i) => i + 1).map((h) => (
+                                    <option key={h} value={h}>{`${String(h).padStart(2, '0')}:00`}</option>
+                                  ))}
+                                </select>
+                              </Field>
+                              <Field label="Time zone">
+                                <input
+                                  type="text"
+                                  list="omnireach-timezones"
+                                  placeholder={Intl.DateTimeFormat().resolvedOptions().timeZone}
+                                  value={formData.meetingTimeZone || ''}
+                                  onChange={(e) => setFormData({ ...formData, meetingTimeZone: e.target.value })}
+                                  className={`${inputClass} font-mono`}
+                                />
+                                <datalist id="omnireach-timezones">
+                                  {(typeof (Intl as any).supportedValuesOf === 'function' ? (Intl as any).supportedValuesOf('timeZone') : []).map((tz: string) => (
+                                    <option key={tz} value={tz} />
+                                  ))}
+                                </datalist>
+                              </Field>
+                              <Field label="Minimum notice">
+                                <select
+                                  value={formData.meetingMinNoticeHours ?? 2}
+                                  onChange={(e) => setFormData({ ...formData, meetingMinNoticeHours: Number(e.target.value) })}
+                                  className={inputClass}
+                                >
+                                  {[0, 1, 2, 4, 12, 24, 48].map((h) => (
+                                    <option key={h} value={h}>
+                                      {h === 0 ? 'None' : h < 24 ? `${h} hour${h === 1 ? '' : 's'}` : `${h / 24} day${h === 24 ? '' : 's'}`}
+                                    </option>
+                                  ))}
+                                </select>
+                              </Field>
+                            </div>
+                            <p className="text-[11px] text-ink-muted">
+                              The AI only offers and books times inside these hours (in your time zone), and says so if a lead asks for another time.
+                              {!formData.meetingTimeZone && (
+                                <>
+                                  {' '}Set your time zone — until then the hours apply in each lead’s own time.{' '}
+                                  <button
+                                    type="button"
+                                    onClick={() => setFormData({ ...formData, meetingTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })}
+                                    className="text-ink-secondary underline"
+                                  >
+                                    Use {Intl.DateTimeFormat().resolvedOptions().timeZone}
+                                  </button>
+                                </>
+                              )}
+                            </p>
+                          </Card>
                           <Card title="Meeting reminders">
                             <Field
                               label="Remind leads before their meeting"
@@ -1993,6 +2126,25 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                         Everyone who replies STOP, clicks unsubscribe, or asks the AI not to call again is added automatically.
                         Add your own suppression lists here too (for example a do-not-call list you've already been given).
                       </Note>
+                      <Card title="Don't overwhelm leads">
+                        <Field
+                          label="Gap between campaigns"
+                          hint="A new campaign leaves out leads another campaign or call reached within this time, and anyone in the middle of a conversation with the AI or being handled by your team."
+                        >
+                          <select
+                            value={formData.minHoursBetweenCampaigns ?? 24}
+                            onChange={(e) => setFormData({ ...formData, minHoursBetweenCampaigns: Number(e.target.value) })}
+                            className={`${inputClass} !w-56`}
+                          >
+                            <option value={0}>No gap</option>
+                            <option value={12}>12 hours</option>
+                            <option value={24}>24 hours</option>
+                            <option value={48}>2 days</option>
+                            <option value={72}>3 days</option>
+                            <option value={168}>1 week</option>
+                          </select>
+                        </Field>
+                      </Card>
                       <Card title="Add numbers or email addresses">
                         <textarea
                           rows={4}
@@ -2055,9 +2207,23 @@ export const ChannelConfigModal: React.FC<ChannelConfigModalProps> = ({
                   {activeSubTab === 'notifications' && (
                     <SetupSection
                       title="Notifications"
-                      description="Get a Slack message the moment the AI books a meeting."
+                      description="Hear about booked meetings, and leads who need a person, the moment they happen."
                       {...sectionProps('notifications')}
                     >
+                      <Card title="When a lead needs a person">
+                        <Field
+                          label="Alert email"
+                          hint="We email this address (and post to Slack below) when the AI hands a conversation over, or a lead replies while you've taken over. Sent from your connected email."
+                        >
+                          <input
+                            type="email"
+                            placeholder="sales@yourcompany.com"
+                            value={formData.handoffNotifyEmail || ''}
+                            onChange={(e) => setFormData({ ...formData, handoffNotifyEmail: e.target.value })}
+                            className={`${inputClass} !w-72`}
+                          />
+                        </Field>
+                      </Card>
                       <Card title="Slack">
                         <Field
                           label="Incoming webhook URL"

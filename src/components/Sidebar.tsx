@@ -15,6 +15,7 @@ import {
   LogOut,
   ShieldCheck,
   Sparkles,
+  Mic,
   Users,
   BarChart3,
 } from 'lucide-react';
@@ -30,6 +31,7 @@ export type ActiveTab =
   | 'calendar'
   | 'inbox'
   | 'learning'
+  | 'voicetest'
   | 'team'
   | 'admin';
 
@@ -105,6 +107,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           badge: inboxCount && inboxCount > 0 ? `${inboxCount} live` : undefined,
         },
         { id: 'learning', label: 'AI Learning', icon: Sparkles },
+        { id: 'voicetest', label: 'Test Voice Agent', icon: Mic },
         { id: 'simulator', label: 'Message Preview', icon: MessageSquare },
         {
           id: 'calendar',

@@ -22,7 +22,7 @@ function errorText(err: any): string {
 }
 
 /** A normal assistant-side hangup arrives as an error event — that's the call ending. */
-function isCallEndedError(err: any): boolean {
+export function isCallEndedError(err: any): boolean {
   let raw = '';
   try {
     raw = JSON.stringify(err ?? '');
@@ -34,7 +34,7 @@ function isCallEndedError(err: any): boolean {
 
 // Browser mic errors arrive as raw DOMException text ("The request is not allowed by the user
 // agent...") — translate the common ones into something a non-technical user can act on.
-function friendlyCallError(err: any, fallback: string): string {
+export function friendlyCallError(err: any, fallback: string): string {
   const name = err?.name || err?.error?.name;
   const msg = errorText(err);
   if (name === 'NotAllowedError' || /not allowed|permission denied/i.test(msg)) {
